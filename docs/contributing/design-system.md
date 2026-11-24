@@ -1,15 +1,20 @@
 # Design system
 
-All of Repowire's surfaces — the marketing site, these docs, and the hosted relay dashboard — use the **Repowire Design System**: light-first, warm-paper neutrals, a single cobalt accent, and Inter for body and prose. It reads closer to Linear, Resend, or Stripe documentation than to a terminal.
+Repowire's product surfaces share one **Repowire Design System** (RDS): the dashboard, the managed-agent views, admin, and the account portal. It is light-first, with warm-paper neutrals, a single cobalt accent, Inter for body and prose, and JetBrains Mono for the technical chrome (labels, ids, paths, timestamps, the live feed). These docs use the same cobalt and neutrals. The marketing landing page is a separate brand surface with its own drafting-sheet palette (below).
 
-The earlier dark, mono-forward "Copper Mesh" direction is fully retired. The dashboard keeps an operator/terminal character within the new system by using JetBrains Mono for its technical chrome (labels, section headings, peer names, paths, IDs, timestamps, the live feed) while everything else stays Inter — see [Dashboard](#dashboard).
+The system has two halves:
+- **Tokens:** `web/app/globals.css`, one semantic layer in both themes.
+- **Components:** `web/app/ui/`.
+
+A surface imports from `app/ui` and uses the token-backed Tailwind names; it does not restyle its own buttons or dialogs. The `/design` page renders every token and component in the current theme, with contrast measured live. Use it for screenshot review. It ships in the public web export: it is not linked and asks search engines not to index it, but anyone with the URL can open it, so keep it free of anything private.
 
 ## Voice
 
 - Write builder-to-builder copy: calm, specific, short technical sentences over marketing language.
 - Use second person for the reader (you) and third person for the product (Repowire).
-- Use sentence case everywhere: headings, buttons, nav, eyebrows. Reserve all caps with wide tracking for short eyebrow labels (`OVERVIEW`) and status badges (`BETA`, `NEW`), never paragraphs or headlines.
-- Use mono for code, identifiers, paths, commands, and inline literals: `ask`, `notify_peer`, `port 8377`. Never for headings.
+- Write copy in sentence case: page headings, prose, nav, messages, and the text you type into a component (a button's `children`, a dialog's `title`).
+- The product chrome renders short labels in uppercase mono with wide tracking: buttons, field labels, status words, dialog and panel titles. The components apply that styling, so the copy stays in sentence case ("New agent" renders as NEW AGENT). Never uppercase a paragraph, and never put a label above a page heading.
+- Use mono for code, identifiers, paths, commands and inline literals (`ask`, `notify_peer`, `port 8377`), and for the product chrome above. Page headings are never mono.
 - No emoji in product chrome. User-authored content can contain anything the user wrote.
 - No exclamation marks, no superlatives. Prefer "Local by default" to "Blazing fast".
 
@@ -24,37 +29,55 @@ Common patterns:
 
 ## Color
 
-Light-first warm paper with a single cobalt accent. The bulk of the surface is neutral; cobalt is for links, primary CTAs, and focus rings only. Status colors are not brand colors.
+Light-first warm paper with a single cobalt accent. Most of the surface is neutral; cobalt is for links, primary actions, selection and focus only. Status colours are not brand colours.
 
-| Role | Token | Light | Dark |
-| --- | --- | --- | --- |
-| Page | `--page` | `#fcfbfa` | `#0e0e0d` |
-| Surface | `--surface` | `#ffffff` | `#161614` |
-| Sunken | `--surface-sunken` | `#f7f6f3` | `#0a0a09` |
-| Primary text | `--fg` | `#141413` | `#f3f1ec` |
-| Muted text | `--fg-muted` | `#4e4b46` | `#b5b1a8` |
-| Accent | `--accent` | `#2c54dd` (cobalt-500) | `#5778e6` (cobalt-400) |
-| Accent surface | `--accent-soft` | `#eef2ff` | `rgba(87,120,230,0.16)` |
-| Success / warning / danger / info | `--success` … | green / amber / red / blue | brighter equivalents |
+The palette is defined once, as semantic tokens scoped by `data-theme` on `<html>`. Tailwind's colour names point at them (`@theme inline`), so every utility follows the theme, alpha modifiers included: `bg-accent/10` compiles to `color-mix(in oklab, var(--accent) 10%, transparent)`.
+
+| Role | Token | Tailwind | Light | Dark |
+| --- | --- | --- | --- | --- |
+| Page | `--page` | `bg-page` | `#fcfbfa` | `#0e0e0d` |
+| Sunken (inputs, wells) | `--surface-sunken` | `bg-sunken` | `#f7f6f3` | `#0a0a09` |
+| Surface (cards, panes) | `--surface` | `bg-surface` | `#ffffff` | `#161614` |
+| Raised (hover, selected) | `--surface-raised` | `bg-raised` | `#ffffff` | `#1c1c1a` |
+| Overlay (toasts, menus) | `--surface-overlay` | `bg-overlay` | `#ffffff` | `#232220` |
+| Text | `--fg` | `text-fg` | `#141413` | `#f3f1ec` |
+| Secondary text | `--fg-muted` | `text-fg-muted` | `#4e4b46` | `#b5b1a8` |
+| Tertiary text, placeholders | `--fg-subtle` | `text-fg-subtle` | `#67635c` | `#9a968e` |
+| Hairlines, disabled glyphs only | `--fg-faint` | `bg-fg-faint` | `#b7b3aa` | `#5b5853` |
+| Accent | `--accent` | `text-accent`, `bg-accent` | `#2c54dd` | `#7590ec` |
+| Text on a solid fill | `--on-accent`, `--on-success`, … | `text-on-accent` | white | `#0e0e0d` |
+| Success / warning / danger / info | `--success` … | `text-success` … | `#1a7349` / `#925810` / `#b83528` / `#2563c9` | `#4eb37e` / `#e0b14a` / `#e57368` / `#6ea4f0` |
+| Soft fills (badges, banners) | `--accent-soft`, `--success-soft`, … | `bg-success-soft` | opaque tints | opaque tints |
+| Borders | `--rds-border-strong`, `--rds-border` | `border-border`, `border-border-faint` | 14% / 8% ink | 14% / 8% paper |
+
+**Contrast floor.** Every text role reads at 4.5:1 or better:
+- on every surface, in both themes;
+- on its own 10% wash (`text-success` on `bg-success/10`), and its own soft fill;
+- for neutral text, on a selected row (the accent's 10% wash);
+- as the text on its solid fill.
+
+That is why the dark theme puts dark text on its bright fills, and why the light status colours are the 600 shades. `web/app/ui/tokens.test.ts` computes every pair from `globals.css` and fails CI on one below the floor. It also fails if any screen sets text in `--fg-faint`, which is about 2:1 and decorative only.
+
+Text sits on a surface, a soft fill or a single wash, never on a wash layered over a fill. Signal-coloured text sits on at most a 10% wash of its colour: at 15% several signals fall below the floor. So a hover deepens the border, not the wash. A control inside a tinted banner is a solid `bg-surface` chip with signal-coloured text and a signal border. Status badges use the opaque soft fill (`bg-success-soft text-success`), not a wash, so they read the same on a selected row as anywhere else.
 
 Rules:
-
-- The page is warm paper, not pure white. White is reserved for cards so they sit slightly off the page.
+- The page is warm paper, not pure white. White is for cards, so they sit slightly off the page.
 - One accent only. Don't introduce a second brand hue.
-- Dark mode is warm-dark (`#0e0e0d`), not pure black. Borders read at 8% white.
+- Amber (`warning`) means busy, degraded, or a caveat about a specific agent, never a generic action.
+- Colour is never the only signal: a status dot comes with a word.
 - CTAs are solid cobalt, no gradients.
-- Reach for type, scale, and space before reaching for color.
+- Reach for type, scale and space before reaching for colour.
+
+**Earlier names.** The dashboard was written against Material-style names (`surface-container-high`, `on-surface-variant`, `outline`, `primary`, `secondary`, `tertiary`, `error`, …). They remain as aliases of the semantic tokens, so nothing breaks, and they are on their way out. New code uses the names in the table, and screens move over as they are touched.
 
 ## Type
 
-Inter for everything; JetBrains Mono only for code.
-
 | Family | Usage |
 | --- | --- |
-| Inter (400/500/600/700) | UI, headings, body, labels, nav |
-| JetBrains Mono (400/500/700) | Code blocks, inline code, identifiers, paths, commands |
+| Inter (400/500/600/700) | Body, prose, headings, form values |
+| JetBrains Mono (400/500/700) | Product chrome: labels, buttons, status words, ids, paths, timestamps, the live feed; code everywhere |
 
-In the marketing app, Inter loads via `next/font/google` and JetBrains Mono via `next/font/local`. The docs site loads Inter through mkdocs-material's `font.text` setting.
+Product labels are uppercase mono at 10px or larger with wide tracking. Body text is never below 12px. Inter loads via `next/font/google` and JetBrains Mono via `next/font/local`; the docs site loads Inter through mkdocs-material's `font.text` setting.
 
 Scale (responsive via `clamp()` where it matters): `--fs-display` 40–64px (hero only), `--fs-h1` 32–44px, `--fs-h2` 24–32px, down to `--fs-body` 16px and `--fs-eyebrow` 12px. Tabular numerals on counts and timestamps; tight tracking on display and headings; body line-height 1.55.
 
@@ -66,6 +89,31 @@ Scale (responsive via `clamp()` where it matters): `--fs-display` 40–64px (her
 - Shadows are a soft family (`--shadow-xs`…`--shadow-xl`). Cards rest flat or at `--shadow-xs` and bump one tier on hover.
 - Motion: `--rds-ease` `cubic-bezier(0.32, 0.72, 0, 1)`, 120ms for color/opacity, 200ms for layout. A soft `translateY(-1px)` card-hover lift and the online status-dot pulse are allowed. No scale on cards, no spring easings, no scroll-triggered staggers.
 - Focus: 2px cobalt ring with a 2px page offset (`--ring`).
+
+## Components
+
+`web/app/ui/` holds the product components. Import them from `app/ui`:
+
+| Component | Use |
+| --- | --- |
+| `Button`, `IconButton`, `buttonClass` | `primary` (one per screen), `secondary`, `ghost`, `danger`; `md` and `icon` sizes. 44px tall on touch layouts, compact from `md` up. |
+| `inputClass`, `labelClass` | Text fields (16px on touch, so iOS does not zoom) and the mono field label. |
+| `Modal` | A native `<dialog>`: a centred dialog on desktop, a bottom sheet under 640px. The page behind it is inert, focus stays inside, and Escape or a backdrop click closes it. Focus returns to the opener. |
+| `Dot`, `StatusText`, `StatusBadge` | Status by `tone`: `success`, `warning`, `danger`, `accent` or `neutral`. Only a live connection pulses. |
+| `InlineError`, `Banner` | A failure shown verbatim, with an optional retry; a page-wide notice under the top bar. |
+| `EmptyState`, `SkeletonRows`, `PageMessage` | Empty, loading, and whole-page states such as signed out or not configured. |
+| `useToasts`, `Toasts` | At most two transient confirmations. |
+| `Brand`, `CopyId`, `ThemeToggle` | The top-bar wordmark, a copy-on-click id, and the light/dark switch. |
+
+A new pattern that two surfaces need goes into `app/ui`, not into one of them.
+
+## Craft floor
+
+Judge UI work by rendered screenshots, at desktop and at 390px wide, in both themes, before calling it done. Release blockers:
+- text below 4.5:1 (the token test covers the palette; check one-off colours by hand);
+- interactive controls under 44px on mobile;
+- core controls that are not reachable without scrolling;
+- eyebrow labels above headings.
 
 ## Theming
 
@@ -88,16 +136,17 @@ The generated `repowire-design-system/` handoff bundle is a reference, not a pro
 
 ## Implementation notes
 
-- The RDS tokens live in `web/app/globals.css` as an additive layer: a neutral/cobalt raw palette plus `data-theme`-scoped semantic tokens (`--page`, `--surface`, `--fg`, `--accent`, `--rds-border`, `--shadow-*`, `--ring`).
-- Marketing component styles are scoped under `.rw-marketing` in `web/app/marketing.css` so they never leak into the dashboard, which shares `globals.css`.
+- The RDS tokens live in `web/app/globals.css`: a raw palette (warm neutrals, cobalt, signals), then `data-theme`-scoped semantic tokens (`--page`, `--surface`, `--fg`, `--accent`, `--on-accent`, `--rds-border`, `--shadow-*`, `--ring`), then the Tailwind colour names that point at them. There is one definition per theme and no second copy.
+- The marketing landing page keeps its own drafting-sheet palette (cool paper, ink, the cobalt "signal", Geist), scoped under `.rw-marketing` in `web/app/marketing.css`, so it never reaches the product surfaces.
 - Font tokens `--rds-font-sans` / `--rds-font-mono` are defined on `.rw-marketing` (not `:root`) because they reference the `next/font` variables set on `<body>`.
 - Prefer `lucide-react` for new icons. Avoid one-off colors; if a color repeats, promote it to a token.
 - The docs stylesheet mirrors these tokens by hand; keep `docs/stylesheets/repowire-cobalt.css` in sync with `globals.css`.
 
 ## Dashboard
 
-The hosted relay dashboard (`web/app/dashboard/`) is on the Repowire Design System: cobalt accent, warm-paper light surfaces, light-first with a dark counterpart, tight radii for density. It inherits `data-theme` from the root layout, so it follows the same theme toggle as the marketing site.
-
-It keeps an operator/terminal character through typography: JetBrains Mono for the technical chrome — the `REPOWIRE`/`DASH` wordmark, uppercase annunciator labels (count pills, connection badge, view tabs), section headings, peer names, paths, IDs, timestamps, and the live feed. Inter is used for body text and chat/markdown prose. Status semantics stay constant: online → success (green), busy → warning (amber), offline → muted, error → danger (red), active → cobalt.
-
-The dashboard reaches these via Tailwind's `@theme` color tokens in `web/app/globals.css`, which are repointed to the RDS palette. Because Tailwind v4 emits non-alpha utilities as `var(--color-*)` (flipped by a `[data-theme="dark"]` re-declaration) but bakes opacity-modifier colors at build time, the color tokens use concrete light hex with a dark override, while the font and radius tokens use a separate `@theme inline` block so they resolve the `next/font` variables set on `<body>`.
+The hosted relay dashboard (`web/app/dashboard/`) is on the design system. It inherits `data-theme` from the root layout, so it follows the same theme toggle as every other surface. It takes its empty states and theme toggle from `app/ui`, and its remaining screens move from the earlier colour names to the semantic ones as they are touched. Status semantics stay constant across surfaces:
+- online: success (green);
+- busy: warning (amber);
+- offline: muted;
+- error: danger (red);
+- active: cobalt.

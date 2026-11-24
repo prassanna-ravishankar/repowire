@@ -69,7 +69,7 @@ export function PendingQuestions({
       </div>
       {pending.map((q) => (
         <div key={q.correlation_id} className="mt-1.5 flex flex-wrap items-center gap-2">
-          <span className="font-mono text-[11px] text-on-tertiary-container/85">
+          <span className="font-mono text-[11px] text-on-tertiary-container">
             <span className="font-semibold">@{q.from}</span> {q.text}
           </span>
           {q.question.kind === "choice" ? (
@@ -81,8 +81,8 @@ export function PendingQuestions({
                   onClick={() => answer(q.correlation_id, { option_id: opt.id })}
                   title={opt.description ?? undefined}
                   className={cn(
-                    "rounded border border-tertiary/40 bg-tertiary/15 px-2 py-0.5",
-                    "font-mono text-[11px] font-semibold hover:bg-tertiary/25",
+                    "rounded border border-warning/40 bg-surface px-2 py-0.5 text-warning",
+                    "font-mono text-[11px] font-semibold hover:bg-raised",
                     "disabled:opacity-50",
                   )}
                 >
@@ -96,9 +96,9 @@ export function PendingQuestions({
                   disabled={answering[q.correlation_id]}
                   onClick={() => answer(q.correlation_id, { outcome: "denied" })}
                   className={cn(
-                    "rounded border border-error/40 bg-error/15 px-2 py-0.5",
-                    "font-mono text-[11px] font-semibold text-on-error-container",
-                    "hover:bg-error/25 disabled:opacity-50",
+                    "rounded border border-danger/40 bg-surface px-2 py-0.5",
+                    "font-mono text-[11px] font-semibold text-danger",
+                    "hover:bg-raised disabled:opacity-50",
                   )}
                 >
                   ✕ Deny
@@ -110,8 +110,8 @@ export function PendingQuestions({
               disabled={answering[q.correlation_id]}
               onClick={() => answer(q.correlation_id, { outcome: "acknowledged" })}
               className={cn(
-                "rounded border border-tertiary/40 bg-tertiary/15 px-2 py-0.5",
-                "font-mono text-[11px] font-semibold hover:bg-tertiary/25 disabled:opacity-50",
+                "rounded border border-warning/40 bg-surface px-2 py-0.5 text-warning",
+                "font-mono text-[11px] font-semibold hover:bg-raised disabled:opacity-50",
               )}
             >
               ✓ Acknowledge

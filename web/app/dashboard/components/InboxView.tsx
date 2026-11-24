@@ -5,7 +5,7 @@ import { ArrowLeft, Inbox, RefreshCw, Send, XCircle } from "lucide-react";
 import { cn, timeAgo } from "../lib/utils";
 import type { InboxState } from "../lib/useInbox";
 import type { InboxItem, InboxReply } from "../types";
-import { EmptyState } from "./EmptyState";
+import { EmptyState } from "../../ui";
 import { AttachmentChips } from "./MeshFeed";
 
 const KIND_LABEL: Record<InboxItem["kind"], string> = {
@@ -16,8 +16,8 @@ const KIND_LABEL: Record<InboxItem["kind"], string> = {
 };
 
 function kindTone(kind: InboxItem["kind"]): string {
-  if (kind === "ask") return "border-tertiary-fixed-dim/30 bg-tertiary-fixed-dim/10 text-tertiary-fixed-dim";
-  if (kind === "answer") return "border-secondary/25 bg-secondary/10 text-secondary";
+  if (kind === "ask") return "border-warning/30 bg-warning-soft text-warning";
+  if (kind === "answer") return "border-success/25 bg-success-soft text-success";
   return "border-border-faint bg-surface-container-low text-outline";
 }
 
@@ -55,13 +55,13 @@ export function InboxView({ inbox, apiBase }: { inbox: InboxState; apiBase: stri
       <div className="grid min-h-0 flex-1 bg-surface-dim md:grid-cols-[minmax(300px,420px)_1fr] md:overflow-hidden">
         <div className={cn("min-h-0 border-r border-border-faint md:block md:overflow-y-auto", selected ? "hidden" : "block")}>
           {inbox.loading && inbox.items.length === 0 ? (
-            <EmptyState icon={<RefreshCw className="h-5 w-5 animate-spin" />} title="loading inbox" detail="reading your inbox from the daemon" />
+            <EmptyState icon={<RefreshCw className="h-5 w-5 animate-spin" />} title="loading inbox">reading your inbox from the daemon</EmptyState>
           ) : inbox.error === "unavailable" ? (
-            <EmptyState icon={<XCircle className="h-5 w-5" />} title="inbox unavailable" detail="this daemon has no human peer; check the daemon log" />
+            <EmptyState icon={<XCircle className="h-5 w-5" />} title="inbox unavailable">this daemon has no human peer; check the daemon log</EmptyState>
           ) : inbox.error ? (
-            <EmptyState icon={<XCircle className="h-5 w-5" />} title="inbox unavailable" detail={inbox.error} />
+            <EmptyState icon={<XCircle className="h-5 w-5" />} title="inbox unavailable">{inbox.error}</EmptyState>
           ) : inbox.items.length === 0 ? (
-            <EmptyState icon={<Inbox className="h-5 w-5" />} title="inbox empty" detail="messages and asks agents send you land here" />
+            <EmptyState icon={<Inbox className="h-5 w-5" />} title="inbox empty">messages and asks agents send you land here</EmptyState>
           ) : (
             <ul aria-label="Inbox">
               {inbox.items.map((item) => (
@@ -77,7 +77,7 @@ export function InboxView({ inbox, apiBase }: { inbox: InboxState; apiBase: stri
           {selected ? (
             <InboxDetail key={selected.id} item={selected} apiBase={apiBase} onBack={() => setSelectedId(null)} onReply={(body) => inbox.reply(selected.id, body)} />
           ) : (
-            <EmptyState icon={<Inbox className="h-5 w-5" />} title="select a message" detail="opening a message marks it read on every surface" />
+            <EmptyState icon={<Inbox className="h-5 w-5" />} title="select a message">opening a message marks it read on every surface</EmptyState>
           )}
         </div>
       </div>

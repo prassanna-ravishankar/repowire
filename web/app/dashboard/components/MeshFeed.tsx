@@ -89,7 +89,7 @@ function EventRow({
       ? "text-secondary"
       : event.type === "notification"
       ? "text-tertiary-fixed-dim"
-      : "text-accent";
+      : "text-info";
   const to = event.type === "broadcast" ? "* (all)" : event.to || "—";
   const fromLabel = event.from || "unknown";
   const fromClickable = Boolean(event.from);
