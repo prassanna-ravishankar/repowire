@@ -159,7 +159,7 @@ func (h *Hub) getPeerDoctor(w http.ResponseWriter, r *http.Request) {
 	if local && peer.PaneID != nil && *peer.PaneID != "" {
 		exists := false
 		if h.spawn != nil && h.spawn.svc != nil {
-			exists = h.spawn.svc.Tmux().ProbePane(*peer.PaneID) != nil
+			exists = h.spawn.svc.Container().Probe(*peer.PaneID) != nil
 		}
 		report["tmux_pane_exists"] = exists
 		if !exists {

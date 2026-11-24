@@ -178,7 +178,7 @@ type fileOwnership struct {
 
 // NewFileOwnership constructs the file-backed ownership store. selfMachine is the
 // daemon's hostname (records written on another host are rejected). probe is the
-// tmux pane-evidence seam (the real TmuxController.ProbePane in main; a fake in
+// tmux pane-evidence seam (the tmux Container's Probe in main; a fake in
 // tests). A nil probe defaults to the real `tmux display-message` shell-out.
 func NewFileOwnership(selfMachine string, probe func(paneID string) *TmuxPaneEvidence) *fileOwnership {
 	if probe == nil {
@@ -564,43 +564,4 @@ func NormPath(path string) string {
 		return path
 	}
 	return abs
-}
-
-// realProbeTmuxPane ports probe_tmux_pane: `tmux display-message` for one pane,
-// returning nil when tmux is unavailable, the pane is gone, or the fields are
-// incomplete. This is the default probe seam for NewFileOwnership and the real
-// TmuxController.ProbePane.
-func realProbeTmuxPane(paneID string) *TmuxPaneEvidence {
-	if paneID == "" {
-		return nil
-	}
-	cmd, cancel := TmuxCommand("display-message", "-t", paneID, "-p",
-		"#{session_name}\t#{window_id}\t#{window_name}\t#{pane_current_path}\t#{pane_pid}\t#{window_panes}\t#{start_time}")
-	defer cancel()
-	out, err := cmd.Output()
-	if err != nil {
-		return nil
-	}
-	parts := strings.Split(strings.TrimRight(string(out), "\n"), "\t")
-	if len(parts) < 6 || parts[0] == "" || parts[1] == "" || parts[2] == "" || parts[4] == "" {
-		return nil
-	}
-	serverStart := 0.0
-	if len(parts) >= 7 {
-		serverStart, _ = strconv.ParseFloat(parts[6], 64) // older tmux: no start_time, stays 0
-	}
-	windowPanes, err := strconv.Atoi(parts[5])
-	if err != nil || windowPanes < 1 {
-		return nil
-	}
-	return &TmuxPaneEvidence{
-		PaneID:      paneID,
-		SessionName: parts[0],
-		WindowID:    parts[1],
-		WindowPanes: windowPanes,
-		TmuxSession: parts[0] + ":" + parts[2],
-		CurrentPath: parts[3],
-		PanePID:     parts[4],
-		ServerStart: serverStart,
-	}
 }

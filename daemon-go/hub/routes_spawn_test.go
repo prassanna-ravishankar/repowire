@@ -101,18 +101,20 @@ type fakeTmux struct {
 	evidence    map[string]*service.TmuxPaneEvidence
 }
 
-func (f *fakeTmux) Spawn(cfg service.SpawnConfig) (service.SpawnResult, error) {
+func (f *fakeTmux) Kind() string { return "tmux" }
+
+func (f *fakeTmux) Launch(cfg service.SpawnConfig) (service.SpawnResult, error) {
 	f.spawnConfig = cfg
 	return f.spawnResult, f.spawnErr
 }
-func (f *fakeTmux) CreatePane(cfg service.SpawnConfig) (service.PanePlacement, error) {
+func (f *fakeTmux) Reserve(cfg service.SpawnConfig) (service.PanePlacement, error) {
 	return service.PanePlacement{PaneID: f.spawnResult.PaneID, TmuxSession: f.spawnResult.TmuxSession, DisplayName: f.spawnResult.DisplayName}, f.spawnErr
 }
-func (f *fakeTmux) KillPane(paneID string) bool {
+func (f *fakeTmux) Stop(paneID string) bool {
 	f.killed = append(f.killed, paneID)
 	return f.killOK
 }
-func (f *fakeTmux) ProbePane(paneID string) *service.TmuxPaneEvidence { return f.evidence[paneID] }
+func (f *fakeTmux) Probe(paneID string) *service.TmuxPaneEvidence { return f.evidence[paneID] }
 
 func newHermeticSpawnService(t *testing.T, tmux *fakeTmux, own service.PaneOwnership, commands map[proto.AgentType]string, allowedPaths []string) *service.SpawnService {
 	t.Helper()
@@ -133,7 +135,7 @@ func newSpawnTestHub(t *testing.T, reg *fakeSpawnRegistry, tmux *fakeTmux) (*htt
 	t.Setenv("REPOWIRE_CONFIG_DIR", t.TempDir())
 	t.Setenv("REPOWIRE_CACHE_DIR", t.TempDir())
 
-	own := service.NewFileOwnership("test-host", tmux.ProbePane)
+	own := service.NewFileOwnership("test-host", tmux.Probe)
 	svc := newHermeticSpawnService(t, tmux, own,
 		map[proto.AgentType]string{proto.AgentClaudeCode: "claude", proto.AgentCodex: "codex"},
 		[]string{t.TempDir()}, // an allowed root; spawn-enabled
@@ -170,7 +172,7 @@ func TestWindowBoundarySpawnUsesSourcePaneEvidence(t *testing.T) {
 			"@7": {PaneID: pane, SessionName: "mesh", WindowID: "@7", TmuxSession: "mesh:work", CurrentPath: root},
 		},
 	}
-	own := service.NewFileOwnership("test-host", tmux.ProbePane)
+	own := service.NewFileOwnership("test-host", tmux.Probe)
 	svc := newHermeticSpawnService(t, tmux, own, map[proto.AgentType]string{proto.AgentClaudeCode: "claude"}, []string{root})
 	h := &Hub{}
 	h.WithSpawn(svc, &fakeSpawnRegistry{}, service.NewAskTracker(0), "test-host", proto.CircleBoundaryWindow)
@@ -264,7 +266,7 @@ func TestKillPeerNoProofUnregistersButSkipsKill(t *testing.T) {
 		PaneID:      &pane,
 	}
 	reg := &fakeSpawnRegistry{peers: []*proto.Peer{p}}
-	tmux := &fakeTmux{killOK: true} // no evidence map → ProbePane returns nil
+	tmux := &fakeTmux{killOK: true} // no evidence map → Probe returns nil
 	srv, _ := newSpawnTestHub(t, reg, tmux)
 
 	resp := postSpawnJSON(t, srv, "/kill-peer", KillPeerRequest{PeerIdentifier: string(p.PeerID)})
@@ -353,7 +355,7 @@ func TestSpawnSurfacesExcludeRetiredRuntimeCommands(t *testing.T) {
 		proto.AgentClaudeCode:     "claude",
 		proto.AgentType("gemini"): "gemini --yolo",
 	}
-	svc := newHermeticSpawnService(t, tmux, service.NewFileOwnership("test-host", tmux.ProbePane), commands, []string{root})
+	svc := newHermeticSpawnService(t, tmux, service.NewFileOwnership("test-host", tmux.Probe), commands, []string{root})
 	h := &Hub{authToken: ""}
 	h.WithSpawn(svc, &fakeSpawnRegistry{}, service.NewAskTracker(0), "test-host", proto.CircleBoundarySession)
 	muxRouter := http.NewServeMux()
@@ -530,7 +532,7 @@ func TestDestructivePaneProof_VerifiedByPaneMetadata(t *testing.T) {
 
 	pane, occupant := "%77", startOccupant(t)
 	tmux := &fakeTmux{killOK: true, evidence: map[string]*service.TmuxPaneEvidence{pane: {PaneID: pane, TmuxSession: "sess", PanePID: strconv.Itoa(occupant)}}}
-	own := service.NewFileOwnership("test-host", tmux.ProbePane)
+	own := service.NewFileOwnership("test-host", tmux.Probe)
 	svc := newHermeticSpawnService(t, tmux, own,
 		map[proto.AgentType]string{proto.AgentClaudeCode: "claude"}, []string{t.TempDir()})
 	h := &Hub{}

@@ -497,7 +497,7 @@ func (h *Hub) planRestart(ctx context.Context, p *proto.Peer, req RestartPeerReq
 	plan.proof = h.destructivePaneProof(p)
 	var oldPane *service.TmuxPaneEvidence
 	if plan.proof.paneID != "" {
-		oldPane = svc.Tmux().ProbePane(plan.proof.paneID)
+		oldPane = svc.Container().Probe(plan.proof.paneID)
 	}
 	if p.AgentPID != nil {
 		plan.pid = *p.AgentPID
@@ -742,7 +742,7 @@ func (h *Hub) runRestart(ctx context.Context, run *restartRun, plan *restartPlan
 	// the reserved pane is the window's survivor and stays as a shell.
 	abandonReservation := func() {
 		if reserved != "" {
-			svc.Tmux().KillPane(reserved)
+			svc.Container().Stop(reserved)
 		}
 	}
 	cleanup := context.WithoutCancel(ctx)
@@ -783,7 +783,7 @@ func (h *Hub) runRestart(ctx context.Context, run *restartRun, plan *restartPlan
 			return
 		}
 	case "kill_pane":
-		if !svc.Tmux().KillPane(plan.proof.paneID) {
+		if !svc.Container().Stop(plan.proof.paneID) {
 			unfence()
 			abandonReservation()
 			fail(restartStageExit, "kill_pane_failed", "tmux kill-pane failed for the verified pane "+plan.proof.paneID, false)
@@ -798,7 +798,7 @@ func (h *Hub) runRestart(ctx context.Context, run *restartRun, plan *restartPlan
 			if plan.pid > 0 {
 				return !h.spawn.proc.Alive(plan.pid)
 			}
-			return svc.Tmux().ProbePane(plan.proof.paneID) == nil
+			return svc.Container().Probe(plan.proof.paneID) == nil
 		}
 		started := time.Now()
 		err := pollUntil(ctx, restartExitTimeout, gone)
@@ -820,7 +820,7 @@ func (h *Hub) runRestart(ctx context.Context, run *restartRun, plan *restartPlan
 			return
 		}
 		if plan.proof.paneID != "" {
-			svc.Tmux().KillPane(plan.proof.paneID) // the runtime is gone; clear its leftover shell
+			svc.Container().Stop(plan.proof.paneID) // the runtime is gone; clear its leftover shell
 			svc.Ownership().Forget(plan.proof.paneID)
 			clienthooks.ClearPaneRuntimeState(plan.proof.paneID)
 		}
@@ -1012,12 +1012,12 @@ func (h *Hub) restartEvidence(plan *restartPlan, r *RestartResult) RestartLastKn
 		return lk
 	}
 	lk.BindingStatus = plan.bindingStatus
-	tmux := h.spawn.svc.Tmux()
+	container := h.spawn.svc.Container()
 	if r.OldPaneID != "" {
-		lk.OldPaneExists = tmux.ProbePane(r.OldPaneID) != nil
+		lk.OldPaneExists = container.Probe(r.OldPaneID) != nil
 	}
 	if r.NewPaneID != "" {
-		lk.NewPaneExists = tmux.ProbePane(r.NewPaneID) != nil
+		lk.NewPaneExists = container.Probe(r.NewPaneID) != nil
 	}
 	if plan.peer.AgentPID != nil && *plan.peer.AgentPID > 0 {
 		alive := h.spawn.proc.Alive(*plan.peer.AgentPID)

@@ -491,7 +491,7 @@ func (h *Hub) killPeer(ctx context.Context, req KillPeerRequest) (KillResponse, 
 		return KillResponse{OK: true, TmuxKilled: nil}, nil
 	}
 
-	killed := h.spawn.svc.Tmux().KillPane(proof.paneID)
+	killed := h.spawn.svc.Container().Stop(proof.paneID)
 	if !killed {
 		// Fail loud: verified pane could not be killed; leave the peer registered.
 		return KillResponse{}, &service.SpawnError{Status: http.StatusInternalServerError, Detail: map[string]any{
@@ -744,7 +744,7 @@ func (h *Hub) handleRehookPeer(w http.ResponseWriter, r *http.Request) {
 	paneVerified := h.spawn.svc.Ownership().IsSpawned(*peerCopy.PaneID) ||
 		h.spawn.svc.Ownership().ValidateForPeer(peerCopy).OK
 	if !paneVerified {
-		if ev := h.spawn.svc.Tmux().ProbePane(*peerCopy.PaneID); ev != nil &&
+		if ev := h.spawn.svc.Container().Probe(*peerCopy.PaneID); ev != nil &&
 			peerCopy.Path != "" && service.NormPath(ev.CurrentPath) == service.NormPath(peerCopy.Path) {
 			paneVerified = true
 		}
@@ -879,7 +879,7 @@ func (h *Hub) destructivePaneProof(p *proto.Peer) destructiveProof {
 	// A known agent outside a visible pane vetoes every mode: the pane's proof
 	// was earned by a runtime that is no longer there. An unseen pane is left to
 	// the caller, which cannot kill it either.
-	if ev := h.spawn.svc.Tmux().ProbePane(proof.paneID); ev != nil && !service.PaneRunsPeer(h.spawn.proc, ev, p) {
+	if ev := h.spawn.svc.Container().Probe(proof.paneID); ev != nil && !service.PaneRunsPeer(h.spawn.proc, ev, p) {
 		return destructiveProof{paneID: proof.paneID, tmuxSession: proof.tmuxSession, errCode: "agent_not_in_pane",
 			hint: "The peer's agent is not running in its proven pane; refusing to kill whatever runs there now."}
 	}
@@ -918,7 +918,7 @@ func (h *Hub) paneProof(p *proto.Peer) destructiveProof {
 			hint: "Peer has no pane id, so Repowire has no pane to kill."}
 	}
 
-	ev := h.spawn.svc.Tmux().ProbePane(*p.PaneID)
+	ev := h.spawn.svc.Container().Probe(*p.PaneID)
 	if ev == nil {
 		return destructiveProof{paneID: *p.PaneID, errCode: "pane_not_live",
 			hint: "The peer's recorded pane is not visible in tmux."}
