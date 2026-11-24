@@ -368,7 +368,7 @@ func (h *Hosted) resubmit(op *state.Operation) {
 
 // Deliver submits text to the target's runtime and returns once the runtime
 // has durably accepted it. The answer arrives later as a report.
-func (h *Hosted) Deliver(ctx context.Context, kind, correlationID string, from *proto.Peer, fromName string, target *proto.Peer, text string) (map[string]any, error) {
+func (h *Hosted) Deliver(ctx context.Context, kind, correlationID string, from *proto.Peer, fromName string, target *proto.Peer, text, messageID string) (map[string]any, error) {
 	operationID := correlationID
 	if operationID == "" {
 		operationID = kind + "-" + uuid.NewString()[:8]
@@ -382,9 +382,7 @@ func (h *Hosted) Deliver(ctx context.Context, kind, correlationID string, from *
 		"correlation_id": correlationID, "from_peer_id": fromID, "from_peer_name": fromName,
 		"to_peer_id": string(target.PeerID), "to_peer_name": string(target.DisplayName),
 	}
-	// Hosted delivery routes before the message store records anything, so the
-	// frame names no message_id: the runtime always gets the full text.
-	framed := hooks.FormatInboundMessage(fromName, fromRole, string(target.DisplayName), kind, correlationID, "", text)
+	framed := hooks.FormatInboundMessage(fromName, fromRole, string(target.DisplayName), kind, correlationID, messageID, text)
 	record["text"] = framed
 	opID, reused, err := h.record(ctx, record)
 	if err != nil {

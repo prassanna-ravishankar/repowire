@@ -113,16 +113,27 @@ func (c *JobCompletion) afterTerminal(ctx context.Context, work *state.TrackedWo
 		_, _ = c.asks.Close(ctx, *work.CorrelationID, askReason)
 	}
 	c.emit(work, prior)
-	if c.control != nil {
-		released, err := c.control.ReleaseExecutorForWork(ctx, work, releaseReason)
-		if err != nil {
-			return fmt.Errorf("release %s: %w", work.WorkID, err)
-		}
-		if released["status"] == "failed" {
-			return fmt.Errorf("release %s: %v", work.WorkID, released["reason"])
-		}
+	if err := c.release(ctx, work, releaseReason); err != nil {
+		return err
 	}
 	c.notifyOwner(ctx, work)
+	return nil
+}
+
+// release frees the work's executor. A release that reports failure (a
+// hosted agent the runtime could not retire) is an error, so a caller that
+// is retried, such as a hosted run's report, tries it again.
+func (c *JobCompletion) release(ctx context.Context, work *state.TrackedWork, reason string) error {
+	if c.control == nil {
+		return nil
+	}
+	released, err := c.control.ReleaseExecutorForWork(ctx, work, reason)
+	if err != nil {
+		return fmt.Errorf("release %s: %w", work.WorkID, err)
+	}
+	if released["status"] == "failed" {
+		return fmt.Errorf("release %s: %v", work.WorkID, released["reason"])
+	}
 	return nil
 }
 
@@ -186,6 +197,10 @@ func (c *JobCompletion) OnHostedRun(ctx context.Context, delivery HostedDelivery
 		return c.afterTerminal(ctx, work, "running", "fire_completed", "completed")
 	case work.State == "failed":
 		return c.afterTerminal(ctx, work, "running", "hosted_unanswered", "hosted_unanswered")
+	case work.State == "expired":
+		// ExpireOverdue ended the job and told its owner; the run's report
+		// retries a release that failed then, until the agent is retired.
+		return c.release(ctx, work, "deadline_exceeded")
 	}
 	return nil
 }
@@ -286,8 +301,9 @@ func (c *JobCompletion) ExpireOverdue(ctx context.Context, now time.Time) {
 			_, _ = c.asks.Close(ctx, *updated.CorrelationID, reason)
 		}
 		c.emit(updated, work.State)
-		if c.control != nil && updated.AssignedPeerID != nil {
-			if _, err := c.control.ReleaseExecutorForWork(ctx, updated, reason); err != nil {
+		if updated.AssignedPeerID != nil {
+			// A failed release is retried by a hosted run's report (OnHostedRun).
+			if err := c.release(ctx, updated, reason); err != nil {
 				log.Printf("job completion: release expired work %s: %v", updated.WorkID, err)
 			}
 		}

@@ -643,3 +643,87 @@ func TestHostedRetentionSweepKeepsUnsettledDeliveries(t *testing.T) {
 		t.Fatalf("settled deliveries must expire: %v", counts)
 	}
 }
+
+// A hosted report closes its ask only while the agent still holds it. One
+// that lands during a hand-off is refused so the runtime resends it; after a
+// hand-off that failed the resend closes the ask, and after one that
+// succeeded it is dropped for the new holder to answer.
+func TestHostedReportRespectsDelegation(t *testing.T) {
+	ctx := context.Background()
+	f := newHostedFixture(t)
+	report := func(cid string) error {
+		return f.hosted.Report(ctx, string(f.target.PeerID), cid, HostedResult{Status: "done", Text: "42"})
+	}
+	handOff := func(cid string) Delegation {
+		t.Helper()
+		if _, err := f.asks.Claim(cid); err != nil {
+			t.Fatal(err)
+		}
+		_, hop, err := f.asks.Delegate(ctx, cid, DelegateParams{By: f.target.PeerID, To: "repow-default-cccc", ToName: "gamma"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return hop
+	}
+
+	failed := f.ask(t)
+	hop := handOff(failed)
+	if err := report(failed); err == nil {
+		t.Fatal("a report during a hand-off must be refused so it is resent")
+	}
+	if !f.asks.UndoDelegation(ctx, failed, hop) {
+		t.Fatal("undo refused")
+	}
+	f.asks.Release(failed)
+	if err := report(failed); err != nil {
+		t.Fatal(err)
+	}
+	if ask := waitClosed(t, f.asks, failed); ask.ReplyText == nil || *ask.ReplyText != "42" {
+		t.Fatalf("the resend after a failed hand-off must close the ask: %+v", ask)
+	}
+
+	moved := f.ask(t)
+	handOff(moved)
+	f.asks.Release(moved)
+	if err := report(moved); err != nil {
+		t.Fatalf("a report for an ask delegated away is dropped, not resent: %v", err)
+	}
+	if ask, _ := f.asks.Get(moved); ask.Closed || ask.ToPeerID != "repow-default-cccc" {
+		t.Fatalf("the former holder's report must not close the new holder's ask: %+v", ask)
+	}
+}
+
+// A message to a hosted agent is recorded like one to any agent peer, and its
+// frame names the record. The agent has no read_message tool, so even a pull
+// preference gets the full body, and the record reads as read once the
+// runtime takes it. A refused submission leaves no record.
+func TestHostedDeliveryRecordsTheMessage(t *testing.T) {
+	ctx := context.Background()
+	f := newHostedFixture(t)
+	messages := NewMessages(f.store)
+	f.delivery.WithMessages(messages)
+	if err := messages.SetMode(ctx, f.target.PeerID, MessageDeliveryPull); err != nil {
+		t.Fatal(err)
+	}
+	cid := f.ask(t)
+	got, err := messages.List(ctx, state.PeerMessageFilter{PeerID: string(f.target.PeerID)})
+	if err != nil || len(got) != 1 {
+		t.Fatalf("expected one recorded message: %v %v", got, err)
+	}
+	msg := got[0]
+	if msg.Kind != state.MessageAsk || msg.CorrelationID != cid || msg.ReadAt == "" {
+		t.Fatalf("unexpected record %+v", msg)
+	}
+	text := f.runtime.submitted[cid]
+	if !strings.Contains(text, msg.ID) || !strings.Contains(text, "what is 6*7?") {
+		t.Fatalf("the submission must carry the full body and name %s: %q", msg.ID, text)
+	}
+
+	f.runtime.submitErr = errors.New("runtime down")
+	if _, err := f.delivery.Notify(ctx, NotifyParams{FromPeer: "alpha", ToPeer: "helper-hosted", Text: "lost"}); err == nil {
+		t.Fatal("a refused submission must fail the notify")
+	}
+	if got, _ := messages.List(ctx, state.PeerMessageFilter{PeerID: string(f.target.PeerID)}); len(got) != 1 {
+		t.Fatalf("a refused submission must leave no record, got %d", len(got))
+	}
+}

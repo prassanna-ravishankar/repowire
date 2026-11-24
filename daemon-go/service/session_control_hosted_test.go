@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/repowire/repowire/daemon-go/proto"
 	"github.com/repowire/repowire/daemon-go/state"
@@ -160,5 +161,54 @@ func TestHostedJobReleaseFailureFailsTheSettlement(t *testing.T) {
 	delivery := HostedDelivery{Kind: "ask", ToPeerID: string(hosted.reg.peers[0].PeerID), Text: opener.lastText}
 	if err := opener.completion.OnHostedRun(ctx, delivery, opener.result); err != nil || len(hosted.retired) != 2 {
 		t.Fatalf("the replay must retry the release: err=%v retired=%v", err, hosted.retired)
+	}
+}
+
+// quietHostedOpener accepts the run's send and reports nothing yet.
+type quietHostedOpener struct{ lastText string }
+
+func (o *quietHostedOpener) OpenScheduledAsk(_ context.Context, cid, _, _, text string, _ *string, _ string) (string, error) {
+	o.lastText = text
+	return cid, nil
+}
+
+// A hosted job past its deadline expires even when its agent cannot be
+// retired then; the run's later report retries the retire, and the job
+// stays expired.
+func TestExpiredHostedJobRetriesItsReleaseOnTheRunsReport(t *testing.T) {
+	ctx := context.Background()
+	store := scStore(t)
+	reg := &scRegistry{}
+	hosted := &scHosted{reg: reg, retireErr: errors.New("runtime unreachable")}
+	control := NewSessionControl(reg, nil, store)
+	control.hosted = hosted
+	completion := NewJobCompletion(store, nil, control, nil, nil)
+	opener := &quietHostedOpener{}
+	circle := "default"
+	deadline := time.Now().Add(time.Hour).UTC().Format(time.RFC3339Nano)
+	work, err := store.CreateWork(ctx, state.WorkCreate{Title: "digest", Circle: &circle, DeadlineAt: &deadline, Request: map[string]any{"execution": map[string]any{
+		"target": map[string]any{"path": "/jobs/digest", "backend": string(proto.AgentHosted)}, "process_scope": "per_fire", "continuity": "fresh",
+	}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := NewJobRunner(store, opener, control).RunJob(ctx, work.WorkID, true, false); err != nil {
+		t.Fatal(err)
+	}
+	completion.ExpireOverdue(ctx, time.Now().Add(2*time.Hour))
+	if got, _ := store.GetWork(ctx, work.WorkID); got.State != "expired" || len(hosted.retired) != 1 {
+		t.Fatalf("the job must expire and try the retire once: state=%s retired=%v", got.State, hosted.retired)
+	}
+
+	run := HostedDelivery{Kind: "ask", ToPeerID: string(reg.peers[0].PeerID), Text: opener.lastText}
+	if err := completion.OnHostedRun(ctx, run, HostedResult{Status: "done", Text: "late"}); err == nil {
+		t.Fatal("a report whose retire still fails must be resent")
+	}
+	hosted.retireErr = nil
+	if err := completion.OnHostedRun(ctx, run, HostedResult{Status: "done", Text: "late"}); err != nil || len(hosted.retired) != 3 {
+		t.Fatalf("the resent report must retire the agent: err=%v retired=%v", err, hosted.retired)
+	}
+	if got, _ := store.GetWork(ctx, work.WorkID); got.State != "expired" {
+		t.Fatalf("a late report must not change an expired job, got %s", got.State)
 	}
 }

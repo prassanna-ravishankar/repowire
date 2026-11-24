@@ -304,14 +304,21 @@ func (d *PeerDelivery) Notify(ctx context.Context, params NotifyParams) (_ Notif
 		return d.notifyInbox(ctx, params, fromID, fromName, target)
 	}
 	if d.hosted.Owns(target) {
-		receipt, err := d.hosted.Deliver(ctx, "notify", "", from, string(fromName), target, params.Text)
+		kind := state.MessageNotify
+		if params.CorrelationID != "" {
+			kind = state.MessageReply
+		}
+		receipt, msgID, err := d.deliverHosted(ctx, "notify", "", from, target, state.PeerMessage{
+			Kind: kind, FromPeerID: peerIDString(fromID), FromName: string(fromName), CorrelationID: params.CorrelationID,
+			TraceID: params.DeliveryID, Text: params.Text, Attachments: params.Attachments,
+		})
 		if err != nil {
 			return NotifyResult{}, err
 		}
 		return NotifyResult{
 			Status: "sent", DeliveryState: "delivered", Reason: "runtime_accepted",
 			FromPeerID: fromID, FromPeerName: fromName, ToPeerID: target.PeerID, ToPeerName: target.DisplayName,
-			HookDelivery: receipt, DeliveryID: params.DeliveryID, Transport: "hosted",
+			HookDelivery: receipt, DeliveryID: params.DeliveryID, MessageID: msgID, Transport: "hosted",
 		}, nil
 	}
 
@@ -543,6 +550,23 @@ func (d *PeerDelivery) sessionIDForPeer(ctx context.Context, peerID *proto.PeerI
 
 // markPushed records that msg's body reached its recipient: a full push the
 // transport accepted. A nudge leaves it unread until fetched.
+// deliverHosted records msg for target and submits it to the hosted runtime
+// with its message id. A hosted agent has no read_message tool, so it always
+// gets the full body, whatever delivery mode is stored for it, and the
+// record is read once the runtime accepts it; a refused submission discards
+// the record.
+func (d *PeerDelivery) deliverHosted(ctx context.Context, kind, correlationID string, from, target *proto.Peer, msg state.PeerMessage) (map[string]any, string, error) {
+	msg.PeerID, msg.PeerName = string(target.PeerID), string(target.DisplayName)
+	recorded := d.messages.Record(ctx, msg)
+	receipt, err := d.hosted.Deliver(ctx, kind, correlationID, from, msg.FromName, target, msg.Text, messageID(recorded))
+	if err != nil {
+		d.messages.Discard(ctx, recorded)
+		return nil, "", err
+	}
+	d.markPushed(ctx, recorded, false)
+	return receipt, messageID(recorded), nil
+}
+
 func (d *PeerDelivery) markPushed(ctx context.Context, msg *state.PeerMessage, pull bool) {
 	if !pull {
 		d.messages.MarkRead(ctx, msg)
@@ -601,11 +625,14 @@ func (d *PeerDelivery) DeliverAsk(ctx context.Context, params DeliverAskParams) 
 		return AskResult{Transport: "inbox", HookDelivery: inboxHookDelivery(receipt), Inbox: &receipt}, nil
 	}
 	if d.hosted.Owns(target) {
-		receipt, err := d.hosted.Deliver(ctx, "ask", params.CorrelationID, from, string(fromName), target, params.Text)
+		receipt, msgID, err := d.deliverHosted(ctx, "ask", params.CorrelationID, from, target, state.PeerMessage{
+			Kind: state.MessageAsk, FromPeerID: stringValuePeer(from), FromName: string(fromName), CorrelationID: params.CorrelationID,
+			TraceID: params.CorrelationID, Text: params.Text, Attachments: params.Attachments, Question: params.Question,
+		})
 		if err != nil {
 			return AskResult{}, err
 		}
-		return AskResult{Transport: "hosted", HookDelivery: receipt}, nil
+		return AskResult{Transport: "hosted", HookDelivery: receipt, MessageID: msgID}, nil
 	}
 
 	d.gateOnSeedSettled(ctx, target)
@@ -729,6 +756,30 @@ func (d *PeerDelivery) completeACPAsk(ctx context.Context, cid string, reply, er
 	_ = d.completeRuntimeAsk(ctx, cid, reply, errText, "ACP error: ")
 }
 
+// completeHostedAsHolder is completeAsHolder for a report the runtime resends
+// until it is acknowledged: rather than wait behind a reply or hand-off that
+// holds the ask, it fails so the report comes again. A report from an agent
+// the ask was delegated away from is dropped; the new holder answers. done is
+// false only when the tracker no longer has the ask.
+func (d *PeerDelivery) completeHostedAsHolder(ctx context.Context, delivery HostedDelivery, reply, errText *string) (done bool, err error) {
+	cid := delivery.CorrelationID
+	ask, err := d.asks.Claim(cid)
+	switch {
+	case errors.Is(err, ErrAskNotFound):
+		return false, nil
+	case errors.Is(err, ErrAlreadyAnswered):
+		return true, nil
+	case err != nil:
+		return true, fmt.Errorf("ask %s is held by another reply or hand-off: %w", cid, err)
+	}
+	defer d.asks.Release(cid)
+	if string(ask.ToPeerID) != delivery.ToPeerID {
+		log.Printf("delivery: hosted report for ask %s from %s dropped: delegated to %s", cid, delivery.ToPeerID, ask.ToPeerID)
+		return true, nil
+	}
+	return true, d.completeRuntimeAsk(ctx, cid, reply, errText, "Hosted error: ")
+}
+
 // completeHosted closes an ask with the hosted runtime's answer, or with its
 // failure. An ask the tracker no longer holds (the daemon restarted while the
 // runtime worked) still reaches its asker as a framed reply. It fails when
@@ -751,10 +802,11 @@ func (d *PeerDelivery) completeHosted(ctx context.Context, delivery HostedDelive
 	if d.asks == nil {
 		return nil
 	}
-	// An ask still tracked closes here; one already closed (a job's completion
-	// closed it first) needs nothing more.
-	if _, ok := d.asks.Get(delivery.CorrelationID); ok {
-		return d.completeRuntimeAsk(ctx, delivery.CorrelationID, reply, errText, "Hosted error: ")
+	// An ask still tracked closes here, under its claim and only while this
+	// agent holds it; one already closed (a job's completion closed it first)
+	// needs nothing more.
+	if done, err := d.completeHostedAsHolder(ctx, delivery, reply, errText); done || err != nil {
+		return err
 	}
 	body := ""
 	if reply != nil {
@@ -973,7 +1025,7 @@ func (d *PeerDelivery) Broadcast(ctx context.Context, fromPeer, text string, exc
 		}
 		if d.hosted.Owns(p) {
 			excludeIDs[p.PeerID] = struct{}{}
-			if _, err := d.hosted.Deliver(ctx, "broadcast", "", fromObj, fromName, p, text); err != nil {
+			if _, err := d.hosted.Deliver(ctx, "broadcast", "", fromObj, fromName, p, text, ""); err != nil {
 				failed = append(failed, BroadcastFailure{PeerID: p.PeerID, Error: err.Error()})
 			} else {
 				sent = append(sent, p.DisplayName)
