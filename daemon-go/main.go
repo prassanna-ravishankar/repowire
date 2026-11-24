@@ -319,7 +319,7 @@ func runDaemon() {
 
 	// (1) Open the state store. NewStore owns the schema-v12 bootstrap/migration
 	// now, so a fresh Go daemon no longer needs Python to pre-create the DB.
-	store, err := state.NewStore(*dbPath)
+	store, err := state.NewStoreKeeping(*dbPath, cfg.Retention.Copies)
 	if err != nil {
 		log.Fatalf("open state db %q: %v", *dbPath, err)
 	}

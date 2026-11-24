@@ -8,6 +8,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -50,6 +51,8 @@ type Store struct {
 	// path is the db file, "" for an in-memory store; background readers open
 	// their own read-only connection to it (see AskRefs).
 	path string
+	// keepCopies is how many snapshots (snapshots.go) to keep; 0 keeps all.
+	keepCopies int
 	// retention is the sweep lifecycle, nil until StartRetention.
 	retention atomic.Pointer[retention]
 }
@@ -60,6 +63,15 @@ type Store struct {
 // version is a no-op; a future/unknown version is refused rather than
 // downgraded.
 func NewStore(dbPath string) (*Store, error) {
+	return NewStoreKeeping(dbPath, DefaultKeepCopies)
+}
+
+// NewStoreKeeping is NewStore keeping the newest keepCopies snapshots of the
+// database (0 keeps all). An existing database at an older schema is copied
+// next to itself before it is migrated, so the previous binary can still be
+// restored; a copy that fails refuses the migration (SkipMigrationCopyEnv
+// overrides).
+func NewStoreKeeping(dbPath string, keepCopies int) (*Store, error) {
 	// Create the parent dir (0700) so a fresh ~/.repowire path just works, matching
 	// database.py's mkdir+chmod. Skip when dbPath has no dir component (":memory:").
 	if dir := filepath.Dir(dbPath); dir != "" && dir != "." {
@@ -89,14 +101,27 @@ func NewStore(dbPath string) (*Store, error) {
 		_ = db.Close()
 		return nil, fmt.Errorf("state db schema version %d is newer than supported %d", version, SchemaVersion)
 	}
-	// version 0 (fresh) or any older version: apply the idempotent bootstrap.
+	// version 0 (fresh) or any older version: apply the idempotent bootstrap,
+	// after copying an existing database.
+	copied := ""
 	if version != SchemaVersion {
+		if copied, err = premigrationCopy(db, dbPath, version, snapshotNow()); err != nil {
+			_ = db.Close()
+			return nil, err
+		}
 		if err := migrate(db); err != nil {
 			_ = db.Close()
 			return nil, fmt.Errorf("migrate state db: %w", err)
 		}
 	}
-	store := &Store{db: db, path: dbPath}
+	store := &Store{db: db, path: dbPath, keepCopies: keepCopies}
+	if copied != "" {
+		// The copy is on disk either way: a bookkeeping failure is logged,
+		// not a reason to refuse to start.
+		if err := store.recordMigrationSnapshot(context.Background(), copied, version); err != nil {
+			log.Printf("state: copied the database to %s before migrating, but could not record it: %v", copied, err)
+		}
+	}
 	if dbPath != ":memory:" {
 		if err := store.importLegacy(context.Background(), filepath.Dir(dbPath)); err != nil {
 			_ = db.Close()
