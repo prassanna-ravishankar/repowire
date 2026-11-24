@@ -419,9 +419,15 @@ Where it differs from the draft above:
 - Notify traces record no `message_id`, so a notify's read state is not
   shown. A queued notify is traced as `pending`; the delivery queue, which
   now keeps the trace's delivery id, says whether it still waits (`queued`,
-  and `undelivered` past the threshold). Once it left the queue, or when it
-  went out on a transport with no receipt (`websocket_sent`), it reads
-  `unverified`. A cross-machine notify reads `remote_<outcome>`.
+  and `undelivered` past the threshold). The queue records how the notify
+  left it as a stage under its delivery id: `dequeued` (handed to the
+  reconnected peer), `expired`, or `dropped` (the per-peer cap, or a peer
+  that cannot take input), each read as itself. Expiry is recorded lazily,
+  on the next enqueue or drain: until then an expired notify is no longer
+  queued and reads `unverified`. One
+  sent on a transport with no receipt (`websocket_sent`), or queued before
+  the queue recorded outcomes, reads `unverified`. A cross-machine notify
+  reads `remote_<outcome>`.
 - A busy holder's ask is traced as `websocket_sent` with
   `transport: deferred`, which reads `deferred`.
 - `protected` is computed on the envelope (the human, a service surface, or

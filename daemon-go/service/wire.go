@@ -431,13 +431,14 @@ func (w *Wire) reduceAsk(t *WireThread, rows []state.TraceRow, ask *Ask, tracked
 // reduceNotify reads a notify's stages as the messaging routes record them:
 // a delivery receipt, a failure, pending (queued for an offline recipient),
 // remote_<outcome> across machines, or websocket_sent without a receipt.
-// For a pending notify the delivery queue says whether it still waits; once
-// it has left the queue (drained or expired) no stage says which, so it
-// reads unverified.
+// The delivery queue records how a queued notify left it: dequeued (handed
+// to the reconnected peer, not a receipt), or expired or dropped (failures).
+// A pending notify with no such stage is asked about: still queued, or,
+// for one queued before the queue recorded outcomes, unverified.
 func (w *Wire) reduceNotify(ctx context.Context, t *WireThread, id string, rows []state.TraceRow) error {
 	var sender, recipient proto.PeerID
 	var pendingAt time.Time
-	delivered, failed, unverified, remote := false, false, false, ""
+	delivered, failed, unverified, dequeued, remote, outcome := false, false, false, false, "", ""
 	for _, r := range rows {
 		at := parseWireTS(r.TS)
 		if t.CreatedAt.IsZero() {
@@ -453,10 +454,14 @@ func (w *Wire) reduceNotify(ctx context.Context, t *WireThread, id string, rows 
 		switch {
 		case wireDelivered[r.Stage]:
 			delivered = true
+		case r.Stage == state.QueueExpired || r.Stage == state.QueueDropped:
+			outcome = r.Stage // the queue's own failure, shown as itself
 		case r.Status == "fail":
 			failed = true
 		case r.Stage == "pending":
 			pendingAt = at
+		case r.Stage == state.QueueDequeued:
+			dequeued = true
 		case r.Stage == "websocket_sent":
 			unverified = true
 		case strings.HasPrefix(r.Stage, "remote_"):
@@ -467,10 +472,14 @@ func (w *Wire) reduceNotify(ctx context.Context, t *WireThread, id string, rows 
 	switch {
 	case delivered:
 		t.State = "delivered"
+	case outcome != "":
+		t.State = outcome
 	case failed:
 		t.State = "failed"
 	case remote != "":
 		t.State = remote // the other machine owns the rest
+	case dequeued:
+		t.State = state.QueueDequeued
 	case !pendingAt.IsZero():
 		queued, err := w.ledger.DeliveryQueued(ctx, id, w.now())
 		if err != nil {

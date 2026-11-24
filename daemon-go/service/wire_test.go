@@ -271,9 +271,14 @@ func TestWireReadsTheStagesTheDaemonWrites(t *testing.T) {
 	notify("notif-noreceipt", state.TraceRow{Stage: "websocket_sent", Detail: map[string]any{"transport": "ws", "verified": false}})
 	notify("notif-remote", state.TraceRow{Stage: "remote_queued"})
 	notify("notif-failed", state.TraceRow{Stage: "no_connection", Status: "fail"})
+	// The queue's own outcomes for a queued notify.
+	notify("notif-dequeued", state.TraceRow{Stage: "pending"}, state.TraceRow{Stage: state.QueueDequeued, Status: "ok"})
+	notify("notif-expired", state.TraceRow{Stage: "pending"}, state.TraceRow{Stage: state.QueueExpired, Status: "fail"})
+	notify("notif-dropped", state.TraceRow{Stage: "pending"}, state.TraceRow{Stage: state.QueueDropped, Status: "fail", Detail: map[string]any{"reason": "queue_cap"}})
 	for id, want := range map[string]string{
 		"notif-queued": "queued undelivered", "notif-drained": "unverified", "notif-receipt": "delivered",
 		"notif-noreceipt": "unverified", "notif-remote": "remote_queued", "notif-failed": "failed",
+		"notif-dequeued": "dequeued", "notif-expired": "expired", "notif-dropped": "dropped",
 	} {
 		got, _, err := w.Thread(ctx, id)
 		if err != nil {
