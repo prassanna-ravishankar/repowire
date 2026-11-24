@@ -174,9 +174,9 @@ cannot honour is declared unsupported, not faked.
 | Reserve | placeholder pane | none | none | none |
 | Launch | `respawn-pane -k` with the command | spawn with its own process group, lazily on first prompt (today) | `thread/start` through the bridge | `Hosted.Spawn`: allocate, then `CreateAgent` (a reclaimed peer reattaches to its agent and conversation) |
 | Bind | the hook's `agent_pid` and start time | the child pid | the thread id | the hosted agent id, which is the peer id |
-| Stop | proof, SIGTERM or `kill-pane` | signal its own group, close stdio | `thread/interrupt`, `thread/unsubscribe` | `Hosted.Retire`: `RetireAgent`, then retire the peer (final; the transcript stays) |
-| Watch | pid exit (pidfd or kqueue) | child exit | the bridge's thread-closed event | none: no process. The gateway socket and reports are the evidence |
-| Sleep and wake | none | none | none | the Worker's own concern. The peer stays addressable while asleep, and a submission wakes it |
+| Stop | proof, SIGTERM or `kill-pane` | signal its own group, close stdio | `thread/interrupt`, `thread/unsubscribe` | `Hosted.Retire`: `RetireAgent` (a 404 counts as done), then `MarkOffline(retire)`: a soft retirement, final for input; the transcript stays. The Worker's `/abort` (one operation or all) is the non-final control, and the daemon does not expose it |
+| Watch | pid exit (pidfd or kqueue) | child exit | the bridge's thread-closed event | none: no process. Inbound `Submit` fails loudly if the runtime refuses, reports replay from the Worker outbox, and the gateway socket gates only the agent's outbound mesh tools |
+| Sleep and wake | none | none | none | the Worker's own concern (idle, working, parked, failed and retired live in its Gateway). The daemon sees only addressable plus busy: BUSY while a submission is in flight |
 | Attach | `switch-client` or `attach`, then window and pane | none | to verify (open question) | none; the transcript is observe-only |
 | Adopt | pid and start time reconcile | none: does not survive a daemon restart | the bridge resubscribes | `Hosted.Restore`: mappings, plus unsettled operations resubmitted by id |
 
@@ -184,8 +184,8 @@ Two consequences for the socket's shape:
 - **Watch is optional.** For a plug without a process (hosted), "ended"
   is only what the plug reports (a retire, or a refusal), and the daemon
   never infers death from silence.
-- **Sleeping is not ending.** A plug may report an execution as
-  addressable but not running. The registry must keep such a peer
+- **Sleeping is not ending.** A plug reports at most "addressable" and
+  "busy". A plug may report an execution as addressable but not running. The registry must keep such a peer
   reachable, not offline. The hosted backend already does this by routing
   submissions durably, as for the human inbox.
 
