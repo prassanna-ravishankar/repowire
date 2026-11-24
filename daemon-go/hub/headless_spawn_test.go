@@ -82,13 +82,16 @@ func TestHeadlessSpawnRefusals(t *testing.T) {
 // dropping their child; kill_peer then closes the peer.
 func TestACPPlugStopsAnACPPeerThroughKill(t *testing.T) {
 	p := &proto.Peer{PeerID: "repow-headless-1", DisplayName: "proj-claude-code", Backend: proto.AgentClaudeCode, Circle: "default", Role: proto.RoleAgent,
-		Metadata: map[string]any{"acp": map[string]any{"command": "npx"}}}
+		Metadata: map[string]any{"headless": true, "acp": map[string]any{"command": "npx"}}}
 	reg := &fakeSpawnRegistry{peers: []*proto.Peer{p}}
 	srv, svc := newSpawnTestHub(t, reg, &fakeTmux{killOK: true})
 	var dropped []proto.PeerID
 	svc.WithPeerContainers(service.NewACPContainer(func(id proto.PeerID) { dropped = append(dropped, id) }))
 	if svc.PeerContainerFor(&proto.Peer{PeerID: "x"}) != nil {
 		t.Fatal("a peer without metadata.acp was claimed")
+	}
+	if svc.PeerContainerFor(&proto.Peer{PeerID: "y", Metadata: map[string]any{"acp": map[string]any{"command": "npx"}}}) != nil {
+		t.Fatal("an ACP peer the headless plug did not create was claimed")
 	}
 	resp := postSpawnJSON(t, srv, "/kill-peer", KillPeerRequest{PeerIdentifier: string(p.PeerID)})
 	defer resp.Body.Close()

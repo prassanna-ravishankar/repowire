@@ -962,6 +962,16 @@ func (h *Hub) spawnHeadless(ctx context.Context, req SpawnRequest, backend proto
 			"hint":  "Enable experiments.headless_claude_code.enabled and experiments.acp_broker_client in ~/.repowire/config.yaml.",
 		}}
 	}
+	if (req.Profile != nil && *req.Profile != "") || req.Command != nil || req.SourcePane != "" {
+		return SpawnResponse{}, &service.SpawnError{Status: http.StatusUnprocessableEntity, Detail: map[string]any{
+			"error": "headless_options",
+			"hint":  "Headless spawn takes no profile, command or source pane: it launches the configured ACP adapter (experiments.headless_claude_code).",
+		}}
+	}
+	// claude-code must be a configured spawn backend, as for a pane spawn.
+	if _, err := h.spawn.svc.ResolveCommand(backend, nil); err != nil {
+		return SpawnResponse{}, err
+	}
 	path, err := h.spawn.svc.ValidatePath(req.Path)
 	if err != nil {
 		return SpawnResponse{}, err

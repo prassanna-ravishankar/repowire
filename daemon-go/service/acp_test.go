@@ -72,6 +72,9 @@ func TestACPHelperProcess(t *testing.T) {
 			result = map[string]any{"sessionId": "echo-session"}
 		case "session/prompt":
 			text := message.Params.Prompt[0].Text
+			if text == "hang" {
+				time.Sleep(time.Hour) // a turn that never ends (a long tool run, a permission wait)
+			}
 			if err := encoder.Encode(map[string]any{"jsonrpc": "2.0", "method": "session/update", "params": map[string]any{"sessionId": "echo-session", "update": map[string]any{"sessionUpdate": "agent_message_chunk", "content": map[string]any{"type": "text", "text": "[echo] " + text}}}}); err != nil {
 				t.Fatal(err)
 			}
@@ -99,5 +102,34 @@ func TestACPRouteRequiresFlagAndValidMetadata(t *testing.T) {
 	decision, ok := transport.ACPRoute(peer)
 	if !ok || decision.Spec.Command != "agent" || len(decision.Spec.Args) != 1 {
 		t.Fatalf("unexpected decision: %#v, %v", decision, ok)
+	}
+}
+
+// Dropping a peer's client ends a prompt in flight at once (kill_peer on a
+// headless worker), instead of waiting for the turn to finish.
+func TestACPManagerDropEndsAPromptInFlight(t *testing.T) {
+	manager := NewACPManager()
+	defer manager.Close()
+	spec := ACPPeerSpec{
+		PeerID: "repow-test-hang", Command: os.Args[0], Args: []string{"-test.run=^TestACPHelperProcess$"},
+		CWD: t.TempDir(), Env: map[string]string{"REPOWIRE_ACP_TEST_HELPER": "1"},
+	}
+	done := make(chan error, 1)
+	if err := manager.Prompt(spec, "hang", func(_ ACPPromptResult, err error) { done <- err }); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(300 * time.Millisecond) // let the prompt reach the child and block there
+	start := time.Now()
+	manager.Drop(spec.PeerID)
+	if waited := time.Since(start); waited > 3*time.Second {
+		t.Fatalf("Drop waited %s for the prompt", waited)
+	}
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("the hung prompt reported success")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the hung prompt never ended")
 	}
 }
