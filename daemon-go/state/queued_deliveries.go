@@ -370,3 +370,5 @@ func (s *Store) DeleteDeliveriesForPeer(ctx context.Context, peerID string) (int
 	n, _ := res.RowsAffected()
 	return int(n), nil
 }
+
+var queuedDeliveryRetention = tableRetention{tables: []string{"queued_deliveries"}, exempt: "live queue with its own TTL (daemon.delivery_queue_ttl_seconds)"}

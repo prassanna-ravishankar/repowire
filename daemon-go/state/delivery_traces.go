@@ -291,3 +291,23 @@ func (s *Store) AssistantTurnsBetween(ctx context.Context, peerID string, from, 
 	}
 	return n, nil
 }
+
+// traceContentKeys hold authored text in a trace stage's detail: the ask,
+// its reply, a delegation note, and the routing input's copy of the ask.
+var traceContentKeys = []string{"$.text", "$.reply", "$.note", "$.request.text"}
+
+// deliveryTraceRetention: a stage is a record; its text is content.
+var deliveryTraceRetention = tableRetention{
+	tables: []string{"delivery_traces"},
+	rules: func(c retentionCutoffs) (records, content []sweepRule) {
+		if c.records != "" {
+			records = append(records, sweepRule{name: "delivery_traces.delete", table: "delivery_traces", where: "ts < ?", args: []any{c.records}})
+		}
+		if c.content != "" {
+			content = append(content, sweepRule{name: "delivery_traces.strip", table: "delivery_traces",
+				where: "ts < ? AND " + jsonPresent("detail_json", traceContentKeys),
+				set:   jsonStrip("detail_json", traceContentKeys), args: []any{c.content}})
+		}
+		return records, content
+	},
+}

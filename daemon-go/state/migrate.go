@@ -485,3 +485,5 @@ func ensureDescriptionSetAtColumn(tx *sql.Tx) error {
 	}
 	return nil
 }
+
+var migrationRetention = tableRetention{tables: []string{"schema_migrations"}, exempt: "schema bookkeeping"}

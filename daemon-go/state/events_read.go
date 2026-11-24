@@ -58,3 +58,31 @@ func (s *Store) EventsOfTypes(ctx context.Context, types ...string) ([]EventRow,
 	sort.SliceStable(out, func(i, j int) bool { return out[i].At.Before(out[j].At) })
 	return out, nil
 }
+
+// Message events whose payload carries authored text, the keys holding it,
+// and the transcript events that are nothing but text.
+var (
+	contentEventTypes = []string{"notification", "broadcast", "ask", "query", "response", "ask_delegated"}
+	transcriptTypes   = []string{"chat_turn", "chat_turn_delta"}
+	eventContentKeys  = []string{"$.text", "$.message", "$.note", "$.question", "$.attachments"}
+)
+
+// eventRetention: an event is a record; message text is content, and a
+// transcript event is deleted with its text.
+var eventRetention = tableRetention{
+	tables: []string{"events"},
+	rules: func(c retentionCutoffs) (records, content []sweepRule) {
+		if c.records != "" {
+			records = append(records, sweepRule{name: "events.delete", table: "events", where: "timestamp < ?", args: []any{c.records}})
+		}
+		if c.content != "" {
+			content = append(content,
+				sweepRule{name: "events.delete_transcripts", table: "events",
+					where: "type IN " + inList(transcriptTypes) + " AND timestamp < ?", args: []any{c.content}},
+				sweepRule{name: "events.strip", table: "events",
+					where: "type IN " + inList(contentEventTypes) + " AND timestamp < ? AND " + jsonPresent("payload_json", eventContentKeys),
+					set:   jsonStrip("payload_json", eventContentKeys), args: []any{c.content}})
+		}
+		return records, content
+	},
+}

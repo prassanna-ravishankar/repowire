@@ -23,9 +23,8 @@ retention:
   records_days: 180   # the rows that say who did what, when, and how it ended
 ```
 
-`0` keeps a class forever; otherwise 7 to 36500 days, and at least the ask
-lifetime (`daemon.prune_max_age_hours`, 24 hours by default), so an open
-ask's inbox item and refs, which carry the human's reply, outlive it. Any other value warns and keeps the default.
+`0` keeps a class forever; a negative, non-numeric or over-36500 value
+warns and keeps the default.
 When `records_days` is shorter, content goes with its record.
 
 | Store | At `content_days` | At `records_days` |
@@ -51,14 +50,32 @@ Exempt, because they bound live state rather than history: open jobs,
 schedules, identity and resume tables, queued deliveries, the in-memory ask
 tracker, retirement records, the dashboard's 500-event window.
 
-## Sweeper
+## Ownership
 
-`state.Store.Sweep(ctx, policy, now)` runs the rules above, records first,
-in batches of 500 rows per statement, and returns per-rule counts.
-`service.Retention.MaybeSweep` runs it off the request path, at most hourly
-and one at a time, from `Registry.LazyRepair` and once at daemon start. A
-sweep that changed anything journals one `retention_swept` event with the
-counts. The three earlier ad-hoc sweeps are removed.
+Each piece lives with what it expires, so its lifecycle has one owner.
+
+- **Rules:** each table declares a `tableRetention` (its rules per class,
+  or why it is exempt) in its own `state/<domain>.go` file.
+  `TestEveryTableDeclaresRetention` reads `sqlite_master` and fails for a
+  table without exactly one declaration, so a new table cannot silently go
+  unswept.
+- **Sweep lifecycle:** the store. `Store.StartRetention(policy, plugs)`
+  sweeps at once; later sweeps start after an event write, at most hourly,
+  one at a time, off the writer's path. A second start is refused.
+  `Store.Close` cancels a sweep in flight and waits for it before closing
+  the database. Sweeps run every table's records rules, then every content
+  rule, in batches of 500 rows.
+- **Plugs:** what the store does not hold plugs into the same sweep
+  (`RetentionPlugs`). The attachment routes, which own the directory,
+  provide `hub.ExpireAttachments` as a pass; the registry provides `Emit`,
+  so `retention_swept` reaches the journal and live subscribers like any
+  other event.
+- **Open asks:** the policy. An open ask still reads its peer message,
+  inbox item, refs, attachments and trace, so `RetentionPolicy` never lets
+  either class expire anything younger than the ask lifetime
+  (`daemon.prune_max_age_hours`). Every table and the attachment files get
+  this without a rule of their own, so config needs no floor; a shorter
+  setting warns in `config check` and acts as the ask lifetime.
 
 ## Readers
 

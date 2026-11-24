@@ -421,22 +421,24 @@ func TestRetentionDefaultsOverridesAndBadValues(t *testing.T) {
 	}
 }
 
-func TestRetentionOutlivesTheAskLifetime(t *testing.T) {
+// A retention shorter than the ask lifetime is honoured as the ask lifetime;
+// config says so instead of the sweep raising it silently.
+func TestRetentionShorterThanTheAskLifetimeWarns(t *testing.T) {
 	t.Setenv("REPOWIRE_RETENTION__CONTENT_DAYS", "")
 	t.Setenv("REPOWIRE_RETENTION__RECORDS_DAYS", "")
-	cfg := loadYAML(t, "daemon:\n  prune_max_age_hours: 480\nretention:\n  content_days: 10\n  records_days: 30\n")
-	if cfg.Retention != (RetentionConfig{ContentDays: 20, RecordsDays: 30}) || !strings.Contains(strings.Join(cfg.Warnings, "\n"), "retention.content_days") {
+	cfg := loadYAML(t, "daemon:\n  prune_max_age_hours: 480\nretention:\n  content_days: 10\n  records_days: 0\n")
+	warnings := strings.Join(cfg.Warnings, "\n")
+	if cfg.Retention.ContentDays != 10 || !strings.Contains(warnings, "retention.content_days (10 days) is shorter than the ask lifetime") || strings.Contains(warnings, "records_days") {
 		t.Fatalf("retention %+v, warnings %q", cfg.Retention, cfg.Warnings)
 	}
-	t.Setenv("REPOWIRE_DAEMON__PRUNE_MAX_AGE_HOURS", "NaN")
-	if cfg := loadYAML(t, "retention:\n  content_days: 3\n"); cfg.Retention.ContentDays != 7 {
-		t.Fatalf("unreadable ask lifetime: retention %+v", cfg.Retention)
+	if cfg := loadYAML(t, "retention:\n  content_days: 2\n"); len(cfg.Warnings) != 0 {
+		t.Fatalf("2 days against a 24-hour ask lifetime warned: %q", cfg.Warnings)
 	}
 }
 
 func TestRetentionRejectsUnrepresentableDays(t *testing.T) {
 	t.Setenv("REPOWIRE_RETENTION__RECORDS_DAYS", "")
-	for _, value := range []string{".nan", ".inf", "1e12", "0.5", "6"} {
+	for _, value := range []string{".nan", ".inf", "1e12"} {
 		t.Setenv("REPOWIRE_RETENTION__CONTENT_DAYS", "")
 		cfg, err := tryLoadYAML(t, "retention:\n  content_days: "+value+"\n")
 		if err != nil {

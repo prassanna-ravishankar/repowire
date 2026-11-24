@@ -192,3 +192,18 @@ func (s *Store) PeerMessageDeliveries(ctx context.Context) (map[string]string, e
 	}
 	return out, rows.Err()
 }
+
+// peerMessageRetention: a message is nothing but content. A peer's delivery
+// mode is its live choice, not history.
+var (
+	peerMessageRetention = tableRetention{
+		tables: []string{"peer_messages"},
+		rules: func(c retentionCutoffs) (records, content []sweepRule) {
+			if c.content != "" {
+				content = append(content, sweepRule{name: "peer_messages.delete", table: "peer_messages", where: "created_at < ?", args: []any{c.content}})
+			}
+			return nil, content
+		},
+	}
+	peerMessageDeliveryRetention = tableRetention{tables: []string{"peer_message_delivery"}, exempt: "a peer's delivery mode is live configuration"}
+)

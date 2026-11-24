@@ -776,3 +776,21 @@ func boolToInt(b bool) int {
 	}
 	return 0
 }
+
+// workRetention: a terminal job is a record and keeps its request and
+// result (the work product) until it goes; a live job is never touched.
+var workRetention = tableRetention{
+	tables: []string{"tracked_work"},
+	rules: func(c retentionCutoffs) (records, content []sweepRule) {
+		if c.records != "" {
+			terminal := make([]string, 0, len(terminalWorkStates))
+			for state := range terminalWorkStates {
+				terminal = append(terminal, state)
+			}
+			sort.Strings(terminal)
+			records = append(records, sweepRule{name: "tracked_work.delete", table: "tracked_work",
+				where: "state IN " + inList(terminal) + " AND COALESCE(completed_at, updated_at) < ?", args: []any{c.records}})
+		}
+		return records, nil
+	},
+}

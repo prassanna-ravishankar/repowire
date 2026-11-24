@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/repowire/repowire/daemon-go/proto"
 	"gopkg.in/yaml.v3"
@@ -40,15 +41,9 @@ type Config struct {
 	strategyUnusable bool
 }
 
-// A retention setting is 0 (keep forever) or minRetentionDays to
-// maxRetentionDays. The floor, raised to the ask lifetime
-// (daemon.prune_max_age_hours) when that is longer, outlives the live state
-// swept rows back: an open ask's inbox item carries the human's reply. The
-// ceiling is what a time.Duration holds with room to spare (100 years).
-const (
-	minRetentionDays = 7
-	maxRetentionDays = 36500
-)
+// maxRetentionDays bounds a retention setting to what a time.Duration holds
+// with room to spare (100 years; a Duration tops out near 292).
+const maxRetentionDays = 36500
 
 // RetentionConfig is how long the daemon keeps what it stores
 // (rfcs/retention.md). Content is text a peer or the human wrote; records are
@@ -56,6 +51,12 @@ const (
 type RetentionConfig struct {
 	ContentDays float64 `yaml:"content_days"`
 	RecordsDays float64 `yaml:"records_days"`
+}
+
+// Durations is the policy as durations; zero keeps a class forever.
+func (c RetentionConfig) Durations() (content, records time.Duration) {
+	day := float64(24 * time.Hour)
+	return time.Duration(c.ContentDays * day), time.Duration(c.RecordsDays * day)
 }
 
 type DaemonConfig struct {
@@ -627,18 +628,23 @@ func normalize(cfg *Config) {
 		cfg.Relay.URL = defaultRelayURL
 	}
 	defaults := Defaults().Retention
-	floor := float64(minRetentionDays)
-	if asks := cfg.Daemon.PruneMaxAgeHours / 24; asks > floor && asks <= maxRetentionDays {
-		floor = asks
-	}
 	for _, days := range []struct {
 		value    *float64
 		fallback float64
 		key      string
 	}{{&cfg.Retention.ContentDays, defaults.ContentDays, "content_days"}, {&cfg.Retention.RecordsDays, defaults.RecordsDays, "records_days"}} {
-		if v := *days.value; v != 0 && !(v >= floor && v <= maxRetentionDays) {
-			*days.value = max(days.fallback, floor)
-			cfg.Warnings = append(cfg.Warnings, fmt.Sprintf("config: retention.%s is ignored: it must be 0 (keep forever) or %g to %d days", days.key, floor, maxRetentionDays))
+		if v := *days.value; !(v >= 0 && v <= maxRetentionDays) {
+			*days.value = days.fallback
+			cfg.Warnings = append(cfg.Warnings, fmt.Sprintf("config: retention.%s is ignored: it must be 0 (keep forever) or a number of days up to %d", days.key, maxRetentionDays))
+		}
+		// The sweep never expires anything younger than an ask may stay open
+		// (state.RetentionPolicy.Effective); say so rather than raise it silently.
+		askHours := cfg.Daemon.PruneMaxAgeHours
+		if !(askHours > 0) {
+			askHours = 24 // the ask tracker's own default
+		}
+		if v := *days.value; v > 0 && v*24 < askHours {
+			cfg.Warnings = append(cfg.Warnings, fmt.Sprintf("config: retention.%s (%g days) is shorter than the ask lifetime (daemon.prune_max_age_hours, %g hours): it acts as %g days so open asks keep their data", days.key, v, askHours, askHours/24))
 		}
 	}
 	if len(cfg.Experiments.RemoteToolApproval.GatedTools) == 0 {
