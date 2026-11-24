@@ -174,8 +174,9 @@ Your Stop-hook reminder clears and theirs starts. Their reply reaches the
 original asker exactly once, framed `[ack #cid from @them via @you]`.
 
 Delegation is refused, and the ask stays with you, when the target is unknown,
-not addressable, outside your circle rules, the asker (decline instead), or
-offline (no live connection). A busy target receives the ask through its next
+not addressable, outside your circle rules, the asker (decline instead), a peer
+that held this ask before (`former_holder`: an ask never returns, so a former
+holder's late reply cannot pass as current), or offline (no live connection). A busy target receives the ask through its next
 Stop reminder, as a fresh ask would. Cross-machine asks, the dispatch ask of a
 live job, and chains of 8 hops are not delegable. Once you delegate, your own
 `ack`, `decline`, or `answer` on that ask is refused with `ask_delegated`.

@@ -267,6 +267,7 @@
       "FromPeerID": "ghost",
       "FromPeerName": "ghost",
       "FromRepowireSessionID": null,
+      "Generation": 0,
       "ParentID": null,
       "PendingReply": null,
       "PendingReplyAt": null,

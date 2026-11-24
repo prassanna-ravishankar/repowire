@@ -267,7 +267,7 @@ func TestRuntimeCompletionOnlyFromTheHolder(t *testing.T) {
 	}
 
 	cid := openAsk(t, tr)
-	d.completeAsHolder(cid, "repow-b", complete("beta"))
+	d.completeAsHolder(cid, "repow-b", 0, complete("beta"))
 	waitRan("beta")
 
 	// A completion arriving during a hand-off that fails lands once the ask
@@ -279,7 +279,7 @@ func TestRuntimeCompletionOnlyFromTheHolder(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	d.completeAsHolder(cid, "repow-b", complete("beta"))
+	d.completeAsHolder(cid, "repow-b", 0, complete("beta"))
 	noneRan()
 	if !tr.UndoDelegation(ctx, cid, hop) {
 		t.Fatal("undo refused")
@@ -291,16 +291,19 @@ func TestRuntimeCompletionOnlyFromTheHolder(t *testing.T) {
 	if _, _, err := delegateClaimed(t, tr, cid, DelegateParams{By: "repow-b", To: "repow-c", ToName: "gamma"}); err != nil {
 		t.Fatal(err)
 	}
-	d.completeAsHolder(cid, "repow-b", complete("beta"))
+	d.completeAsHolder(cid, "repow-b", 0, complete("beta"))
 	noneRan()
-	d.completeAsHolder(cid, "repow-c", complete("gamma"))
+	// The right holder with an older generation is a stale completion.
+	d.completeAsHolder(cid, "repow-c", 0, complete("gamma"))
+	noneRan()
+	d.completeAsHolder(cid, "repow-c", 1, complete("gamma"))
 	waitRan("gamma")
 
 	// Nothing runs on a closed ask, even work that was waiting for it.
 	if _, err := tr.Claim(cid); err != nil {
 		t.Fatal(err)
 	}
-	d.completeAsHolder(cid, "repow-c", complete("gamma"))
+	d.completeAsHolder(cid, "repow-c", 1, complete("gamma")) // the current generation: only the close stops it
 	tr.Close(ctx, cid, "ack")
 	tr.Release(cid)
 	noneRan()
@@ -462,5 +465,44 @@ func TestEvictionUnderAClaimCannotLeakIntoAReplacement(t *testing.T) {
 	}
 	if got, _ := tr.Get(q); got.Closed || got.Answer != nil {
 		t.Fatalf("replacement = %+v", got)
+	}
+}
+
+// Each hand-off that stands is a new assignment generation, an undone one is
+// not, and an ask never returns to a peer that held it.
+func TestDelegationGenerationsAndNoWayBack(t *testing.T) {
+	ctx := context.Background()
+	tr := NewAskTracker(time.Hour)
+	cid, err := tr.Register(ctx, RegisterAskParams{FromPeerID: "repow-a", ToPeerID: "repow-b", SkipHistory: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	gen := func() int {
+		ask, _ := tr.Get(cid)
+		return ask.Generation
+	}
+	if gen() != 0 {
+		t.Fatalf("new ask at generation %d", gen())
+	}
+	if _, err := tr.Claim(cid); err != nil {
+		t.Fatal(err)
+	}
+	_, hop, err := tr.Delegate(ctx, cid, DelegateParams{By: "repow-b", To: "repow-c"})
+	if err != nil || gen() != 1 || hop.Generation != 1 {
+		t.Fatalf("delegate: gen %d hop %d err %v", gen(), hop.Generation, err)
+	}
+	if !tr.UndoDelegation(ctx, cid, hop) || gen() != 0 {
+		t.Fatalf("undo left generation %d", gen())
+	}
+	tr.Release(cid)
+
+	if _, _, err := delegateClaimed(t, tr, cid, DelegateParams{By: "repow-b", To: "repow-c"}); err != nil || gen() != 1 {
+		t.Fatalf("delegate to c: gen %d err %v", gen(), err)
+	}
+	if _, _, err := delegateClaimed(t, tr, cid, DelegateParams{By: "repow-c", To: "repow-b"}); !errors.Is(err, ErrFormerHolder) {
+		t.Fatalf("back to b: %v", err)
+	}
+	if _, _, err := delegateClaimed(t, tr, cid, DelegateParams{By: "repow-c", To: "repow-d"}); err != nil || gen() != 2 {
+		t.Fatalf("delegate to d: gen %d err %v", gen(), err)
 	}
 }
