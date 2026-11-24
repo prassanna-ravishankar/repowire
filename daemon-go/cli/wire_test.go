@@ -21,14 +21,15 @@ func TestWireVerbsCallTheDaemon(t *testing.T) {
 	c := &client{base: server.URL, http: server.Client()}
 
 	for name, code := range map[string]int{
-		"ls":   wireCommand(c, []string{"ls", "--stuck", "--circle", "dev", "--since", "7d"}),
-		"show": wireCommand(c, []string{"show", "ask-1"}),
+		"ls":         wireCommand(c, []string{"ls", "--stuck", "--circle", "dev", "--since", "7d"}),
+		"show":       wireCommand(c, []string{"show", "ask-1"}),
+		"visibility": wireCommand(c, []string{"visibility", "beta", "private"}),
 	} {
 		if code != 0 {
 			t.Fatalf("%s exited %d", name, code)
 		}
 	}
-	want := map[string]bool{"GET /wire/threads?circle=dev&since=7d&stuck_only=true": false, "GET /wire/threads/ask-1": false}
+	want := map[string]bool{"GET /wire/threads?circle=dev&since=7d&stuck_only=true": false, "GET /wire/threads/ask-1": false, "POST /peers/beta/wire-visibility": false}
 	for _, call := range got {
 		if _, ok := want[call]; ok {
 			want[call] = true

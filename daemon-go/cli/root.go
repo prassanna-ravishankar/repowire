@@ -90,6 +90,7 @@ func newRootCommand() *cobra.Command {
 		{"reassign THREAD_ID PEER --reason R", "Move an open ask to another peer (operator; needs the daemon token)"},
 		{"nudge THREAD_ID [--note N]", "Remind an open ask's holder, at most every 10 minutes (operator)"},
 		{"cancel THREAD_ID --reason R", "Cancel an open ask; the asker gets the reason (operator)"},
+		{"visibility PEER visible|private", "Set whether orchestrators may act on a peer's threads (operator)"},
 	})
 	wire.RunE = func(*cobra.Command, []string) error { return codeError(runWire(nil)) }
 	root.AddCommand(wire)
