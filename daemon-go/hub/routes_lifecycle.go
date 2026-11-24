@@ -120,35 +120,22 @@ func (h *LifecycleHandler) watchedAlive(p *proto.Peer) bool {
 }
 
 // HandleAgentExited offlines the peer whose watched agent (pid, in paneID)
-// exited, as pane death does: non-terminal, transport severed, pane runtime
-// state cleared. It acts only while the record still names that agent in that
-// pane, checked atomically with registration, so a runtime that re-registered
-// meanwhile is left alone; and it clears the pane's runtime files only while
-// they still describe that agent. The spawn ownership is kept: the pane may
-// still hold a shell, and kill_peer needs the proof to clean it up.
+// exited (non-terminal). It acts only while the record still names that
+// agent in that pane, checked atomically with registration, so a runtime that
+// re-registered meanwhile is left alone. Nothing else is touched, because
+// each of the rest has its owner: the agent's ws-hook closes its own socket
+// when the agent exits; pane death clears the pane's runtime files; and the
+// spawn ownership stays so kill_peer can clean up a pane left holding a shell
+// (kill proof requires a running agent, so stale pane metadata proves nothing).
 func (h *LifecycleHandler) HandleAgentExited(ctx context.Context, id proto.PeerID, paneID string, pid int) {
 	applied, err := h.reg.MarkOfflineIfRuntime(ctx, id, paneID, pid)
 	if err != nil {
 		log.Printf("agent_exited: mark_offline %s failed: %v", id, err)
 		return
 	}
-	if !applied {
-		return
+	if applied {
+		log.Printf("agent_exited: %s (%s) marked offline by its exit watch", id, paneID)
 	}
-	if h.transport != nil {
-		if p, ok := h.reg.GetPeer(id); ok && p.AgentPID != nil && *p.AgentPID == pid {
-			_ = h.transport.Close(id)
-		}
-	}
-	if meta := clienthooks.ReadPaneRuntimeMetadata(paneID); meta == nil || int(floatValue(meta["agent_pid"])) == pid {
-		h.clearPaneRuntimeState(paneID)
-	}
-	log.Printf("agent_exited: %s (%s) marked offline by its exit watch", id, paneID)
-}
-
-func floatValue(v any) float64 {
-	f, _ := v.(float64)
-	return f
 }
 
 // WithExitWatch checks every tmux offline signal against the agents' exit
