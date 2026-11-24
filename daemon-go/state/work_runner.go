@@ -168,13 +168,23 @@ func (s *Store) UpdateAttempt(ctx context.Context, workID, attemptID string, u A
 
 // RecoverStaleDispatching transitions every 'dispatching' work whose runner
 // lease has expired (relative to now) to 'unavailable' with reason
-// runner_interrupted. Only dispatching is lease-bounded — once delivered, the
-// executor owns the fire. Mirrors SQLiteWorkStore.recover_stale_dispatching.
+// runner_interrupted. Dispatch records 'delivered' just before its send, so
+// delivered work whose send never confirmed (delivery_state pending) is
+// recovered the same way; once the send confirms, the executor owns the fire.
+// Mirrors SQLiteWorkStore.recover_stale_dispatching.
 func (s *Store) RecoverStaleDispatching(ctx context.Context, now string) ([]*TrackedWork, error) {
-	dispatching := "dispatching"
-	rows, err := s.ListWork(ctx, WorkFilter{State: &dispatching})
-	if err != nil {
-		return nil, err
+	var rows []*TrackedWork
+	for _, st := range []string{"dispatching", "delivered"} {
+		found, err := s.ListWork(ctx, WorkFilter{State: &st})
+		if err != nil {
+			return nil, err
+		}
+		for _, work := range found {
+			if st == "delivered" && currentAttemptField(work, "delivery_state") != "pending" {
+				continue
+			}
+			rows = append(rows, work)
+		}
 	}
 	current, perr := workParseISO(now)
 	if perr != nil {

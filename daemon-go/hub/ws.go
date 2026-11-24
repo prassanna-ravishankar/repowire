@@ -139,7 +139,7 @@ func (h *Hub) HandleWS(w http.ResponseWriter, r *http.Request) {
 		_ = conn.Close(4002, "Invalid backend")
 		return
 	}
-	if backend == proto.AgentMCPHTTP || backend == proto.AgentHuman {
+	if backend == proto.AgentMCPHTTP || backend == proto.AgentHuman || backend == proto.AgentHosted {
 		_ = wsjson.Write(ctx, conn, proto.ErrorFrame{Type: proto.FrameError, Error: string(backend) + " is not a WebSocket backend"})
 		_ = conn.Close(4002, "Invalid backend")
 		return
