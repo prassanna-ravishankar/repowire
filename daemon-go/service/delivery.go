@@ -557,8 +557,14 @@ func (d *PeerDelivery) sessionIDForPeer(ctx context.Context, peerID *proto.PeerI
 // the record.
 func (d *PeerDelivery) deliverHosted(ctx context.Context, kind, correlationID string, from, target *proto.Peer, msg state.PeerMessage) (map[string]any, string, error) {
 	msg.PeerID, msg.PeerName = string(target.PeerID), string(target.DisplayName)
+	generation := 0 // this assignment's; a delegation hop has already moved the ask
+	if d.asks != nil && kind == "ask" {
+		if ask, ok := d.asks.Get(correlationID); ok {
+			generation = ask.Generation
+		}
+	}
 	recorded := d.messages.Record(ctx, msg)
-	receipt, err := d.hosted.Deliver(ctx, kind, correlationID, from, msg.FromName, target, msg.Text, messageID(recorded))
+	receipt, err := d.hosted.Deliver(ctx, kind, correlationID, generation, from, msg.FromName, target, msg.Text, messageID(recorded))
 	if err != nil {
 		d.messages.Discard(ctx, recorded)
 		return nil, "", err
@@ -654,6 +660,12 @@ func (d *PeerDelivery) DeliverAsk(ctx context.Context, params DeliverAskParams) 
 	}
 
 	if decision, ok := d.transport.ACPRoute(target); ok && decision != nil {
+		generation := 0 // this assignment's; a delegation hop has already moved the ask
+		if d.asks != nil {
+			if ask, ok := d.asks.Get(params.CorrelationID); ok {
+				generation = ask.Generation
+			}
+		}
 		opID, err := d.recordACPAsk(ctx, params.CorrelationID, params.FromPeer, from, target)
 		if err != nil {
 			return AskResult{}, err
@@ -674,7 +686,7 @@ func (d *PeerDelivery) DeliverAsk(ctx context.Context, params DeliverAskParams) 
 				}
 				reply = &text
 			}
-			d.completeAsHolder(params.CorrelationID, target.PeerID, func() {
+			d.completeAsHolder(params.CorrelationID, target.PeerID, generation, func() {
 				callback(context.Background(), params.CorrelationID, reply, errText)
 			})
 			d.settleACPAsk(context.Background(), opID, errText)
@@ -738,14 +750,14 @@ func stringValuePeer(value *proto.Peer) string {
 // still holds it then. A completion from a peer the ask was delegated away
 // from is dropped: the new holder answers. One from a peer a failed hand-off
 // returned the ask to lands.
-func (d *PeerDelivery) completeAsHolder(cid string, holder proto.PeerID, complete func()) {
+func (d *PeerDelivery) completeAsHolder(cid string, holder proto.PeerID, generation int, complete func()) {
 	if d.asks == nil {
 		complete()
 		return
 	}
 	d.asks.RunClaimed(cid, func(ask *Ask) {
-		if ask.ToPeerID != holder {
-			log.Printf("delivery: completion of ask %s from %s dropped: delegated to %s", cid, holder, ask.ToPeerID)
+		if ask.ToPeerID != holder || ask.Generation != generation {
+			log.Printf("delivery: completion of ask %s from %s (assignment %d) dropped: the ask is with %s (assignment %d)", cid, holder, generation, ask.ToPeerID, ask.Generation)
 			return
 		}
 		complete()
@@ -759,7 +771,8 @@ func (d *PeerDelivery) completeACPAsk(ctx context.Context, cid string, reply, er
 // completeHostedAsHolder is completeAsHolder for a report the runtime resends
 // until it is acknowledged: rather than wait behind a reply or hand-off that
 // holds the ask, it fails so the report comes again. A report from an agent
-// the ask was delegated away from is dropped; the new holder answers. done is
+// the ask was delegated away from, or from an earlier assignment, is
+// dropped; the current assignment answers. done is
 // false only when the tracker no longer has the ask.
 func (d *PeerDelivery) completeHostedAsHolder(ctx context.Context, delivery HostedDelivery, reply, errText *string) (done bool, err error) {
 	cid := delivery.CorrelationID
@@ -773,8 +786,9 @@ func (d *PeerDelivery) completeHostedAsHolder(ctx context.Context, delivery Host
 		return true, fmt.Errorf("ask %s is held by another reply or hand-off: %w", cid, err)
 	}
 	defer d.asks.Release(cid)
-	if string(ask.ToPeerID) != delivery.ToPeerID {
-		log.Printf("delivery: hosted report for ask %s from %s dropped: delegated to %s", cid, delivery.ToPeerID, ask.ToPeerID)
+	if string(ask.ToPeerID) != delivery.ToPeerID || ask.Generation != delivery.Generation {
+		log.Printf("delivery: hosted report for ask %s from %s (assignment %d) dropped: the ask is with %s (assignment %d)",
+			cid, delivery.ToPeerID, delivery.Generation, ask.ToPeerID, ask.Generation)
 		return true, nil
 	}
 	return true, d.completeRuntimeAsk(ctx, cid, reply, errText, "Hosted error: ")
@@ -1025,7 +1039,7 @@ func (d *PeerDelivery) Broadcast(ctx context.Context, fromPeer, text string, exc
 		}
 		if d.hosted.Owns(p) {
 			excludeIDs[p.PeerID] = struct{}{}
-			if _, err := d.hosted.Deliver(ctx, "broadcast", "", fromObj, fromName, p, text, ""); err != nil {
+			if _, err := d.hosted.Deliver(ctx, "broadcast", "", 0, fromObj, fromName, p, text, ""); err != nil {
 				failed = append(failed, BroadcastFailure{PeerID: p.PeerID, Error: err.Error()})
 			} else {
 				sent = append(sent, p.DisplayName)

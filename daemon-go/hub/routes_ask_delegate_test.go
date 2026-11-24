@@ -104,6 +104,7 @@ type delegateRig struct {
 	messages *service.Messages
 	store    *state.Store
 	traces   *stageTracer
+	reg      *askFakeRegistry
 }
 
 var (
@@ -132,7 +133,7 @@ func newDelegateRig(t *testing.T, peers ...*proto.Peer) *delegateRig {
 	h.registerAskLifecycleRoutes(mux)
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
-	return &delegateRig{srv: srv, asks: asks, wire: wire, messages: messages, store: store, traces: traces}
+	return &delegateRig{srv: srv, asks: asks, wire: wire, messages: messages, store: store, traces: traces, reg: reg}
 }
 
 // post sends body to path and decodes the JSON reply into a map.
@@ -486,5 +487,33 @@ func TestStashedResultRefusesASecondReply(t *testing.T) {
 	}
 	if got := r.wire.received(alpha.PeerID); len(got) != 0 {
 		t.Fatalf("alpha received %v", got)
+	}
+}
+
+// An ask never returns to a peer that held it, and a former holder the
+// registry no longer knows cannot answer it by naming its own id.
+func TestDelegationHasNoWayBackAndFormerHoldersStayRefused(t *testing.T) {
+	alpha, beta, gamma, delta := alphaPeer(), betaPeer(), gammaPeer(), deltaPeer()
+	r := newDelegateRig(t, alpha, beta, gamma, delta)
+	cid := r.ask(t, alpha, beta, "who owns the release?")
+	if status, out := r.delegate(t, cid, beta, gamma, ""); status != http.StatusOK {
+		t.Fatalf("first hop: %d %v", status, out)
+	}
+	status, out := r.delegate(t, cid, gamma, beta, "")
+	if detail, _ := out["detail"].(map[string]any); status != http.StatusUnprocessableEntity || detail["error"] != "former_holder" {
+		t.Fatalf("back to beta: %d %v", status, out)
+	}
+	if ask, _ := r.asks.Get(cid); ask.ToPeerID != gamma.PeerID || ask.Generation != 1 {
+		t.Fatalf("a refused move changed the ask: %+v", ask)
+	}
+
+	r.reg.mu.Lock()
+	r.reg.peers = slices.DeleteFunc(r.reg.peers, func(p *proto.Peer) bool { return p.PeerID == beta.PeerID })
+	r.reg.mu.Unlock()
+	if status, out := r.ack(t, cid, beta, "stale"); status != http.StatusConflict {
+		t.Fatalf("gone former holder's ack: %d %v", status, out)
+	}
+	if status, _ := r.ack(t, cid, gamma, "mine"); status != http.StatusOK {
+		t.Fatalf("holder's ack: %d", status)
 	}
 }

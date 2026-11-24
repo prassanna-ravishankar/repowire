@@ -50,6 +50,11 @@ var (
 	ErrNotHolder       = errors.New("ask: only its current recipient may hand it on")
 	ErrDelegateTarget  = errors.New("ask: cannot delegate to its asker or current recipient")
 	ErrDelegationLimit = errors.New("ask: delegation chain is full")
+	// ErrFormerHolder refuses moving an ask back to a peer that held it: an
+	// agent's resolution names only the correlation id and is matched to the
+	// holder by peer id, so a returning holder's stale reply would look
+	// current (rfcs/wire-actions.md).
+	ErrFormerHolder = errors.New("ask: cannot move an ask back to a peer that held it")
 )
 
 // MaxDelegations bounds an ask's delegation chain.
@@ -63,6 +68,7 @@ type Delegation struct {
 	ToName     proto.DisplayName
 	Note       string
 	At         time.Time
+	Generation int // the assignment this hop began
 
 	fromSessionID *string // restored if the hop is undone
 }
@@ -119,6 +125,14 @@ type Ask struct {
 	// Delegations is the chain of hand-offs, oldest first; ToPeerID is the
 	// last hop's recipient. Replaced, never mutated, so snapshots stay valid.
 	Delegations []Delegation
+	// Generation identifies the current assignment: 0 for the first
+	// recipient, a fresh number for each hand-off. A runtime completion
+	// carries the generation it was issued under, and any other one is
+	// dropped. Numbers are never reused (issued only goes up, and undoing a
+	// hop restores the previous holder's number), so a completion from a
+	// hand-off that failed and was retried to the same peer cannot match.
+	Generation int
+	issued     int // the highest generation this ask has issued
 
 	// done is closed once, when this ask instance reaches its terminal state,
 	// waking every waiter; they then read what was recorded.
@@ -519,6 +533,8 @@ func (t *AskTracker) Delegate(ctx context.Context, cid string, p DelegateParams)
 		return nil, Delegation{}, ErrNotHolder
 	case p.To == ask.ToPeerID || p.To == ask.FromPeerID:
 		return nil, Delegation{}, ErrDelegateTarget
+	case ask.HeldBefore(p.To):
+		return nil, Delegation{}, ErrFormerHolder
 	case len(ask.Delegations) >= MaxDelegations:
 		return nil, Delegation{}, ErrDelegationLimit
 	case ask.PendingReply != nil:
@@ -532,8 +548,11 @@ func (t *AskTracker) Delegate(ctx context.Context, cid string, p DelegateParams)
 	hop := Delegation{
 		FromPeerID: ask.ToPeerID, FromName: ask.ToPeerName,
 		ToPeerID: p.To, ToName: p.ToName, Note: p.Note, At: time.Now().UTC(),
+		Generation:    ask.issued + 1,
 		fromSessionID: ask.ToRepowireSessionID,
 	}
+	ask.issued = hop.Generation
+	ask.Generation = hop.Generation
 	ask.Delegations = append(append([]Delegation(nil), ask.Delegations...), hop)
 	ask.ToPeerID, ask.ToPeerName, ask.ToRepowireSessionID = p.To, p.ToName, p.ToSessionID
 	return ask.clone(), hop, nil
@@ -556,6 +575,10 @@ func (t *AskTracker) UndoDelegation(ctx context.Context, cid string, hop Delegat
 	}
 	ask.Delegations = append([]Delegation(nil), ask.Delegations[:len(ask.Delegations)-1]...)
 	ask.ToPeerID, ask.ToPeerName, ask.ToRepowireSessionID = hop.FromPeerID, hop.FromName, hop.fromSessionID
+	ask.Generation = 0 // the previous holder's assignment; issued stays, so hop's number is never reused
+	if n := len(ask.Delegations); n > 0 {
+		ask.Generation = ask.Delegations[n-1].Generation
+	}
 	return true
 }
 

@@ -693,6 +693,56 @@ func TestHostedReportRespectsDelegation(t *testing.T) {
 	}
 }
 
+// Each assignment of an ask to a hosted agent is its own operation: a
+// hand-off to the agent retried after one that failed runs again, and the
+// failed attempt's late report is dropped while the retry's closes the ask.
+func TestHostedReportFromAnEarlierAssignmentIsDropped(t *testing.T) {
+	ctx := context.Background()
+	f := newHostedFixture(t)
+	other := peerWith("repow-default-bbbb", "beta", "default", proto.StatusOnline)
+	cid, err := f.asks.Register(ctx, RegisterAskParams{FromPeerID: f.asker.PeerID, FromPeerName: f.asker.DisplayName, ToPeerID: other.PeerID, ToPeerName: other.DisplayName})
+	if err != nil {
+		t.Fatal(err)
+	}
+	handOff := func() {
+		t.Helper()
+		if _, err := f.asks.Claim(cid); err != nil {
+			t.Fatal(err)
+		}
+		if _, _, err := f.asks.Delegate(ctx, cid, DelegateParams{By: other.PeerID, To: f.target.PeerID, ToName: f.target.DisplayName}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := f.delivery.DeliverAsk(ctx, DeliverAskParams{FromPeer: "alpha", ToPeer: "helper-hosted", Text: "q", CorrelationID: cid}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	handOff()
+	ask, _ := f.asks.Get(cid)
+	if !f.asks.UndoDelegation(ctx, cid, ask.Delegations[len(ask.Delegations)-1]) {
+		t.Fatal("undo refused")
+	}
+	f.asks.Release(cid)
+	handOff()
+	f.asks.Release(cid)
+	first, retry := cid+"-g1", cid+"-g2"
+	if _, ok := f.runtime.submitted[first]; !ok {
+		t.Fatalf("missing first assignment's submission: %v", f.runtime.submitted)
+	}
+	if _, ok := f.runtime.submitted[retry]; !ok {
+		t.Fatalf("the retried hand-off must be a new operation: %v", f.runtime.submitted)
+	}
+	if err := f.hosted.Report(ctx, string(f.target.PeerID), first, HostedResult{Status: "done", Text: "stale"}); err != nil {
+		t.Fatal(err)
+	}
+	if ask, _ := f.asks.Get(cid); ask.Closed {
+		t.Fatalf("a report from the failed assignment must be dropped: %+v", ask)
+	}
+	f.report(retry, HostedResult{Status: "done", Text: "fresh"})
+	if ask := waitClosed(t, f.asks, cid); ask.ReplyText == nil || *ask.ReplyText != "fresh" {
+		t.Fatalf("the current assignment's report must close the ask: %+v", ask)
+	}
+}
+
 // A message to a hosted agent is recorded like one to any agent peer, and its
 // frame names the record. The agent has no read_message tool, so even a pull
 // preference gets the full body, and the record reads as read once the

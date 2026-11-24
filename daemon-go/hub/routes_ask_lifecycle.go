@@ -890,7 +890,13 @@ func (h *Hub) mayResolve(ask *service.Ask, fromPeer *string) error {
 		return routeErr(http.StatusForbidden, "this ask is answered on the other machine")
 	}
 	if len(ask.Delegations) > 0 && fromPeer != nil {
-		if p, _ := h.ask.reg.GetPeerByName(*fromPeer, nil); p != nil && p.PeerID != ask.ToPeerID && ask.HeldBefore(p.PeerID) {
+		// A former holder the registry no longer knows is matched by the id
+		// it names, so it cannot slip past as an unknown caller.
+		id := proto.PeerID(*fromPeer)
+		if p, _ := h.ask.reg.GetPeerByName(*fromPeer, nil); p != nil {
+			id = p.PeerID
+		}
+		if id != ask.ToPeerID && ask.HeldBefore(id) {
 			return routeErr(http.StatusConflict, map[string]any{
 				"error":          "ask_delegated",
 				"correlation_id": ask.CorrelationID,

@@ -181,6 +181,7 @@ type HostedDelivery struct {
 	FromPeerName  string
 	ToPeerID      string
 	ToPeerName    string
+	Generation    int // the ask's assignment generation the delivery was issued under
 }
 
 // Hosted registers managed peers and carries deliveries to their runtime.
@@ -367,11 +368,17 @@ func (h *Hosted) resubmit(op *state.Operation) {
 }
 
 // Deliver submits text to the target's runtime and returns once the runtime
-// has durably accepted it. The answer arrives later as a report.
-func (h *Hosted) Deliver(ctx context.Context, kind, correlationID string, from *proto.Peer, fromName string, target *proto.Peer, text, messageID string) (map[string]any, error) {
+// has durably accepted it. The answer arrives later as a report. generation
+// is the ask's assignment generation (0 for its first recipient): each
+// assignment is its own operation, so a hand-off retried to the same agent
+// runs again, and a report carries the generation it answers.
+func (h *Hosted) Deliver(ctx context.Context, kind, correlationID string, generation int, from *proto.Peer, fromName string, target *proto.Peer, text, messageID string) (map[string]any, error) {
 	operationID := correlationID
-	if operationID == "" {
+	switch {
+	case operationID == "":
 		operationID = kind + "-" + uuid.NewString()[:8]
+	case generation > 0:
+		operationID = fmt.Sprintf("%s-g%d", correlationID, generation)
 	}
 	fromID, fromRole := "", ""
 	if from != nil {
@@ -380,7 +387,7 @@ func (h *Hosted) Deliver(ctx context.Context, kind, correlationID string, from *
 	record := map[string]any{
 		"agent_id": string(target.PeerID), "operation_id": operationID, "kind": kind,
 		"correlation_id": correlationID, "from_peer_id": fromID, "from_peer_name": fromName,
-		"to_peer_id": string(target.PeerID), "to_peer_name": string(target.DisplayName),
+		"to_peer_id": string(target.PeerID), "to_peer_name": string(target.DisplayName), "generation": generation,
 	}
 	framed := hooks.FormatInboundMessage(fromName, fromRole, string(target.DisplayName), kind, correlationID, messageID, text)
 	record["text"] = framed
@@ -468,6 +475,9 @@ func (h *Hosted) Report(ctx context.Context, agentID, operationID string, result
 	delivery := HostedDelivery{Kind: str("kind"), Text: str("text"), CorrelationID: str("correlation_id"),
 		FromPeerID: str("from_peer_id"), FromPeerName: str("from_peer_name"),
 		ToPeerID: str("to_peer_id"), ToPeerName: str("to_peer_name")}
+	if n, ok := op.Target["generation"].(float64); ok {
+		delivery.Generation = int(n)
+	}
 	steps, _ := op.Result["steps"].(map[string]any)
 	for _, observer := range h.settled {
 		if _, done := steps[observer.name]; done {
