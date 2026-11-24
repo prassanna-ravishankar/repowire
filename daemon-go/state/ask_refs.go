@@ -2,7 +2,6 @@ package state
 
 import (
 	"context"
-	"database/sql"
 	"fmt"
 )
 
@@ -34,12 +33,11 @@ func (s *Store) AskRefs(ctx context.Context) ([]AskRef, error) {
 // askRefs streams the deduplicated asks to each.
 func (s *Store) askRefs(ctx context.Context, each func(AskRef) error) error {
 	db := s.db
-	if s.path != "" && s.path != ":memory:" {
-		ro, err := sql.Open("sqlite", fmt.Sprintf("file:%s?mode=ro&_pragma=busy_timeout(5000)", s.path))
-		if err != nil {
-			return fmt.Errorf("open read-only state db: %w", err)
-		}
-		ro.SetMaxOpenConns(1)
+	ro, err := s.readOnly()
+	if err != nil {
+		return err
+	}
+	if ro != nil {
 		defer ro.Close()
 		db = ro
 	}

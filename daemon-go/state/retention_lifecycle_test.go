@@ -284,6 +284,9 @@ func TestFirstSweepBacksUpTheDatabaseOnce(t *testing.T) {
 	if n := s.count(t, `SELECT COUNT(*) FROM events WHERE event_id = 'e-old'`); n != 0 {
 		t.Fatal("the sweep did not run after the backup")
 	}
+	if info, err := os.Stat(backups[0]); err != nil || info.Mode().Perm() != 0o600 {
+		t.Fatalf("backup mode = %v, %v; want 0600 (it holds message text)", info.Mode().Perm(), err)
+	}
 	if n := s.count(t, `SELECT COUNT(*) FROM events WHERE type = 'retention_backup' AND json_extract(payload_json, '$.path') = ?`, backups[0]); n != 1 {
 		t.Fatal("the backup's path was not journaled")
 	}

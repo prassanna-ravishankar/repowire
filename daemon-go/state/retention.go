@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -331,13 +332,17 @@ func (r *retention) journal(s *Store, typ string, payload map[string]any) {
 const retentionBackupKey = "retention_backup"
 
 // backupBeforeFirstSweep copies the database once, next to it, before the
-// first sweep whose policy can remove anything. Upgrading to a release with
-// retention then never loses history beyond recovery: the copy holds every
-// row the first sweep strips or deletes. It returns the copy's path, or ""
-// when one was taken before, the policy keeps everything, or the store is
-// in memory. The copy is never deleted by the daemon.
+// first sweep under a policy that strips or deletes history (a 0/0 policy
+// keeps it all; it still prunes cross-machine protocol rows on their fixed
+// window, as before retention existed). Upgrading to a release with retention
+// then never loses history beyond recovery: the copy holds every row the
+// first sweep strips or deletes. The copy runs on a separate read-only
+// connection, so the daemon keeps reading and writing while a large database
+// copies; it is private (0600) since it holds message text, and the daemon
+// never deletes it. It returns the copy's path, or "" when one was taken
+// before, the policy keeps everything, or the store is in memory.
 func (s *Store) backupBeforeFirstSweep(ctx context.Context, p RetentionPolicy, now time.Time) (string, error) {
-	if s.path == "" || (p.Content == 0 && p.Records == 0) {
+	if s.path == "" || s.path == ":memory:" || (p.Content == 0 && p.Records == 0) {
 		return "", nil
 	}
 	var taken string
@@ -349,8 +354,20 @@ func (s *Store) backupBeforeFirstSweep(ctx context.Context, p RetentionPolicy, n
 		return "", fmt.Errorf("read the retention backup marker: %w", err)
 	}
 	path := s.path + ".pre-retention-" + now.UTC().Format("20060102-150405")
-	if _, err := s.db.ExecContext(ctx, `VACUUM INTO ?`, path); err != nil {
+	ro, err := s.readOnly()
+	if err != nil {
+		return "", err
+	}
+	_, err = ro.ExecContext(ctx, `VACUUM INTO ?`, path)
+	_ = ro.Close()
+	if err != nil {
+		if info, serr := os.Stat(path); serr == nil && info.Mode().IsRegular() {
+			_ = os.Remove(path) // a half-written copy is no backup
+		}
 		return "", fmt.Errorf("back up the database before its first retention sweep: %w", err)
+	}
+	if err := os.Chmod(path, 0o600); err != nil {
+		return "", fmt.Errorf("make the retention backup private: %w", err)
 	}
 	if _, err := s.db.ExecContext(ctx, `INSERT INTO daemon_meta(key, value) VALUES (?, ?)`, retentionBackupKey, path); err != nil {
 		return "", fmt.Errorf("record the retention backup: %w", err)
