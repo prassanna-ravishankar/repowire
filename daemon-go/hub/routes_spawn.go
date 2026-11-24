@@ -44,6 +44,7 @@ type spawnRegistry interface {
 	GetPeer(id proto.PeerID) (*proto.Peer, bool)
 	GetPeerByPane(paneID string) (*proto.Peer, bool)
 	UnregisterPeer(ctx context.Context, identifier string, circle *string) (bool, error)
+	ClosePeer(ctx context.Context, id proto.PeerID, reason string) (int, error)
 	MarkOffline(ctx context.Context, id proto.PeerID, terminal bool) (int, error)
 }
 
@@ -540,9 +541,8 @@ func (h *Hub) killPeer(ctx context.Context, req KillPeerRequest) (KillResponse, 
 	peerCopy := h.peerWithAdoptedOwnership(resolved)
 	proof := h.destructivePaneProof(peerCopy)
 	if !proof.ok || proof.paneID == "" {
-		// No proof: unregister identity but DO NOT touch any pane. tmux_killed=null.
-		// id is already resolved (resolveStrict), so the ambiguity error can't fire.
-		_, _ = h.spawn.reg.UnregisterPeer(ctx, string(peerCopy.PeerID), nil)
+		// No proof: close the identity but DO NOT touch any pane. tmux_killed=null.
+		h.closeKilledPeer(ctx, peerCopy.PeerID)
 		return KillResponse{OK: true, TmuxKilled: nil}, nil
 	}
 
@@ -557,10 +557,19 @@ func (h *Hub) killPeer(ctx context.Context, req KillPeerRequest) (KillResponse, 
 	}
 	h.spawn.svc.Ownership().Forget(proof.paneID)
 	clienthooks.ClearPaneRuntimeState(proof.paneID) // stale meta must not re-prove a reused pane
-	// id is already resolved (resolveStrict), so the ambiguity error can't fire.
-	_, _ = h.spawn.reg.UnregisterPeer(ctx, string(peerCopy.PeerID), nil)
+	h.closeKilledPeer(ctx, peerCopy.PeerID)
 	t := true
 	return KillResponse{OK: true, TmuxKilled: &t}, nil
+}
+
+// closeKilledPeer is the operator close kill shares with DELETE /peers/{name}:
+// hard-retire the identity, then remove it. Without the retirement a runtime
+// that outlives its pane (a Codex App Server thread) reconnects within a second
+// and registers again under a new peer_id (#530). The id is already resolved, so
+// UnregisterPeer's ambiguity error can't fire.
+func (h *Hub) closeKilledPeer(ctx context.Context, id proto.PeerID) {
+	_, _ = h.spawn.reg.ClosePeer(ctx, id, "operator_close")
+	_, _ = h.spawn.reg.UnregisterPeer(ctx, string(id), nil)
 }
 
 // ---------------------------------------------------------------------------
@@ -913,9 +922,26 @@ type destructiveProof struct {
 // destructivePaneProof ports _destructive_pane_proof: the only accepted proofs
 // are (1) the pane is in the in-process spawned set, (2) durable spawn ownership
 // validates, or (3) live pane metadata (the ws-hook meta.json) names THIS
-// peer_id. Path match alone is NEVER proof. A live pane whose metadata names a
-// different peer is a mismatch (distinct from no metadata); both refuse.
+// peer_id and its agent still runs in the pane. Path match alone is NEVER proof.
+// A live pane whose metadata names a different peer is a mismatch (distinct from
+// no metadata); both refuse. Whatever the mode, a known agent pid for the peer
+// must be running in the pane (#529).
 func (h *Hub) destructivePaneProof(p *proto.Peer) destructiveProof {
+	proof := h.paneProof(p)
+	if !proof.ok || len(service.PeerAgentPIDs(proof.paneID, p)) == 0 {
+		return proof
+	}
+	// A known agent outside a visible pane vetoes every mode: the pane's proof
+	// was earned by a runtime that is no longer there. An unseen pane is left to
+	// the caller, which cannot kill it either.
+	if ev := h.spawn.svc.Tmux().ProbePane(proof.paneID); ev != nil && !service.PaneRunsPeer(h.spawn.proc, ev, p) {
+		return destructiveProof{paneID: proof.paneID, tmuxSession: proof.tmuxSession, errCode: "agent_not_in_pane",
+			hint: "The peer's agent is not running in its proven pane; refusing to kill whatever runs there now."}
+	}
+	return proof
+}
+
+func (h *Hub) paneProof(p *proto.Peer) destructiveProof {
 	own := h.spawn.svc.Ownership()
 
 	if p.PaneID != nil && *p.PaneID != "" && own.IsSpawned(*p.PaneID) {
@@ -947,7 +973,6 @@ func (h *Hub) destructivePaneProof(p *proto.Peer) destructiveProof {
 			hint: "Peer has no pane id, so Repowire has no pane to kill."}
 	}
 
-	_ = own
 	ev := h.spawn.svc.Tmux().ProbePane(*p.PaneID)
 	if ev == nil {
 		return destructiveProof{paneID: *p.PaneID, errCode: "pane_not_live",
@@ -961,6 +986,10 @@ func (h *Hub) destructivePaneProof(p *proto.Peer) destructiveProof {
 	if meta := clienthooks.ReadPaneRuntimeMetadata(*p.PaneID); meta != nil {
 		if mpid, _ := meta["peer_id"].(string); mpid != "" {
 			if mpid == string(p.PeerID) {
+				if !service.PaneRunsPeer(h.spawn.proc, ev, p) {
+					return destructiveProof{paneID: *p.PaneID, tmuxSession: ev.TmuxSession, errCode: "pane_metadata_stale",
+						hint: "Pane metadata names this peer, but its agent no longer runs in the pane."}
+				}
 				return destructiveProof{ok: true, paneID: *p.PaneID, tmuxSession: ev.TmuxSession,
 					mode: "verified_pane_metadata"}
 			}

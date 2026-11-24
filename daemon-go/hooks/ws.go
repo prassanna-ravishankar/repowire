@@ -371,7 +371,7 @@ func handleMessage(ctx context.Context, conn *websocket.Conn, data map[string]an
 		return false, unsafeStrikes
 	}
 	from, to, text := firstNonempty(stringValue(data, "from_peer"), "unknown"), stringValue(data, "to_peer"), stringValue(data, "text")+formatAttachments(data["attachments"])
-	injected := formatInboundMessage(from, stringValue(data, "from_role"), to, typ, stringValue(data, "correlation_id"), text)
+	injected := formatInboundMessage(from, stringValue(data, "from_role"), to, typ, stringValue(data, "correlation_id"), stringValue(data, "message_id"), text)
 	backend := firstNonempty(os.Getenv("REPOWIRE_BACKEND"), "claude-code")
 	detail := "native runtime inbox unavailable"
 	if backend == "claude-code" {
@@ -428,7 +428,7 @@ func injectClaudeInbox(socket, text string) error {
 	})
 }
 
-func formatInboundMessage(from, fromRole, to, typ, correlationID, text string) string {
+func formatInboundMessage(from, fromRole, to, typ, correlationID, messageID, text string) string {
 	from = strings.TrimPrefix(from, "@")
 	to = strings.TrimPrefix(to, "@")
 	toLabel := ""
@@ -446,15 +446,18 @@ func formatInboundMessage(from, fromRole, to, typ, correlationID, text string) s
 	if correlationID != "" {
 		attrs += ` correlation-id="` + html.EscapeString(correlationID) + `"`
 	}
+	if messageID != "" {
+		attrs += ` message-id="` + html.EscapeString(messageID) + `"`
+	}
 	return "<peer-message" + attrs + ">\n" + html.EscapeString(text) + "\n</peer-message>"
 }
 
 // FormatInboundMessage preserves the human/peer trust boundary for transports
-// that deliver without terminal injection.
-// fromRole is the frame's from_role ("human" when the daemon's human peer
-// sent it, whatever that peer is named).
-func FormatInboundMessage(from, fromRole, to, typ, correlationID, text string) string {
-	return formatInboundMessage(from, fromRole, to, typ, correlationID, text)
+// that deliver without terminal injection, and for a message body fetched by
+// id. fromRole is the frame's from_role ("human" when the daemon's human peer
+// sent it, whatever that peer is named); messageID is the frame's message_id.
+func FormatInboundMessage(from, fromRole, to, typ, correlationID, messageID, text string) string {
+	return formatInboundMessage(from, fromRole, to, typ, correlationID, messageID, text)
 }
 
 func isHumanSender(from, fromRole string) bool {

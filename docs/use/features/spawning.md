@@ -87,13 +87,13 @@ Dashboard spawn and backend controls use the same spawn configuration as CLI and
 - Spawning is disabled until `daemon.spawn.allowed_paths` and backend commands are configured.
 - The configured command must resolve to an executable on the daemon's configured `PATH` before a pane is opened.
 - A path outside the allowed roots is rejected.
-- Killing a tmux pane is allowed only when the daemon can prove the pane belongs to the target peer: Repowire spawn ownership, or live pane hook metadata whose `peer_id` matches the target.
+- Killing a tmux pane is allowed only when the daemon can prove the pane belongs to the target peer: Repowire spawn ownership, or live pane hook metadata whose `peer_id` matches the target. Ownership records and pane metadata outlive the agent that earned them, so the daemon also checks that the peer's known agent process is running in the pane. A stale peer cannot take down whatever runs in its old pane now.
 - Externally attached peers without matching metadata cannot have their pane killed by Repowire.
 - Restart falls back to a fresh launch when the resume id is missing or its session file is absent after exit, and says so (`resume_mode=fresh`, `resume_reason`).
 - Restart sends SIGTERM and waits up to 20s; a runtime that has not exited by then is reported and nothing is relaunched. Restart does not send SIGKILL.
 - Restart rebuilds only the permission arguments it models; with any other permission argument it relaunches the observed argv itself (`argv-verbatim`). With nothing observed or recorded it adds no permission arguments. See [`repowire peer restart`](../../reference/cli.md#repowire-peer).
 - A peer whose live socket did not connect with hook version 2 or later is refused (`hook_too_old`); relaunch it once by hand on the current binary. After upgrading to a restart-capable daemon, every pre-existing peer must be relaunched once by hand before it can be restarted; until then `peer describe` shows `restart.restartable: false` with `hook_too_old`.
-- Deliveries sent while a peer is between runtimes are queued and replay to the replacement; deliveries in flight at the moment of exit may be reported delivered without being read (#472). A runtime that has not registered within 90s reports a `register` failure (not a manual relaunch) even if it is still starting; check the new pane before doing anything by hand.
+- Deliveries sent while a peer is between runtimes are queued and replay to the replacement; a delivery in flight at exit is queued (notify) or fails (ask) when its socket closes before the hook acknowledges it, and is sent again when a newer connection has replaced the socket. A runtime that has not registered within 90s reports a `register` failure (not a manual relaunch) even if it is still starting; check the new pane before doing anything by hand.
 - Backend fork preserves the source peer and starts the target as an agent-role sibling; it does not copy backend-native conversation history.
 
 ## Troubleshooting

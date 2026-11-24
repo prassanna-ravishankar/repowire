@@ -590,3 +590,29 @@ func TestPullAskImmediateReplyAndUnregisteredOutbound(t *testing.T) {
 		t.Fatalf("pending: %d %#v", pending.StatusCode, list)
 	}
 }
+
+// TestRuntimeClosesAreJournaledLikeAcks (#512): the recorder the hub installs
+// on PeerDelivery writes the ack event and the terminal trace for an ask a
+// runtime closed, as the ack route does; a runtime error closes as failed.
+func TestRuntimeClosesAreJournaledLikeAcks(t *testing.T) {
+	reg := newAskFakeRegistry(alphaPeer(), betaPeer())
+	asks := service.NewAskTracker(0)
+	wire := newRecordingTransport()
+	delivery := service.NewPeerDelivery(reg, service.NewMessageRouter(wire, nil), wire, asks, nil)
+	traces := &stageTracer{}
+	h := &Hub{deliveryTraces: traces}
+	h.WithAskLifecycle(asks, delivery, reg)
+
+	ask := &service.Ask{CorrelationID: "ask-1", FromPeerID: "repow-default-aaaa", ToPeerID: "repow-default-bbbb", FromPeerName: "alpha", ToPeerName: "beta"}
+	h.recordAskClosed(context.Background(), ask, "ack_with_msg", "done", true, false)
+	if !traces.has("acked") || !traces.has("closed") {
+		t.Fatalf("answer stages = %v", traces.stages)
+	}
+	h.recordAskClosed(context.Background(), ask, "send_failed", "ACP error: crashed", false, false)
+	reg.mu.Lock()
+	defer reg.mu.Unlock()
+	if len(reg.events) != 2 || reg.events[0].typ != "ack" || reg.events[0].payload["status"] != "ack_with_msg" ||
+		reg.events[0].payload["has_message"] != true || reg.events[1].payload["status"] != "send_failed" {
+		t.Fatalf("ack events = %+v", reg.events)
+	}
+}

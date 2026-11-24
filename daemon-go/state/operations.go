@@ -379,3 +379,15 @@ func opStrategyValue(s *string) any {
 func opCloneMap(m map[string]any) map[string]any {
 	return maps.Clone(m)
 }
+
+// operationRetention: a completed operation is a record.
+var operationRetention = tableRetention{
+	tables: []string{"operations"},
+	rules: func(c retentionCutoffs) (records, content []sweepRule) {
+		if c.records != "" {
+			records = append(records, sweepRule{name: "operations.delete", table: "operations",
+				where: "completed_at IS NOT NULL AND completed_at < ?", args: []any{c.records}})
+		}
+		return records, nil
+	},
+}

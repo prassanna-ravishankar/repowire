@@ -7,7 +7,9 @@ Repowire peers use WebSocket delivery for live messages and daemon events. The d
 - `ask` — tracked question that must be closed with `ack`.
 - `notify` — fire-and-forget message.
 - `broadcast` — mesh-wide announcement.
-- Dashboard events — timeline, peer, chat-turn, tool-call, and operational events. Includes `peer_contradiction` events, emitted (once per transition) when lazy repair detects a peer in a self-inconsistent state such as online-but-no-WebSocket.
+- Dashboard events — timeline, peer, chat-turn, tool-call, and operational events. Includes `peer_contradiction` events, emitted (once per transition) when lazy repair detects a peer in a self-inconsistent state such as online-but-no-WebSocket, and `ask_delegated` (`correlation_id`, `from`, `to`, `asker`, `note`, `hops`) when an ask is [delegated](../concepts/message-types.md#delegation).
+
+`ask` and `notify` frames to an agent peer carry an optional `message_id`, the recipient's [message record](mcp-tools.md#messages); renderers show it as `message-id="..."` on the `<peer-message>` tag. For a peer in pull delivery the frame's `text` is a one-line nudge naming that id instead of the body.
 
 The ws-hook `connect` frame advertises `hook_version` and `capabilities` (e.g. `delivery_receipts`) so the daemon can report per-peer inbound health and receipt support; capability is also inferred from an observed delivery acknowledgement.
 

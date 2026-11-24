@@ -140,6 +140,7 @@ type WorkFilter struct {
 	CreatedByPeerID   *string
 	RepowireSessionID *string
 	Circle            *string
+	CorrelationID     *string
 }
 
 // --- JSON column helpers, matching work_store.json_dumps/json_loads semantics. ---
@@ -377,6 +378,10 @@ func (s *Store) ListWork(ctx context.Context, f WorkFilter) ([]*TrackedWork, err
 	if f.RepowireSessionID != nil {
 		clauses = append(clauses, "repowire_session_id = ?")
 		params = append(params, *f.RepowireSessionID)
+	}
+	if f.CorrelationID != nil {
+		clauses = append(clauses, "correlation_id = ?")
+		params = append(params, *f.CorrelationID)
 	}
 	if f.Circle != nil {
 		clauses = append(clauses, "circle = ?")
@@ -726,6 +731,43 @@ func requestDueAt(w *TrackedWork) string {
 }
 
 // parseISO parses the ISO timestamps work.py writes (_parse_iso), normalizing to UTC.
+// WorkDeadline is a non-terminal job's deadline_at.
+type WorkDeadline struct {
+	WorkID string
+	State  string
+	At     time.Time
+}
+
+// WorkDeadlines lists the deadline of every non-terminal job that has one.
+// A deadline_at that does not parse as an ISO timestamp is skipped.
+func (s *Store) WorkDeadlines(ctx context.Context) ([]WorkDeadline, error) {
+	terminal := make([]string, 0, len(terminalWorkStates))
+	params := make([]any, 0, len(terminalWorkStates))
+	for state := range terminalWorkStates {
+		terminal = append(terminal, "?")
+		params = append(params, state)
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT work_id, state, deadline_at FROM tracked_work
+		WHERE deadline_at IS NOT NULL AND deadline_at <> '' AND state NOT IN (`+strings.Join(terminal, ",")+`)`, params...)
+	if err != nil {
+		return nil, fmt.Errorf("work deadlines: %w", err)
+	}
+	defer rows.Close()
+	var out []WorkDeadline
+	for rows.Next() {
+		var d WorkDeadline
+		var raw string
+		if err := rows.Scan(&d.WorkID, &d.State, &raw); err != nil {
+			return nil, err
+		}
+		if at, err := workParseISO(raw); err == nil {
+			d.At = at
+			out = append(out, d)
+		}
+	}
+	return out, rows.Err()
+}
+
 func workParseISO(value string) (time.Time, error) {
 	if t, err := time.Parse(time.RFC3339Nano, value); err == nil {
 		return t.UTC(), nil
@@ -752,4 +794,22 @@ func boolToInt(b bool) int {
 		return 1
 	}
 	return 0
+}
+
+// workRetention: a terminal job is a record and keeps its request and
+// result (the work product) until it goes; a live job is never touched.
+var workRetention = tableRetention{
+	tables: []string{"tracked_work"},
+	rules: func(c retentionCutoffs) (records, content []sweepRule) {
+		if c.records != "" {
+			terminal := make([]string, 0, len(terminalWorkStates))
+			for state := range terminalWorkStates {
+				terminal = append(terminal, state)
+			}
+			sort.Strings(terminal)
+			records = append(records, sweepRule{name: "tracked_work.delete", table: "tracked_work",
+				where: "state IN " + inList(terminal) + " AND COALESCE(completed_at, updated_at) < ?", args: []any{c.records}})
+		}
+		return records, nil
+	},
 }

@@ -2,6 +2,8 @@
 
 Config lives at `~/.repowire/config.yaml`. `repowire setup` creates the file with `0600` permissions.
 
+**A mistyped setting does not stop the daemon.** The daemon runs as a KeepAlive service, so a refused config is a crash loop. A key whose value has the wrong type (`relay.enabled: definitely`, `daemon.spawn.commands: [codex]`) keeps its default, and the daemon logs a startup warning naming it and its line (never its value, which may be a credential). `repowire config check` prints the same warnings without starting anything. Inside a nested block (`daemon.spawn`, `daemon.mcp_http`, `daemon.orchestrator_recall`, `experiments.remote_tool_approval`) only the mistyped keys are dropped. Blocks that carry credentials (`relay`, `telegram`, `slack`) are read whole or not at all: if any key in one cannot be read, the whole block reverts to its defaults (off), so a key is never sent to a default endpoint. A security control fails closed instead: when `experiments.remote_tool_approval.enabled` (or the whole block) cannot be read, approval is on with the default gated tools. The load still fails for a file that is not valid YAML, a `daemon:` that is not a mapping, and a mistyped `daemon.host`, `daemon.port`, `daemon.auth_token` or `daemon.circle_boundary`, since starting on another address, without the auth token, or with another circle boundary would be worse than not starting. `routing:` has its own recovery rules, [below](#routing).
+
 ```yaml
 daemon:
   host: "127.0.0.1"
@@ -53,6 +55,31 @@ human:
     telegram:
       broadcast: false
 ```
+
+## `wire`
+
+```yaml
+wire:
+  stuck:
+    ignored_turns: 3          # holder turns since assignment with the ask still open
+    slow_minutes: 30          # assignment age with no holder turn
+    asker_gone_minutes: 60    # reply stashed for an offline asker
+    undelivered_minutes: 10   # notify still queued
+```
+
+Thresholds for the stuck signals of the orchestrator's wire view ([`wire_query`](mcp-tools.md#wire_query), `repowire wire ls`). They are checked when a thread is read, never on a timer. A missing or non-positive value keeps its default.
+
+## `retention`
+
+```yaml
+retention:
+  content_days: 7     # text a peer or the human wrote, and attachment files
+  records_days: 180   # who did what, when, and how it ended
+```
+
+One policy covers everything the daemon keeps ([state and storage](../operate/state-and-storage.md#retention)). **Content** is authored text: message bodies, replies, delegation notes, transcripts (`chat_turn`), the human inbox's text, and uploaded attachments. After `content_days` it is removed in place (JSON rows gain `"content_expired": true`), or the row or file is deleted when it is nothing but content. **Records** are the metadata rows (traces, events, inbox items, terminal jobs, completed operations, expired runtime certificates other than each peer's newest); they are deleted after `records_days`. When `records_days` is shorter, content goes with its record. `0` keeps a class forever. A negative value, one that is not a number, or more than 36500 days keeps the default and warns. Whatever the policy, nothing younger than the ask lifetime (`daemon.prune_max_age_hours`, 24 hours by default) expires, because an open ask still reads its message, inbox item, attachments and trace; a shorter value warns and acts as the ask lifetime. Env: `REPOWIRE_RETENTION__CONTENT_DAYS`, `REPOWIRE_RETENTION__RECORDS_DAYS`.
+
+The state store sweeps when the daemon starts and then at most once an hour, after a journal write finds a sweep due, never on a timer. Attachment files expire in the same sweep. `repowire config check` prints the policy. Copy `state.db` first if you need old message text, for example for `repowire route reconstruct`: a sweep is irreversible.
 
 ## `human`
 
@@ -186,7 +213,7 @@ Backend commands are reloaded from config when a spawn request needs them, so
 `repowire setup` and manual command edits take effect without restarting the
 daemon or bouncing existing agent sessions.
 
-`profiles` is optional and keyed first by backend, then by a user-defined profile name. Each profile appends structured `args` to the configured backend command; Repowire does not hardcode provider model names. For example, spawning `codex` with profile `fast` runs the configured `daemon.spawn.commands.codex` command plus the profile args. Profile descriptions are informational and may be shown by UIs.
+`profiles` is optional and keyed first by backend, then by a user-defined profile name. Each profile appends structured `args` to the configured backend command; Repowire does not hardcode provider model names. For example, spawning `codex` with profile `fast` runs the configured `daemon.spawn.commands.codex` command plus the profile args. Profile descriptions are informational and may be shown by UIs. A Codex command or profile that would make Codex run its private embedded App Server (`-c` overrides other than boolean `features.*` toggles, `--profile`, `--search`, `--no-daemon`, and similar) is refused at spawn on the App Server transport, because the codex bridge cannot reach such a session; see [Codex](../use/features/connect-codex.md).
 
 `env_path` and `env` define the environment injected into spawned agent commands.
 `env_path` becomes the spawned process `PATH`; `env` adds extra variables such as
@@ -298,7 +325,7 @@ Recovery is decided at the end of configuration resolution, against the final va
 - `REPOWIRE_ROUTING__SHADOW_ARMS` cannot bring back shadows that an unusable strategy dropped.
 - Environment precedence holds even for a bad value: an unusable `REPOWIRE_ROUTING__STRATEGY` over a valid YAML strategy runs static with no shadows. It does not fall back to the YAML value.
 
-The same rules apply to a legacy `experiments.router` block. `repowire route show` prints the effective config, which is what the daemon runs, followed by every ignored setting and the warnings. A file that is not valid YAML still stops the daemon, as does a mistyped key outside `routing:`.
+The same rules apply to a legacy `experiments.router` block. `repowire route show` prints the effective config, which is what the daemon runs, followed by every ignored setting and the warnings. A file that is not valid YAML still stops the daemon; for keys outside `routing:`, see the rule at the top of this page.
 
 ### Migrating from `experiments.router`
 
@@ -319,7 +346,7 @@ A failed arm is recorded by structure only: the fallback reason, the provider, t
 |---|---|---|
 | `timeout` | No usable answer before `timeout_seconds`, or Workers AI returned 408 | yes |
 | `rate_limited` | Provider returned 429 | yes |
-| `billing` | Provider returned 402, or Anthropic's documented spend-limit refusals (400 "You have reached your specified … API usage limits", 429 `enforced_spend_limit_reached`), or Workers AI's daily allocation (`3036`) or paid-plan (`5035`) refusals | yes |
+| `billing` | Provider returned 402, or Anthropic's documented spend-limit refusals (400 "You have reached your specified … API usage limits", 429 `enforced_spend_limit_reached`), or Workers AI's daily allocation (`3036`, and the undocumented `4006` observed live) or paid-plan (`5035`) refusals | yes |
 | `unauthorized` | Provider returned 401 or 403 | yes |
 | `server_error` | Provider returned 5xx | yes |
 | `request_error` | Provider returned another 4xx (413 from Workers AI is `state_too_large`); usually our request body or template | no |

@@ -209,13 +209,48 @@ func stableExecutable(path string) string {
 	if err != nil {
 		return path
 	}
+	// A launcher that the next install repoints keeps hooks and services on
+	// the current version: Homebrew's bin/repowire, or install.sh's
+	// $REPOWIRE_BIN_DIR/repowire (default ~/.local/bin) over the versioned
+	// ~/.local/share/repowire/<version>/repowire.
+	var launchers []string
 	if index := strings.Index(filepath.ToSlash(resolved), "/Cellar/repowire/"); index >= 0 {
-		linked := filepath.FromSlash(filepath.ToSlash(resolved)[:index] + "/bin/repowire")
-		if target, err := filepath.EvalSymlinks(linked); err == nil && target == resolved {
-			return linked
+		launchers = append(launchers, filepath.FromSlash(filepath.ToSlash(resolved)[:index]+"/bin/repowire"))
+	}
+	if dir := os.Getenv("REPOWIRE_BIN_DIR"); dir != "" {
+		launchers = append(launchers, filepath.Join(dir, "repowire"))
+	}
+	launchers = append(launchers, home(".local", "bin", "repowire"))
+	for _, launcher := range launchers {
+		if target, err := filepath.EvalSymlinks(launcher); err == nil && target == resolved {
+			if dir, err := filepath.EvalSymlinks(filepath.Dir(launcher)); err == nil {
+				return filepath.Join(dir, filepath.Base(launcher))
+			}
+			return launcher
 		}
 	}
 	return resolved
+}
+
+// hookBinary is the binary the installed Claude Code Stop hook runs ("" when
+// there is none), parsed from its leading quoted path.
+func hookBinary(settings map[string]any) string {
+	hooks, _ := settings["hooks"].(map[string]any)
+	entries, _ := hooks["Stop"].([]any)
+	for _, raw := range entries {
+		entry, _ := raw.(map[string]any)
+		items, _ := entry["hooks"].([]any)
+		for _, item := range items {
+			handler, _ := item.(map[string]any)
+			command, _ := handler["command"].(string)
+			if quoted, err := strconv.QuotedPrefix(command); err == nil && strings.HasSuffix(command, " hook stop") {
+				if path, err := strconv.Unquote(quoted); err == nil {
+					return path
+				}
+			}
+		}
+	}
+	return ""
 }
 func homebrewCellarPath(path string) bool {
 	return strings.Contains(filepath.ToSlash(path), "/Cellar/repowire/")
@@ -503,7 +538,9 @@ func installCodex() error {
 	content = ensureTomlFeature(content, "hooks", "true")
 	content = replaceTomlSection(content, "mcp_servers.repowire", []string{"command = " + strconv.Quote(executable()), "args = [\"mcp\"]"})
 	content = replaceTomlSection(content, "mcp_servers.repowire.env", []string{"REPOWIRE_BACKEND = \"codex\""})
-	for _, tool := range []string{"ack", "answer", "decline"} {
+	// Closing, handing on and reading one's own asks and messages are the
+	// mesh's housekeeping; an approval prompt on each would stall a peer.
+	for _, tool := range []string{"ack", "answer", "decline", "delegate", "list_messages", "read_message"} {
 		content = replaceTomlSection(content, "mcp_servers.repowire.tools."+tool, []string{"approval_mode = \"approve\""})
 	}
 	for event, spec := range specs {
@@ -779,6 +816,9 @@ func runRuntimeInstall(name string, argv []string) int {
 			return fatal(err)
 		}
 		fmt.Println(name, "transport installed")
+		if name == "codex" {
+			fmt.Println(codexTransportNote(codexAutoStartsAppServer()))
+		}
 		return 0
 	case "uninstall":
 		if err := uninstallRuntime(name); err != nil {
@@ -790,10 +830,27 @@ func runRuntimeInstall(name string, argv []string) int {
 		fmt.Printf("%s runtime: %s; integration: %s\n", name,
 			map[bool]string{true: "detected", false: "not detected"}[runtimeAvailable(name)],
 			map[bool]string{true: "installed", false: "not installed"}[runtimeIntegrated(name)])
+		if name == "claude-code" {
+			settings, _ := readJSON(home(".claude", "settings.json"), false)
+			if bin := hookBinary(settings); bin != "" && bin != executable() {
+				fmt.Printf("hooks run %s, not this binary (%s); run `repowire hooks install`\n", bin, executable())
+			}
+		}
 		return 0
 	default:
 		return usage(name + " <install|uninstall|status>")
 	}
+}
+
+// codexTransportNote says which Codex transport install chose and, for the
+// App Server, which launches it cannot reach.
+func codexTransportNote(appServer bool) string {
+	if !appServer {
+		return "codex: hooks transport (this Codex has no shared App Server); every Codex session registers through its hooks"
+	}
+	return "codex: App Server transport; the repowire-codex bridge delivers to sessions on Codex's shared App Server. " +
+		"Sessions launched with --no-daemon, --profile/-p, --search, --oss, --strict-config, --approve-for-me, or a -c override other than a boolean features.* toggle " +
+		"run a private server and cannot receive messages; put those settings in ~/.codex/config.toml instead"
 }
 
 func runtimeIntegrated(name string) bool {

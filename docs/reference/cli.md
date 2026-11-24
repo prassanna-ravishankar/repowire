@@ -92,6 +92,33 @@ Runs the same daemon/runtime/integration report as `status`, then checks the
 host prerequisites used by the core (`tmux` and `git`). It exits non-zero when
 the daemon is unavailable; missing optional host tools are reported as warnings.
 
+## `repowire config`
+
+```bash
+repowire config path
+repowire config show
+repowire config get daemon.port
+repowire config check [--file PATH] [--require relay,telegram,slack]
+```
+
+`check` loads a config file (by default the live one) with the daemon's own rules, the same ones `serve` applies at startup ([configuration](configuration.md)). It prints every load warning, then whether relay, Telegram and Slack come up enabled, plus the MCP HTTP and remote tool approval settings. Credentials are reported only as set or unset, and the relay URL as its scheme and host. A warning names the setting and its line, never the rejected value.
+
+A mistyped key in a credential block (`relay`, `telegram`, `slack`) turns that whole block off, so run `check` before upgrading to confirm the new binary reads the config the way the old one did. Exit codes:
+- `0`: the config loads.
+- `1`: the file is missing or unreadable, or the daemon would refuse it.
+- `2`: a subsystem named in `--require` would be off.
+
+## `repowire wire`
+
+```bash
+repowire wire                                   # same as `wire ls`
+repowire wire ls [--stuck] [--circle C] [--peer P] [--kind ask|notify] [--state S]
+                 [--since 24h] [--limit N] [--cursor C] [--json]
+repowire wire show THREAD_ID [--json]
+```
+
+The operator's view of ask and notify threads across every circle, from `GET /wire/threads`: who asked whom, who holds each ask now, its state and stuck signals. Metadata only, like the orchestrator's [`wire_query`](mcp-tools.md#wire_query) and `wire_show`, which print the same text. `--since` takes a duration (`90m`, `24h`) or days (`7d`). For a thread's message text, the operator still has `repowire trace`.
+
 ## `repowire peer`
 
 ```bash
@@ -111,11 +138,17 @@ repowire peer asks [--peer-id ID | --pane-id PANE | --peer NAME] [--direction in
 repowire peer deliveries [--peer-id ID | --pane-id PANE | --peer NAME] [--json]
 repowire peer ack CORR_ID [-m MESSAGE] [--from-peer NAME]
 repowire peer decline CORR_ID --reason REASON [--from-peer NAME]
+repowire peer delegate CORR_ID PEER [--note TEXT] [--from-peer NAME]
+repowire peer messages [--peer NAME_OR_ID] [--unread] [--limit N] [--json]
+repowire peer read MESSAGE_ID [--peek] [--json]
+repowire peer delivery push|pull [--peer NAME_OR_ID]
 ```
 
 `peer whoami`, `peer asks`, `peer deliveries`, `peer ack`, and `peer decline` are shellable mesh diagnostics. They wrap daemon HTTP endpoints and automatically use the local `daemon.auth_token` when configured. Identity resolves in this order: explicit `--peer-id` → `--pane-id` → `$TMUX_PANE` → `--peer NAME`.
 
 Commands that need a sender identity resolve `$TMUX_PANE` to its registered canonical `peer_id`; they fail with a registration hint instead of lazily creating another runtime identity. Outside tmux they use the explicit `repowire-cli` admin identity.
+
+`peer delegate` hands an open ask to another peer; the reply still reaches the original asker (see [delegation](../concepts/message-types.md#delegation)). `peer messages` lists the messages a peer received (default: this pane's peer), `peer read` prints one (marking it read unless `--peek`), and `peer delivery` switches a peer between full messages (`push`) and one-line nudges (`pull`). See [Messages](mcp-tools.md#messages).
 
 `peer deliveries` drains one-shot queued deliveries for a peer. Draining deletes the queued rows to avoid duplicate paste/replay. For queued asks, `peer deliveries` shows the original ask text once, while `peer asks` continues to show the open ask until the agent closes it with `peer ack` or the MCP `ack` tool.
 
@@ -174,11 +207,11 @@ Destructive authority is not guessed: a live runtime needs the same pane proof a
 
 **Codex app-server peers.** The codex bridge's socket outlives the TUI (the thread stays loaded in the app-server), so restart leaves it open through exit and closes it right after launch. The bridge then re-registers the thread, consuming the spawn hint the launch left for that `peer_id`, and registers from the new pane. The `repowire mcp` shim the app-server starts for the resumed thread runs outside tmux and leaves that hint queued. The bridge sends tmux evidence only for the pane it registers from. If the bridge's pane is rejected as no longer live and no hint is waiting, it drops that pane and its evidence and registers without one instead of retrying it. The app-server runs the shim from the path `repowire setup` wrote into `~/.codex/config.toml`, so re-run setup with the upgraded binary. A `register` failure on such a peer names the pane the bridge is still registering, with a pointer to `~/.repowire/codex-bridge.log`.
 
-**Deliveries.** After exit the daemon marks the peer offline and closes the old socket, so notifies and asks sent while the peer is between runtimes are queued and replay when the replacement's ws-hook connects. Deliveries in flight at the moment of exit may be reported delivered without having been read (#472); when frames were awaiting acknowledgement at exit, the result's `warnings` say so. The "you were restarted" notify is sent only after the new socket is up. Open asks involving the peer stay open under its `peer_id`; the result's warnings say so.
+**Deliveries.** After exit the daemon marks the peer offline and closes the old socket, so notifies and asks sent while the peer is between runtimes are queued and replay when the replacement's ws-hook connects. A delivery in flight at the moment of exit is not reported delivered: when its socket closes before the hook acknowledges it, a notify is queued for the replacement and an ask fails, and a frame whose socket is replaced by a newer connection is sent again there. When frames were awaiting acknowledgement at exit, the result's `warnings` say so. The "you were restarted" notify is sent only after the new socket is up. Open asks involving the peer stay open under its `peer_id`; the result's warnings say so.
 
 **Control.** `--no-wait` returns `in_progress` at once; `--status` shows the latest result (also under `restart` in `peer describe`); `--cancel` cancels an in-flight restart and returns after the run finishes or about half a second, whichever is first, with the state it had reached. A signal cannot be taken back: a cancel after it sets `cancel_requested`, launches nothing, and keeps observing the old runtime's exit up to the 20s wait bound before reporting the final state (`--status`). On daemon shutdown, restart intake is closed and in-flight restarts are cancelled and waited for up to 3s before the HTTP drain; shutdown then proceeds, and a run still inside a (bounded) tmux call may lose its final journal event. Restart is same-host only.
 
-`peer doctor` is the operator-facing counterpart to automatic lazy repair. It runs lazy repair first, re-resolves the peer, then reports registry identity, inbound reachability (WebSocket connection, tmux pane existence, pane hook metadata, agent pid liveness), pending ask state, and any detected contradictions. Contradiction codes: `ONLINE_BUT_NO_WS`, `PANE_MISSING`, `AGENT_PID_DEAD`, `HOOK_PEERID_MISMATCH`, `WS_PANE_MISMATCH` (warning), `STALE_PENDING_ASK` (warning), `NOT_RESTARTABLE` (warning: `peer restart` would fail at prepare), `RESTART_DEFAULTS` (info: restart would default some inputs), `NEEDS_MANUAL_RELAUNCH` (the last restart failed after the old runtime exited; the detail is the command to run). Local-only probes (tmux, hook metadata, pid) degrade to `unavailable` for peers on a different machine than the daemon. The command exits non-zero when any error-severity contradiction is present, so it is usable as a health gate. `--json` emits the raw report. `--fix` attempts a non-destructive `peer rehook --apply` when an inbound-down contradiction (`ONLINE_BUT_NO_WS` / `PANE_MISSING`) is found.
+`peer doctor` is the operator-facing counterpart to automatic lazy repair. It runs lazy repair first, re-resolves the peer, then reports registry identity, inbound reachability (WebSocket connection, tmux pane existence, pane hook metadata, agent pid liveness), pending ask state, and any detected contradictions. Contradiction codes: `ONLINE_BUT_NO_WS`, `PANE_MISSING`, `AGENT_PID_DEAD`, `HOOK_PEERID_MISMATCH`, `WS_PANE_MISMATCH` (warning), `STALE_PENDING_ASK` (warning), `NOT_RESTARTABLE` (warning: `peer restart` would fail at prepare), `RESTART_DEFAULTS` (info: restart would default some inputs), `NEEDS_MANUAL_RELAUNCH` (the last restart failed after the old runtime exited; the detail is the command to run), `CODEX_NOT_ON_APP_SERVER` (a Codex peer the codex bridge did not register while Codex uses the App Server transport, so it cannot receive; see [Codex](../use/features/connect-codex.md)). Local-only probes (tmux, hook metadata, pid) degrade to `unavailable` for peers on a different machine than the daemon. The command exits non-zero when any error-severity contradiction is present, so it is usable as a health gate. `--json` emits the raw report. `--fix` attempts a non-destructive `peer rehook --apply` when an inbound-down contradiction (`ONLINE_BUT_NO_WS` / `PANE_MISSING`) is found.
 
 `peer rehook` re-establishes a peer's inbound ws-hook **without killing the pane or the agent** — the non-destructive recovery for the "registered/online but inbound delivery is dead" case. It is same-host only (the daemon cannot spawn a ws-hook into a foreign pane) and gated by spawn-ownership proof or live tmux pane evidence. It pings an existing connection first and never disconnects a ping-healthy peer (reports `already_healthy`). It defaults to a dry-run report; pass `--apply` to act. If the pane hook metadata names a stale peer id/display name (`HOOK_PEERID_MISMATCH`), rehook rewrites that metadata to the registry identity, drops the stale birth certificate, starts a fresh ws-hook, and reports `reconciled_hook_metadata`. In the non-mismatch respawn path, when the prior ws-hook process is still alive by pid even though its WebSocket is dead, the underlying respawn is a no-op and the response reports `respawn_skipped_pid_alive_or_contested`. For a destructive restart use `peer restart`.
 
@@ -213,7 +246,7 @@ Read and answer the [human inbox](../concepts/human-inbox.md) from the terminal.
 repowire trace TRACE_ID [--json]
 ```
 
-Shows the recorded delivery stages for one message — an ask (use its `correlation_id`) or a notify (use its `delivery_id`, returned in the `/notify` response). Stages are ordered (`created → resolved_peer → routed → websocket_sent → thread_input_accepted → … → acked → closed`, plus failure stages `resolve_failed`, `no_connection`, `injection_failed`). Messages to the human peer record `inbox_stored`, then one `surface_pushed` or `surface_failed` per surface, and later `inbox_read` / `inbox_replied`; a `surface_failed` makes the command exit non-zero even though the item is stored. `thread_input_accepted` means a native Codex thread or Claude inbox accepted the input; `injection_failed` records a failed/rejected receipt. Historical ledgers may contain `pane_injected` from releases that supported tmux keystroke delivery. This reads the local delivery trace ledger (`GET /traces/{trace_id}`), which is not pruned. Currently covers ask and notify (HTTP `/notify` and MCP `notify_peer` alike), plus broadcasts stored in the human inbox; query and agent broadcast terminal stages are not yet traced. Exits non-zero if any stage failed.
+Shows the recorded delivery stages for one message — an ask (use its `correlation_id`) or a notify (use its `delivery_id`, returned in the `/notify` response). Stages are ordered (`created → resolved_peer → routed → websocket_sent → thread_input_accepted → … → acked → closed`, plus failure stages `resolve_failed`, `no_connection`, `injection_failed`). Messages to the human peer record `inbox_stored`, then one `surface_pushed` or `surface_failed` per surface, and later `inbox_read` / `inbox_replied`; a `surface_failed` makes the command exit non-zero even though the item is stored. `thread_input_accepted` means a native Codex thread or Claude inbox accepted the input; `injection_failed` records a failed/rejected receipt. Historical ledgers may contain `pane_injected` from releases that supported tmux keystroke delivery. This reads the local delivery trace ledger (`GET /traces/{trace_id}`), which keeps stages for `retention.records_days` and their message text for `retention.content_days`; older text shows `content_expired`. Currently covers ask and notify (HTTP `/notify` and MCP `notify_peer` alike), plus broadcasts stored in the human inbox; query and agent broadcast terminal stages are not yet traced. Exits non-zero if any stage failed.
 
 ## `repowire route`
 
@@ -240,7 +273,7 @@ Seven baselines are computed from the ledger itself, cost nothing, and always re
 
 ### Reconstructing history (`route reconstruct`)
 
-`delivery_traces` has no candidate snapshots before the router recorded them, but the `events` journal does hold every `ask` plus the activity around it. `reconstruct` rebuilds a `Decision` per ask from the journal and writes JSONL for `route replay --input`. It opens `--db` read-only; point it at a copy of a live `state.db` made with `sqlite3 state.db ".backup copy.db"`. `replay --input` accepts `--where KEY=VALUE[,KEY=VALUE]` over `hub_bound`, `sender_type` and `recency` to score a subset; the majority baselines still vote from every row. Every report row carries `chance_at_1`/`chance_at_3`, the analytic expectation of a random ranking over the same scored rows (mean of 1/n and min(3,n)/n); read lift against it, not against the single seeded `random` draw.
+`delivery_traces` has no candidate snapshots before the router recorded them, but the `events` journal does hold every `ask` plus the activity around it. `reconstruct` rebuilds a `Decision` per ask from the journal and writes JSONL for `route replay --input`. It opens `--db` read-only; point it at a copy of a live `state.db` made with `sqlite3 state.db ".backup copy.db"`. Reconstruction reads ask text from the journal, which [retention](configuration.md#retention) strips after `content_days`, so keep a copy made before the first sweep if this history matters. `replay --input` accepts `--where KEY=VALUE[,KEY=VALUE]` over `hub_bound`, `sender_type` and `recency` to score a subset; the majority baselines still vote from every row. Every report row carries `chance_at_1`/`chance_at_3`, the analytic expectation of a random ranking over the same scored rows (mean of 1/n and min(3,n)/n); read lift against it, not against the single seeded `random` draw.
 
 Nothing in the journal says who was registered, so every field is an inference. The assumptions, all adjustable:
 

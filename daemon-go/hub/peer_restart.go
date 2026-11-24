@@ -538,6 +538,11 @@ func (h *Hub) planRestart(ctx context.Context, p *proto.Peer, req RestartPeerReq
 		profile = &rec.Record.Profile
 	}
 	base, cerr := svc.ResolveCommand(p.Backend, profile)
+	if service.IsCodexEmbeddedRefusal(cerr) {
+		// The built-in template would drop the profile; refuse rather than
+		// relaunch something other than what was configured.
+		return plan, &RestartFailure{Reason: "codex_embedded_app_server", Hint: cerr.Error()}
+	}
 	if cerr != nil {
 		base = service.DefaultSpawnCommands[p.Backend]
 		result.Defaulted = append(result.Defaulted, "command")
@@ -613,6 +618,12 @@ func (h *Hub) planRestart(ctx context.Context, p *proto.Peer, req RestartPeerReq
 	}
 	if err := applyCommand(result, plan); err != nil {
 		return plan, &RestartFailure{Reason: "unparseable_command", Hint: err.Error()}
+	}
+	if p.Backend == proto.AgentCodex {
+		// The relaunch may be the observed argv rather than the template.
+		if err := svc.CheckCodexLaunch(plan.command, "the relaunch command (would_run)"); err != nil {
+			return plan, &RestartFailure{Reason: "codex_embedded_app_server", Hint: err.Error()}
+		}
 	}
 
 	if h.spawn.asks != nil {

@@ -273,23 +273,28 @@ function DashboardInner() {
           onSettings={() => setShowSettings(true)}
         />
 
-        <PendingQuestions events={events} apiBase={API_BASE} />
+        {/* One banner row, always present (empty when there is no banner), so
+            the roster and main pane always land in the 1fr row and fill the
+            viewport. */}
+        <div className="col-span-full">
+          <PendingQuestions events={events} apiBase={API_BASE} />
 
-        {missingOrchestrators.length > 0 && (
-          <div className="col-span-full border-b border-error/30 bg-error-container px-3 py-2 text-on-error-container md:px-5">
-            <div className="flex flex-wrap items-center gap-x-3 gap-y-1 font-mono text-[11px] leading-5">
-              <span className="font-bold uppercase tracking-[0.16em]">orchestrator offline</span>
-              {missingOrchestrators.map((status) => (
-                <span key={status.circle} className="rounded border border-error/35 bg-error/15 px-2 py-0.5">
-                  circle / {status.circle}
+          {missingOrchestrators.length > 0 && (
+            <div className="col-span-full border-b border-error/30 bg-error-container px-3 py-2 text-on-error-container md:px-5">
+              <div className="flex flex-wrap items-center gap-x-3 gap-y-1 font-mono text-[11px] leading-5">
+                <span className="font-bold uppercase tracking-[0.16em]">orchestrator offline</span>
+                {missingOrchestrators.map((status) => (
+                  <span key={status.circle} className="rounded border border-error/35 bg-error/15 px-2 py-0.5">
+                    circle / {status.circle}
+                  </span>
+                ))}
+                <span className="text-on-error-container/85">
+                  spawn one with <code className="font-bold">repowire orchestrator start</code>
                 </span>
-              ))}
-              <span className="text-on-error-container/85">
-                spawn one with <code className="font-bold">repowire orchestrator start</code>
-              </span>
+              </div>
             </div>
-          </div>
-        )}
+          )}
+        </div>
 
         <div className={cn("min-h-0 flex-1 md:block", selectedPeer || mobileTab !== "peers" ? "hidden" : "block")}>
           <PeerRoster

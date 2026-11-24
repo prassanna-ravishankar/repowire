@@ -178,7 +178,7 @@ func TestWorkerRequestDeadlineBoundsABlockedWrite(t *testing.T) {
 	connectMachine(t, ctx, f, "beta", http.NotFoundHandler())
 	owner, _ := f.s.tokens.validate(f.key)
 	conn := f.s.daemon(owner.UserID, "beta")
-	conn.writeOnce.Do(func() { conn.writeSlot = make(chan struct{}, 1) })
+	conn.init()
 	conn.writeSlot <- struct{}{}
 	defer func() { <-conn.writeSlot }()
 

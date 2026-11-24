@@ -113,31 +113,11 @@ function EventRow({
   }
 
   if (event.type === "ack") {
-    const ackText = event.text || ackSummary(event);
-    return (
-      <div className="border-b border-border-faint/70 py-1.5 font-mono text-xs leading-5 md:grid md:grid-cols-[62px_minmax(70px,120px)_18px_minmax(70px,120px)_1fr] md:gap-3">
-        <div className="flex items-center gap-2 md:contents">
-          <span className="shrink-0 text-outline tabular-nums">{formatTime(event.timestamp)}</span>
-          <ActorLabel
-            label={fromLabel}
-            clickable={fromClickable}
-            className="text-secondary"
-            onClick={() => onPickPeer(event.from)}
-          />
-          <span className="shrink-0 text-center text-outline">ack</span>
-          <ActorLabel
-            label={to}
-            clickable={toClickable}
-            className="text-primary-fixed"
-            onClick={() => onPickPeer(event.to)}
-          />
-        </div>
-        <span className="mt-0.5 block min-w-0 break-words text-on-surface-variant [overflow-wrap:anywhere] md:mt-0">
-          {ackText}
-          <AttachmentChips attachments={event.attachments} apiBase={apiBase} />
-        </span>
-      </div>
-    );
+    return <ThreadRow event={event} verb="ack" text={event.text || ackSummary(event)} apiBase={apiBase} onPickPeer={onPickPeer} />;
+  }
+
+  if (event.type === "ask_delegated") {
+    return <ThreadRow event={event} verb="⇢" text={delegationSummary(event)} apiBase={apiBase} onPickPeer={onPickPeer} />;
   }
 
   return (
@@ -194,6 +174,51 @@ function lifecycleSummary(event: Event): { verb: string; detail?: string } {
     default:
       return { verb: event.type };
   }
+}
+
+/** A step on an ask thread between two peers: an ack, or a hand-off. */
+function ThreadRow({
+  event,
+  verb,
+  text,
+  apiBase,
+  onPickPeer,
+}: {
+  event: Event;
+  verb: string;
+  text: string;
+  apiBase: string;
+  onPickPeer: (name?: string) => void;
+}) {
+  return (
+    <div className="border-b border-border-faint/70 py-1.5 font-mono text-xs leading-5 md:grid md:grid-cols-[62px_minmax(70px,120px)_18px_minmax(70px,120px)_1fr] md:gap-3">
+      <div className="flex items-center gap-2 md:contents">
+        <span className="shrink-0 text-outline tabular-nums">{formatTime(event.timestamp)}</span>
+        <ActorLabel
+          label={event.from || "unknown"}
+          clickable={Boolean(event.from)}
+          className="text-secondary"
+          onClick={() => onPickPeer(event.from)}
+        />
+        <span className="shrink-0 text-center text-outline">{verb}</span>
+        <ActorLabel
+          label={event.to || "—"}
+          clickable={Boolean(event.to)}
+          className="text-primary-fixed"
+          onClick={() => onPickPeer(event.to)}
+        />
+      </div>
+      <span className="mt-0.5 block min-w-0 break-words text-on-surface-variant [overflow-wrap:anywhere] md:mt-0">
+        {text}
+        <AttachmentChips attachments={event.attachments} apiBase={apiBase} />
+      </span>
+    </div>
+  );
+}
+
+function delegationSummary(event: Event): string {
+  const cid = event.correlation_id ? ` #${event.correlation_id}` : "";
+  return [`delegated${cid}`, event.asker ? `asked by @${event.asker}` : undefined, event.note].filter(Boolean).join(" · ");
 }
 
 function ackSummary(event: Event): string {

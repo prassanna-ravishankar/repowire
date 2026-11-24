@@ -30,7 +30,7 @@ order is:
 | 2 | Daemon-minted runtime identity envelope | Authoritative handoff proof | Birth certificate minted during SessionStart registration so MCP can adopt a peer identity without path search. |
 | 3 | Local pane runtime metadata plus process proof | Local adoption proof | Valid only when backend, daemon peer id, and owning agent process match the current MCP process. |
 | 4 | Durable `SessionMapping` / session binding records | Compatibility and provenance | Useful for restoring circle, role, description, runtime session pointers, and history relationships; not pane ownership proof. |
-| 5 | Durable spawn ownership, or live pane metadata with matching `peer_id` | Destructive-action proof | Authorizes kill/restart of a verified pane. Path/cwd alone is not destructive proof. |
+| 5 | Durable spawn ownership, or live pane metadata with matching `peer_id` | Destructive-action proof | Authorizes kill/restart of a verified pane. A record that names no peer, and pane metadata, also need the peer's agent process running in the pane; a known agent pid outside the pane vetoes any proof. Pane metadata records the agent's start time with its pid, so a recycled pid does not count; metadata written when the start time could not be read (or before this was recorded) falls back to the pid-only check. Path/cwd alone is not destructive proof. |
 | 6 | Display name, path, backend, machine, `last_seen` | Hints and filters only | Never sufficient by themselves to impersonate a peer or choose among ambiguous candidates. |
 
 This hierarchy keeps three concerns separate:
@@ -58,9 +58,10 @@ A reconnect may reclaim an existing `peer_id` only when the claim still describe
 
 - backend must match;
 - path must match when both the existing peer and the reconnect claim provide one;
+- the peer must not be held by a different live process: when both sides carry an `agent_pid` and the holder's is alive, the claim is refused and a `peer_id_claim_rejected` event records both pids;
 - pane ownership is updated only after that identity check passes.
 
-If the check fails, the stale `peer_id` claim is ignored and the daemon allocates or adopts a different identity. This prevents an old environment variable or stale pane metadata from binding a different session's WebSocket to the wrong peer.
+If the check fails, the stale `peer_id` claim is ignored and the daemon allocates or adopts a different identity. This prevents an old environment variable or stale pane metadata from binding a different session's WebSocket to the wrong peer. Twin sessions that share one claimed id (two sessions resumed in one directory, or registrations from before the tuple-adoption fixes) therefore separate on their next reconnect: the twin gets its own peer, its later reconnects converge on it by pid, and its hook rewrites the pane metadata. Before this check they swapped one peer between their panes on every reconnect.
 
 A registration that names no usable `peer_id` but reports a runtime session id (the hook's `session_id`, a Codex thread id) is next matched against the durable session bindings: the peer that session is bound to, for the same backend and a compatible path, keeps it. This is how a by-hand `claude --resume`, a bridge reconnect, or a registration after a daemon restart lands on the original peer. A soft retirement of that peer is lifted, since the binding certifies the same backend, session, and path a birth certificate does; a hard operator retirement is not. A bound peer whose agent process is still running elsewhere (even while its record is offline) is a fork sharing its parent's session id, so the registrant gets its own peer and a suffixed address instead. For session-scoped backends a binding is used only while it is the peer's newest session; an older binding to a peer that has since run another thread is ignored.
 
@@ -92,7 +93,7 @@ Known, accepted limits of the proof: the liveness probe and the displacement dec
 
 Some offlines are *terminal*: the caller knows the agent behind the peer is gone (a `SessionEnd` quit, the ws-hook reporting its agent pid exited, a pane takeover, or three consecutive honest `pane_alive=false` ping verdicts). A terminal offline retires the peer_id: the daemon severs its websocket and rejects any reconnect claiming that id unless the claim carries a *live* `agent_pid`. This is what stops an orphaned ws-hook's reconnect loop from resurrecting a dead peer. A fresh `SessionStart` always carries a live agent pid and therefore reclaims the identity cleanly. Retirement records persist in `~/.repowire/state.db` (pruned after ~72 hours), so a daemon restart cannot hand an orphan hook one free re-registration.
 
-There is one protected case: a fresh live `orchestrator` peer keeps sticky ownership of its tmux pane. If a temporary same-pane session starts in a split terminal, the daemon can register that session without assigning the pane (`pane_assigned=false`). The temporary peer can still use outbound MCP/HTTP tools, but it does not get inbound hook transport and must not clear the incumbent orchestrator's pane metadata or WebSocket hook.
+There is one protected case: a fresh live `orchestrator` peer keeps sticky ownership of its tmux pane. A same-backend registrant on that pane reuses the orchestrator identity only when it is not a different live process; a live twin registers pane-less under its own `peer_id`. If a temporary same-pane session starts in a split terminal, the daemon can register that session without assigning the pane (`pane_assigned=false`). The temporary peer can still use outbound MCP/HTTP tools, but it does not get inbound hook transport and must not clear the incumbent orchestrator's pane metadata or WebSocket hook.
 
 Orchestrator role repair follows the same boundary. The CLI-only
 `repowire peer claim-role orchestrator` command can repair stale, offline, or
@@ -100,31 +101,23 @@ mapping-only holders, but they cannot demote a fresh or transport-connected onli
 holder. To intentionally replace a live orchestrator, stop that holder first so
 the daemon no longer treats it as fresh.
 
-## Startup hydration
+## Daemon restart
 
-On daemon startup, Repowire runs a one-shot hydration pass for pane-backed peers
-that were alive while the daemon was down. This is not a poller: it runs during
-startup only, then steady-state repair stays lazy.
+The daemon does not scan panes or recreate live peers on startup. It reloads
+durable state only: persisted `peer_id` mappings and retirement records younger
+than 72 hours. The live registry starts empty, and peers come back by
+reconnecting:
 
-Hydration is anchored on persisted `peer_id` mappings and live tmux evidence.
-A pane is eligible only when daemon-written pane metadata names the same
-`peer_id`, or its embedded daemon-minted birth certificate validates through
-SQLite state. The backend, normalized project path, live pane cwd, and live
-`agent_pid` must all agree. Display name, cwd, command name, pane existence, and
-path/backend tuples are not identity proof; if any required proof is missing,
-ambiguous, stale, or contradictory, the daemon skips hydration and emits a
-`startup_hydration_skipped` event.
+- A ws-hook outlives the daemon. It reconnects with backoff and no retry limit,
+  claiming its `peer_id`, and the daemon matches that claim against the reloaded
+  mapping. The hook stops only when its peer is retired or its agent exits.
+- An agent whose ws-hook also died during the restart stays off the mesh. Its
+  pane is listed by `GET /panes/orphans`, and an operator adopts it explicitly
+  with `repowire link`. Path, cwd, and display name are never enough to adopt a
+  pane automatically.
 
-Successful hydration recreates the peer with `status=offline`,
-`pane_id`, `agent_pid`, and `metadata.hydration_source=startup_hydration`.
-Offline is intentional: runtime evidence proves the session exists, but inbound
-delivery is not available until a WebSocket hook connects. Startup may respawn a
-ws-hook only for candidates that passed the full strict proof, and if no
-WebSocket connects within the bounded wait the peer remains offline and the
-daemon emits `startup_hydration_no_transport`.
-
-Unproven panes are left unadopted and continue to surface through
-`/panes/orphans` for explicit `repowire link`.
+The only other one-shot startup pass reconciles in-flight jobs against their
+executors. Steady-state repair stays lazy.
 
 MCP lazy registration treats tmux pane lookup as a locator, not as identity proof. A by-pane daemon result is accepted only when local pane runtime metadata proves the same daemon peer id, backend, and owning agent process. If that proof is missing or belongs to another process, MCP registers or resolves its own peer instead of adopting the incumbent. This keeps path and display name as useful context while avoiding path-based identity takeover.
 

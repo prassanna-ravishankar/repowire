@@ -89,10 +89,17 @@
     {
       "Answer": null,
       "AskerIdentity": null,
+      "Attachments": [
+        {
+          "kind": "file",
+          "path": "notes.txt"
+        }
+      ],
       "CloseReason": "",
       "Closed": false,
       "CorrelationID": "\u003ccid1\u003e",
       "CreatedAt": "\u003cclock\u003e",
+      "Delegations": null,
       "FromPeerID": "repow-a",
       "FromPeerName": "alpha",
       "FromRepowireSessionID": null,
@@ -119,10 +126,12 @@
     {
       "Answer": null,
       "AskerIdentity": null,
+      "Attachments": null,
       "CloseReason": "reply_to",
       "Closed": true,
       "CorrelationID": "ask-prior",
       "CreatedAt": "\u003cclock\u003e",
+      "Delegations": null,
       "FromPeerID": "repow-b",
       "FromPeerName": "beta",
       "FromRepowireSessionID": null,

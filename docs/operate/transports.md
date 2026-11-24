@@ -12,7 +12,7 @@ This is the default path for Claude Code 2.1.224 and newer:
 - `repowire mcp` preserves the runtime's peer certificate over stdio and proxies outbound tool calls to the daemon's localhost `/mcp` implementation.
 - Live inbound messages are delivered through Claude's authenticated per-session native inbox. A missing or failed inbox is reported as a delivery failure; Repowire does not synthesize keystrokes as a fallback. The hook is bound to the owning agent PID and exits when that process disappears, so an orphaned hook cannot keep a dead peer's daemon socket alive indefinitely.
 - Native Claude inbox writes return an `accepted` receipt and can reach busy sessions. Claude's own `crossSessionInbound` controls may still hold or refuse the message; Repowire never changes those controls.
-- Non-human deliveries are injected inside a `<peer-message>` envelope carrying sender, type, target, and correlation id when applicable. Dashboard, Telegram, and Slack messages remain direct human instructions.
+- Non-human deliveries are injected inside a `<peer-message>` envelope carrying sender, type, target, correlation id, and message id when applicable. Dashboard, Telegram, and Slack messages remain direct human instructions.
 - Open asks continue to resurface through Stop-hook reminders until they are acked.
 
 Deregistration is layered, strongest signal first:

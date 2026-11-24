@@ -225,9 +225,8 @@ func TestWaitUntilStopWinsOverPastDeadline(t *testing.T) {
 
 // newStuckCalendarRunner starts a JobRunner over an active calendar entry that
 // is overdue and cannot advance, so every tick's MaterializeDue fails and the
-// next deadline stays in the past. The cron is valid: Feb 29 lies beyond
-// NextFireAfter's one-year search from 2026, which is how a person reaches
-// this, not malformed config.
+// next deadline stays in the past. The cron parses but names a date that never
+// occurs (February 30), so NextFireAfter can never advance it.
 func newStuckCalendarRunner(t *testing.T) (*JobRunner, *syncBuffer) {
 	t.Helper()
 	store, err := state.NewStore(filepath.Join(t.TempDir(), "state.db"))
@@ -238,7 +237,7 @@ func newStuckCalendarRunner(t *testing.T) (*JobRunner, *syncBuffer) {
 	if _, err := store.CreateCalendarEntry(context.Background(), &state.CalendarEntry{
 		Title:     "stuck",
 		Kind:      "general",
-		Cron:      "0 0 29 2 *",
+		Cron:      "0 0 30 2 *",
 		NextDueAt: time.Now().UTC().Add(-time.Hour).Format(time.RFC3339Nano),
 	}); err != nil {
 		t.Fatal(err)

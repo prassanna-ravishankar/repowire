@@ -36,6 +36,17 @@ func addMCPToolRaw[T any](srv *mcp.Server, name, description string, fn func(con
 	})
 }
 
+// mcpCallerPeer resolves the calling peer for a tool that acts on the
+// caller's own state; the anonymous HTTP identity has none.
+func (h *Hub) mcpCallerPeer(caller, tool string) (*proto.Peer, error) {
+	if caller != mcpDefaultIdentity {
+		if p, _ := h.reg.GetPeerByName(caller, nil); p != nil {
+			return p, nil
+		}
+	}
+	return nil, fmt.Errorf("%s requires a registered peer identity", tool)
+}
+
 func jsonResult(value any) string {
 	raw, _ := json.Marshal(value)
 	return string(raw)
@@ -140,6 +151,23 @@ type mcpAnswerArgs struct {
 	CorrelationID string  `json:"correlation_id"`
 	OptionID      *string `json:"option_id,omitempty"`
 	Text          *string `json:"text,omitempty"`
+}
+type mcpDelegateArgs struct {
+	CorrelationID string `json:"correlation_id"`
+	PeerName      string `json:"peer_name" jsonschema:"The peer that should answer the ask instead of you"`
+	Note          string `json:"note,omitempty" jsonschema:"Why you are handing it over, shown to the new recipient"`
+	Circle        string `json:"circle,omitempty"`
+}
+type mcpListMessagesArgs struct {
+	UnreadOnly bool `json:"unread_only,omitempty" jsonschema:"Only messages not yet read"`
+	Limit      int  `json:"limit,omitempty" jsonschema:"Maximum messages, newest first (default 20)"`
+}
+type mcpReadMessageArgs struct {
+	MessageID string `json:"message_id"`
+	Peek      bool   `json:"peek,omitempty" jsonschema:"Return the message without marking it read"`
+}
+type mcpMessageDeliveryArgs struct {
+	Mode string `json:"mode" jsonschema:"push (default): message bodies arrive in your session. pull: you receive a one-line nudge per message and fetch the body with read_message"`
 }
 
 type mcpJobCreateArgs struct {
@@ -329,8 +357,50 @@ func registerMCPParityTools(srv *mcp.Server, h *Hub, cfg config.MCPHTTPConfig) {
 		if a.OptionID == nil && a.Text == nil {
 			return "", fmt.Errorf("option_id or text is required")
 		}
-		_, err := h.answerDirect(ctx, AnswerRequest{CorrelationID: a.CorrelationID, OptionID: a.OptionID, Text: a.Text})
+		_, err := h.answerDirect(ctx, AnswerRequest{CorrelationID: a.CorrelationID, FromPeer: &caller, OptionID: a.OptionID, Text: a.Text})
 		return "answered #" + a.CorrelationID, err
+	})
+	addMCPTool(srv, "delegate", "Hand an ask you received to a better-placed peer. It keeps its correlation id and the reply still goes to the original asker.", func(ctx context.Context, caller string, a mcpDelegateArgs) (string, error) {
+		if err := requireFields("correlation_id", a.CorrelationID, "peer_name", a.PeerName); err != nil {
+			return "", err
+		}
+		result, err := h.delegateAsk(ctx, a.CorrelationID, DelegateRequest{ToPeer: a.PeerName, Note: a.Note, FromPeer: &caller, Circle: h.mcpSendCircle(caller, a.Circle)})
+		if err != nil {
+			return "", err
+		}
+		return fmt.Sprintf("delegated #%s to @%s (%d hop(s)); the reply goes to the original asker", a.CorrelationID, result.DelegatedTo, len(result.Delegations)), nil
+	})
+	addMCPTool(srv, "list_messages", "List messages you received, newest first, each with its message_id and a preview.", func(ctx context.Context, caller string, a mcpListMessagesArgs) (string, error) {
+		self, err := h.mcpCallerPeer(caller, "list_messages")
+		if err != nil {
+			return "", err
+		}
+		result, err := h.listMessages(ctx, string(self.PeerID), a.UnreadOnly, defaultInt(a.Limit, 20))
+		return jsonResult(result), err
+	})
+	addMCPTool(srv, "read_message", "Fetch one message you received by message_id; marks it read unless peek.", func(ctx context.Context, caller string, a mcpReadMessageArgs) (string, error) {
+		if err := required("message_id", a.MessageID); err != nil {
+			return "", err
+		}
+		self, err := h.mcpCallerPeer(caller, "read_message")
+		if err != nil {
+			return "", err
+		}
+		view, err := h.readMessage(ctx, a.MessageID, self.PeerID, a.Peek)
+		if err != nil {
+			return "", err
+		}
+		return formatMessage(view), nil
+	})
+	addMCPTool(srv, "set_message_delivery", "Choose how messages reach you: push (bodies arrive in your session) or pull (a nudge names each message; fetch it with read_message).", func(ctx context.Context, caller string, a mcpMessageDeliveryArgs) (string, error) {
+		self, err := h.mcpCallerPeer(caller, "set_message_delivery")
+		if err != nil {
+			return "", err
+		}
+		if _, err := h.setMessageDelivery(ctx, string(self.PeerID), a.Mode); err != nil {
+			return "", err
+		}
+		return "message delivery: " + a.Mode, nil
 	})
 
 	addMCPTool(srv, "job_create", "Create a durable tracked work job.", func(ctx context.Context, caller string, a mcpJobCreateArgs) (string, error) {

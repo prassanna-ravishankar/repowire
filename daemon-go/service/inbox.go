@@ -42,10 +42,15 @@ const (
 // Telegram bridge retries transient failures well inside it.
 const inboxPushTimeout = 60 * time.Second
 
+// inboxCatchUpLimit bounds how many missed items a reconnecting surface is
+// sent; the rest stay readable through the inbox.
+const inboxCatchUpLimit = 20
+
 // InboxStore is the persistence seam; *state.Store satisfies it.
 type InboxStore interface {
 	InsertInboxItem(ctx context.Context, item *state.InboxItem) error
 	InboxItem(ctx context.Context, id string) (*state.InboxItem, error)
+	InboxSeq(ctx context.Context) (int64, error)
 	ListInbox(ctx context.Context, filter state.InboxFilter) ([]state.InboxItem, error)
 	RecordInboxPush(ctx context.Context, itemID string, push state.InboxPush) error
 	InboxItemBySurfaceRef(ctx context.Context, surface, ref string) (*state.InboxItem, error)
@@ -104,12 +109,18 @@ type Inbox struct {
 	humanName proto.DisplayName
 	local     []LocalSurface
 
-	pushTimeout time.Duration
-	baseCtx     context.Context
-	cancel      context.CancelFunc
-	wg          sync.WaitGroup
-	closeMu     sync.Mutex
-	closed      bool
+	pushTimeout  time.Duration
+	catchUpLimit int
+	// liveMu orders Store (insert, pick live surfaces, claim their pushes)
+	// against CatchUp's snapshot of what is stored and in flight, so a live
+	// push is never mistaken for a missed one.
+	liveMu  sync.Mutex
+	pushing map[pushKey]struct{} // pushes in flight
+	baseCtx context.Context
+	cancel  context.CancelFunc
+	wg      sync.WaitGroup
+	closeMu sync.Mutex
+	closed  bool
 }
 
 // NewInbox wires the inbox. asks may be nil (no thread validation: items never
@@ -117,7 +128,8 @@ type Inbox struct {
 func NewInbox(store InboxStore, reg inboxRegistry, transport Transport, asks *AskTracker, cfg config.HumanConfig) *Inbox {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &Inbox{store: store, reg: reg, transport: transport, asks: asks, cfg: cfg,
-		pushTimeout: inboxPushTimeout, baseCtx: ctx, cancel: cancel}
+		pushTimeout: inboxPushTimeout, catchUpLimit: inboxCatchUpLimit, pushing: map[pushKey]struct{}{},
+		baseCtx: ctx, cancel: cancel}
 }
 
 // SetHuman records the registered human peer.
@@ -189,16 +201,24 @@ func (i *Inbox) Store(ctx context.Context, params InboxStoreParams) (InboxReceip
 		// showing, just not threaded.
 		item.Kind = InboxNotify
 	}
+	i.liveMu.Lock()
 	if err := i.store.InsertInboxItem(ctx, item); err != nil {
+		i.liveMu.Unlock()
 		return InboxReceipt{}, err
 	}
+	var targets []surfaceTarget
+	for _, target := range i.pushTargets(item.Kind) {
+		if i.claim(item.ID, target.name) {
+			targets = append(targets, target)
+		}
+	}
+	i.liveMu.Unlock()
 	i.trace(ctx, item, "inbox_stored", "", map[string]any{"item_id": item.ID, "kind": item.Kind})
 	i.reg.AddEvent(ctx, "inbox_item", map[string]any{
 		"item_id": item.ID, "kind": item.Kind, "from": item.FromName,
 		"from_peer_id": item.FromPeerID, "correlation_id": item.CorrelationID,
 	})
 
-	targets := i.pushTargets(item.Kind)
 	names := make([]string, 0, len(targets))
 	for _, target := range targets {
 		names = append(names, target.name)
@@ -206,7 +226,9 @@ func (i *Inbox) Store(ctx context.Context, params InboxStoreParams) (InboxReceip
 	snapshot := *item
 	for _, target := range targets {
 		target := target
-		i.spawn(func() { i.push(&snapshot, target) })
+		if !i.spawn(func() { i.push(&snapshot, target) }) {
+			i.release(item.ID, target.name)
+		}
 	}
 	return InboxReceipt{ItemID: item.ID, Surfaces: names}, nil
 }
@@ -301,6 +323,56 @@ func (i *Inbox) SyncPresence(ctx context.Context) {
 	_, _ = i.reg.UpdateMetadataByName(ctx, string(human), map[string]any{"surfaces": surfaces, "surfaces_live": live})
 }
 
+// CatchUp pushes a surface that just connected the unread items it missed
+// while it was offline: those stored so far with no push record for it and
+// no live push in flight to it, no older than the newest item it has a record
+// for written before liveSince (when it went live again: a live push recorded
+// after that never moves the boundary). Only the newest catchUpLimit go,
+// oldest first, so a long outage neither floods the surface nor trickles
+// stale items in on later connects. Called after the surface's Connect, never
+// on a timer.
+func (i *Inbox) CatchUp(p *proto.Peer, liveSince time.Time) {
+	human, _ := i.Human()
+	if human == "" || p == nil || p.PeerID == human || !proto.IsInboxSurface(p) {
+		return
+	}
+	target := surfaceTarget{name: string(p.DisplayName), peer: p}
+	filter := state.InboxFilter{UnreadOnly: true, MissedBy: target.name, LiveSince: liveSince, Limit: i.catchUpLimit}
+	if !i.cfg.PushesBroadcast(target.name) {
+		filter.ExcludeKind = InboxBroadcast
+	}
+	// Under liveMu every item stored so far has had its live pushes claimed,
+	// and every later one will find the surface live: the missed items are
+	// those up to this sequence that are not in flight to it.
+	i.liveMu.Lock()
+	seq, err := i.store.InboxSeq(i.baseCtx)
+	i.mu.Lock()
+	for key := range i.pushing {
+		if key.surface == target.name {
+			filter.ExcludeIDs = append(filter.ExcludeIDs, key.item)
+		}
+	}
+	i.mu.Unlock()
+	i.liveMu.Unlock()
+	if err != nil {
+		log.Printf("inbox: catch-up for %s: %v", target.name, err)
+		return
+	}
+	filter.MaxSeq = seq
+	i.spawn(func() {
+		items, err := i.store.ListInbox(i.baseCtx, filter)
+		if err != nil {
+			log.Printf("inbox: catch-up for %s: %v", target.name, err)
+			return
+		}
+		for n := len(items) - 1; n >= 0 && i.baseCtx.Err() == nil; n-- {
+			if i.claimPush(i.baseCtx, items[n].ID, target.name) {
+				i.push(&items[n], target)
+			}
+		}
+	})
+}
+
 // Close cancels in-flight pushes and waits for them; later Stores push nothing.
 func (i *Inbox) Close() {
 	if i == nil {
@@ -365,20 +437,22 @@ func (i *Inbox) pushTargets(kind string) []surfaceTarget {
 	return out
 }
 
-func (i *Inbox) spawn(f func()) {
+func (i *Inbox) spawn(f func()) bool {
 	i.closeMu.Lock()
 	defer i.closeMu.Unlock()
 	if i.closed {
-		return
+		return false
 	}
 	i.wg.Add(1)
 	go func() {
 		defer i.wg.Done()
 		f()
 	}()
+	return true
 }
 
-// push renders item on one surface and records the outcome. A daemon-rendered
+// push renders item on one surface and records the outcome. The caller has
+// claimed the push; push releases the claim once the outcome is recorded. A daemon-rendered
 // surface reports its own receipt. A surface that declared inbox_surface gets
 // an inbox_item frame and must ack it; a legacy bridge gets today's notify
 // frame, which proves only the socket write.
@@ -386,6 +460,7 @@ func (i *Inbox) push(item *state.InboxItem, target surfaceTarget) {
 	ctx, cancel := context.WithTimeout(i.baseCtx, i.pushTimeout+5*time.Second)
 	defer cancel()
 	name, surface := target.name, target.peer
+	defer i.release(item.ID, name)
 
 	if target.local != nil {
 		pushCtx, cancelPush := context.WithTimeout(ctx, i.pushTimeout)
@@ -438,6 +513,45 @@ func (i *Inbox) push(item *state.InboxItem, target surfaceTarget) {
 		}
 		i.recordPush(item, name, out)
 	}
+}
+
+type pushKey struct{ item, surface string }
+
+// claim takes the push of item to surface; false while another is in flight.
+func (i *Inbox) claim(itemID, surface string) bool {
+	key := pushKey{itemID, surface}
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	if _, busy := i.pushing[key]; busy {
+		return false
+	}
+	i.pushing[key] = struct{}{}
+	return true
+}
+
+func (i *Inbox) release(itemID, surface string) {
+	i.mu.Lock()
+	delete(i.pushing, pushKey{itemID, surface})
+	i.mu.Unlock()
+}
+
+// claimPush claims a catch-up push, which goes once per item and surface: it
+// fails while another push of the item is in flight and once one is recorded.
+// An unreadable record does not block the push: a duplicate beats a loss.
+func (i *Inbox) claimPush(ctx context.Context, itemID, surface string) bool {
+	if !i.claim(itemID, surface) {
+		return false
+	}
+	item, err := i.store.InboxItem(ctx, itemID)
+	if err != nil {
+		log.Printf("inbox: push record for %s on %s: %v", itemID, surface, err)
+		return true
+	}
+	if item != nil && item.PushedTo(surface) {
+		i.release(itemID, surface)
+		return false
+	}
+	return true
 }
 
 // receiptRefs lists the messages a surface rendered, first (the thread

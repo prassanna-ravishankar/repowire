@@ -159,6 +159,32 @@ clears. Unlike a bare `ack`, this tells the asker that the work remains undone.
 decline("ask-c1a1c7dd", "Repowire rejected both acknowledgement attempts")
 ```
 
+### `delegate`
+
+```text
+delegate(correlation_id: str, peer_name: str, note: str | None = None, circle: str | None = None) -> str
+```
+
+Hand an ask you received to a better-placed peer. The ask keeps its
+correlation id and its asker; only the recipient changes, and the hop is
+recorded. The new recipient receives the ask from you, with a first line
+`[delegated by @you for @asker: note]`, the original attachments and question
+(never as the asker, so your note cannot carry the asker's authority).
+Your Stop-hook reminder clears and theirs starts. Their reply reaches the
+original asker exactly once, framed `[ack #cid from @them via @you]`.
+
+Delegation is refused, and the ask stays with you, when the target is unknown,
+not addressable, outside your circle rules, the asker (decline instead), or
+offline (no live connection). A busy target receives the ask through its next
+Stop reminder, as a fresh ask would. Cross-machine asks, the dispatch ask of a
+live job, and chains of 8 hops are not delegable. Once you delegate, your own
+`ack`, `decline`, or `answer` on that ask is refused with `ask_delegated`.
+
+```text
+delegate("ask-c1a1c7dd", "parser-owner", note="owns the tokenizer")
+# delegated #ask-c1a1c7dd to @parser-owner (1 hop(s)); the reply goes to the original asker
+```
+
 ### `answer`
 
 ```text
@@ -247,6 +273,52 @@ parent = ask_many(["reviewer-a", "reviewer-b"], "ready to merge #42?")
 ask_many_result(parent)  # shows who replied, who's still pending
 ```
 
+## Messages
+
+Every notify, ask, and ask reply delivered to an agent peer has a durable
+`message_id` (`msg-<hex8>`), carried on its `<peer-message message-id="...">`
+tag. Messages are kept for `retention.content_days` (7 by default). The human's messages are its
+[inbox](../concepts/human-inbox.md) instead.
+
+### `list_messages`
+
+```text
+list_messages(unread_only: bool = False, limit: int = 20) -> str
+```
+
+List the messages you received, newest first, as JSON: each with its
+`message_id`, `kind` (`notify`, `ask`, `reply`), sender, `correlation_id`, a
+one-line `preview`, its size in `chars`, and `read_at`. Bodies are not included.
+The result also reports your `delivery` mode.
+
+### `read_message`
+
+```text
+read_message(message_id: str, peek: bool = False) -> str
+```
+
+Return one of your messages with its body, framed exactly as its push would
+have been (`<peer-message ...>`, or the plain human form). It is marked read
+unless `peek`. Another peer's message id reads as not found.
+
+### `set_message_delivery`
+
+```text
+set_message_delivery(mode: "push" | "pull") -> str
+```
+
+Choose how messages reach you. `push` (the default) puts each body in your
+session. `pull` sends a one-line nudge instead, and you fetch the body with
+`read_message`:
+
+```text
+[message msg-1a2b3c4d: notify from @reviewer, 1840 chars] First line of the body…
+↳ read_message("msg-1a2b3c4d")
+```
+
+An ask nudge keeps its correlation id and ack hint. The mode is kept per
+`peer_id` across daemon restarts.
+
 ## Inspection
 
 ### `list_peers`
@@ -313,6 +385,32 @@ Check whether a live orchestrator is present in a circle. An online/busy orchest
 "Live" means a peer with `role=orchestrator`, status `online` or `busy`, and a heartbeat within `stale_after_seconds`. Use this before dispatching long-running work that assumes an orchestrator will be available to coordinate.
 
 This is a *presence check*, not a snapshot of mesh state.
+
+### `wire_query`
+
+```text
+wire_query(circle: str | None = None, peer: str | None = None, kind: str | None = None,
+           state: str | None = None, stuck_only: bool = False, since: str = "24h",
+           limit: int = 50, cursor: str | None = None) -> str
+```
+
+Orchestrator only. Lists ask and notify threads across every circle, newest activity first: who asked whom, who holds the ask now (and who held it before, after a delegation), its state, its age, the holder's assistant turns since it was assigned, and stuck signals. Returns TSV with columns `thread`, `kind`, `from`, `holder`, `via`, `state`, `age`, `holder_turns`, `stuck`, `protected`, and a final `cursor` row when there is another page (pass it back as `cursor`). Pages follow latest activity, so a thread that gets new activity while you page can move ahead of the cursor (skipped) or show twice.
+
+The output is metadata only: no message text, delegation notes or reasons. Display names are agent-chosen and printed with control characters removed; a thread id that is not plainly printable is shown as an `h-` alias, which `wire_show` accepts.
+
+The caller must be a registered peer with a proven identity and `role=orchestrator`, checked on every call. Anonymous HTTP MCP and ordinary agents are refused. The operator's `GET /wire/threads` route is not an agent surface: like `/traces`, it answers whoever holds the daemon token (or a local request when the token is not required).
+
+- **States** of an ask: `sent`, `queued`, `deferred`, `delivered` (to the current holder), `delegated`, `reply_stashed` (the asker went offline before the reply), a close reason when closed (`acked`, `declined`, `answered`, `cancelled`, `expired`, `send_failed`, ...), or `unknown` when the daemon lost the open ask without recording its close. A notify is `sent`, `queued` (waiting in the delivery queue for an offline recipient), `dequeued` (the queue handed it to the reconnected peer; not a receipt, and a drain is recorded before its response reaches the peer's hook, so a lost response still reads `dequeued`), `expired` or `dropped` (left the queue undelivered: its TTL passed, or the per-peer cap or a peer that cannot take input removed it), `delivered`, `failed`, `remote_<outcome>` across machines, or `unverified` (sent on a transport that returns no receipt, or queued before the queue recorded its outcomes); read state is not tracked yet.
+- **Stuck signals**, computed when read, never on a timer, with thresholds under [`wire.stuck`](configuration.md#wire): `ignored` (the holder is online and took `ignored_turns` turns since the ask was assigned to it), `slow` (no holder turn `slow_minutes` after assignment), `holder_offline`, `asker_gone` (a reply stashed `asker_gone_minutes` ago), and `undelivered` (a notify queued `undelivered_minutes` ago).
+- **`protected`** marks a thread with the human, a surface service, or a peer the daemon no longer knows as a party. Future body reads and interventions will refuse such threads.
+
+### `wire_show`
+
+```text
+wire_show(thread_id: str, cursor: int | None = None) -> str
+```
+
+Orchestrator only. One thread's envelope and its stage timeline (`seq`, `at`, `stage`, `status`, `peer`, `close_reason`), oldest first, within 8,000 characters; a longer timeline ends with a `cursor` row naming the last `seq` shown. Same authorization and the same metadata-only rule as `wire_query`.
 
 ## Lifecycle
 
@@ -392,7 +490,7 @@ The optional `message` is an opening prompt for every backend. The daemon launch
 kill_peer(peer_identifier: str, circle: str | None = None) -> str
 ```
 
-Terminate a peer by name or `peer_id`. Ordinary registered peers may only target their own circle; orchestrator, service, and human roles may pass another `circle`. Anonymous HTTP MCP retains the configured admin behavior. The mesh registration is always removed once the peer resolves unambiguously. The tmux pane is killed only when the daemon can prove it belongs to that peer: current/durable Repowire spawn ownership, or live pane hook metadata whose `peer_id` matches the target peer. Path match alone is not destructive proof. If the pane cannot be verified, the call succeeds with a skipped tmux-kill note so stale/manual peers can be retired from the mesh without touching tmux. If `tmux kill-pane` fails after verification, the call fails loudly and leaves the peer registered for inspection. A hosted peer has no pane: the daemon first retires its runtime agent (it stops taking input; its transcript remains), then retires the peer. If the runtime cannot be reached the call fails and the peer stays usable.
+Terminate a peer by name or `peer_id`. Ordinary registered peers may only target their own circle; orchestrator, service, and human roles may pass another `circle`. Anonymous HTTP MCP retains the configured admin behavior. The mesh registration is always removed once the peer resolves unambiguously. The tmux pane is killed only when the daemon can prove it belongs to that peer: current/durable Repowire spawn ownership, or live pane hook metadata whose `peer_id` matches the target peer. A spawn record that names no peer, and pane metadata, count only while the peer's agent process is still running in that pane; whenever the peer's agent pid is known and it is not running in the pane, the pane is left alone. Path match alone is not destructive proof. If the pane cannot be verified, the call succeeds with a skipped tmux-kill note so stale/manual peers can be retired from the mesh without touching tmux. If `tmux kill-pane` fails after verification, the call fails loudly and leaves the peer registered for inspection. Otherwise the `peer_id` is closed, the same as `DELETE /peers/{name}`. Its runtime cannot register it again; a Codex App Server thread is interrupted and stays off the mesh until it is resumed. A hosted peer has no pane: the daemon first retires its runtime agent (it stops taking input; its transcript remains), then marks the peer retired. If the runtime cannot be reached the call fails and the peer stays usable.
 
 ### `restart_peer`
 

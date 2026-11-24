@@ -39,6 +39,17 @@ func (s *Store) RecordTrace(
 	traceID, kind, stage, status, deliveryID, peerID, fromPeerID string,
 	detail map[string]any,
 ) error {
+	return recordTrace(ctx, s.db, traceID, kind, stage, status, deliveryID, peerID, fromPeerID, detail)
+}
+
+// execer is a *sql.DB or a *sql.Tx.
+type execer interface {
+	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
+}
+
+// recordTrace is RecordTrace on db, so a store write can trace inside its
+// own transaction.
+func recordTrace(ctx context.Context, db execer, traceID, kind, stage, status, deliveryID, peerID, fromPeerID string, detail map[string]any) error {
 	if status == "" {
 		status = "ok"
 	}
@@ -63,7 +74,7 @@ func (s *Store) RecordTrace(
 		(SELECT COALESCE(MAX(seq), -1) + 1 FROM delivery_traces WHERE trace_id = ?),
 		?, ?, ?, ?, ?, ?, ?
 	)`
-	_, err := s.db.ExecContext(ctx, q,
+	_, err := db.ExecContext(ctx, q,
 		uuid.NewString(),
 		traceID,
 		deliveryID,
@@ -278,6 +289,35 @@ func (s *Store) TracesWithStage(ctx context.Context, stage string, since time.Ti
 	return out, rows.Err()
 }
 
+// TraceThread is one ask or notify trace and its latest activity.
+type TraceThread struct {
+	TraceID string
+	Kind    string
+	LastTS  string
+}
+
+// TraceThreadsSince lists ask and notify traces active since since, newest
+// activity first (then trace id, descending). The wire view pages through it.
+func (s *Store) TraceThreadsSince(ctx context.Context, since time.Time) ([]TraceThread, error) {
+	const q = `SELECT trace_id, MIN(kind), MAX(ts) AS last FROM delivery_traces
+		WHERE kind IN ('ask', 'notify') AND ts >= ?
+		GROUP BY trace_id ORDER BY last DESC, trace_id DESC`
+	rows, err := s.db.QueryContext(ctx, q, formatTS(since))
+	if err != nil {
+		return nil, fmt.Errorf("list trace threads: %w", err)
+	}
+	defer rows.Close()
+	var out []TraceThread
+	for rows.Next() {
+		var t TraceThread
+		if err := rows.Scan(&t.TraceID, &t.Kind, &t.LastTS); err != nil {
+			return nil, fmt.Errorf("scan trace thread: %w", err)
+		}
+		out = append(out, t)
+	}
+	return out, rows.Err()
+}
+
 // AssistantTurnsBetween counts the assistant chat turns peerID posted in the
 // window (from, to]: the work a recipient spent while an ask was open.
 func (s *Store) AssistantTurnsBetween(ctx context.Context, peerID string, from, to time.Time) (int, error) {
@@ -290,4 +330,24 @@ func (s *Store) AssistantTurnsBetween(ctx context.Context, peerID string, from, 
 		return 0, fmt.Errorf("count assistant turns for %s: %w", peerID, err)
 	}
 	return n, nil
+}
+
+// traceContentKeys hold authored text in a trace stage's detail: the ask,
+// its reply, a delegation note, and the routing input's copy of the ask.
+var traceContentKeys = []string{"$.text", "$.reply", "$.note", "$.request.text"}
+
+// deliveryTraceRetention: a stage is a record; its text is content.
+var deliveryTraceRetention = tableRetention{
+	tables: []string{"delivery_traces"},
+	rules: func(c retentionCutoffs) (records, content []sweepRule) {
+		if c.records != "" {
+			records = append(records, sweepRule{name: "delivery_traces.delete", table: "delivery_traces", where: "ts < ?", args: []any{c.records}})
+		}
+		if c.content != "" {
+			content = append(content, sweepRule{name: "delivery_traces.strip", table: "delivery_traces",
+				where: "ts < ? AND " + jsonPresent("detail_json", traceContentKeys),
+				set:   jsonStrip("detail_json", traceContentKeys), args: []any{c.content}})
+		}
+		return records, content
+	},
 }

@@ -324,10 +324,13 @@ type UpdateDisplayNameFrame struct {
 }
 
 // ErrorFrame is bidirectional. Code is set for typed rejections (peer_retired).
+// Final marks a rejection no proof can lift (an operator closed the peer_id): a
+// runtime stops reconnecting. Clients that predate it still see peer_retired.
 type ErrorFrame struct {
 	Type          FrameType `json:"type"` // "error"
 	Code          string    `json:"code,omitempty"`
 	Error         string    `json:"error"`
+	Final         bool      `json:"final,omitempty"`
 	CorrelationID *string   `json:"correlation_id,omitempty"`
 }
 

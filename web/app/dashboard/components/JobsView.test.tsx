@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { JobsView } from "./JobsView";
 import type { JobsResponse } from "../types";
@@ -221,6 +221,41 @@ describe("JobsView", () => {
     fireEvent.click(screen.getByText("Nightly maintenance"));
 
     expect(await screen.findByText("Run the maintenance pass.")).toBeInTheDocument();
+  });
+
+  it("ignores a detail response that arrives after the selection moved on", async () => {
+    const payload: JobsResponse = {
+      work: [QUEUED_JOB],
+      recurring: [RECURRING_JOB],
+    };
+    let failStale: () => void = () => {};
+    const staleDetail = new Promise<Response>((resolve) => {
+      failStale = () => resolve(jsonResponse({ detail: "stale daemon" }, 500));
+    });
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith("/jobs?view=summary")) return jsonResponse(payload);
+      // Like a real network response racing an abort, this ignores the signal.
+      if (url.endsWith("/jobs/work-1/status")) return staleDetail;
+      if (url.endsWith("/jobs/cal-1/status")) return jsonResponse({ status: RECURRING_JOB });
+      return jsonResponse({ detail: "not found" }, 404);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<JobsView apiBase="http://daemon.test" refreshSignal={0} />);
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith("http://daemon.test/jobs/work-1/status", expect.any(Object)));
+    fireEvent.click(screen.getByText("Nightly maintenance"));
+    expect(await screen.findByText("Run the maintenance pass.")).toBeInTheDocument();
+
+    await act(async () => {
+      failStale();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    // The stale request's failure must not land on the job now selected.
+    expect(screen.queryByText(/Error 500/)).not.toBeInTheDocument();
+    expect(screen.queryByText("detail unavailable")).not.toBeInTheDocument();
+    expect(screen.getByText("Run the maintenance pass.")).toBeInTheDocument();
   });
 
   it("filters jobs by attention and recurring rows", async () => {

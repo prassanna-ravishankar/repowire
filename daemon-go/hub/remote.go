@@ -26,7 +26,6 @@ import (
 // remote_source.go is the asking side.
 
 const (
-	remoteRetention     = 7 * 24 * time.Hour
 	remoteCreateHorizon = 6 * 24 * time.Hour
 	remoteFutureSkew    = 5 * time.Minute
 	remoteWaitCap       = 20 * time.Second
@@ -45,8 +44,6 @@ type remoteMesh struct {
 	epoch string
 
 	checking sync.Map // outbound ids being read back, single-flight
-	pruneMu  sync.Mutex
-	pruned   time.Time
 }
 
 // WithRemote joins this daemon to its owner's other machines. It needs the
@@ -62,7 +59,6 @@ func (h *Hub) WithRemote(ctx context.Context, link machineLink, self string) err
 	}
 	h.remote = &remoteMesh{link: link, store: h.store, self: self, epoch: epoch}
 	h.ask.asks.SetCloseGuard(h.guardRemoteClose)
-	h.remote.pruneLazily(ctx)
 	return h.recoverRemote(ctx)
 }
 
@@ -79,7 +75,6 @@ func (h *Hub) RemoteHandler() http.Handler {
 			writeJSONError(w, http.StatusForbidden, "remote requests come only through the relay")
 			return
 		}
-		h.remote.pruneLazily(r.Context())
 		mux.ServeHTTP(w, r)
 	})
 }
@@ -445,17 +440,4 @@ func (h *Hub) recoverRemote(ctx context.Context) error {
 		h.registerOutboundAsk(ctx, row)
 	}
 	return nil
-}
-
-// pruneLazily deletes records past retention, at most hourly, on a request.
-func (m *remoteMesh) pruneLazily(ctx context.Context) {
-	m.pruneMu.Lock()
-	defer m.pruneMu.Unlock()
-	if time.Since(m.pruned) < time.Hour {
-		return
-	}
-	m.pruned = time.Now()
-	if err := m.store.PruneRemote(ctx, time.Now().Add(-remoteRetention).Unix()); err != nil {
-		log.Printf("remote: prune: %v", err)
-	}
 }

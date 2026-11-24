@@ -144,8 +144,9 @@ func NewMessageRouter(transport Transport, reg *peer.Registry) *MessageRouter {
 // to deliveryAckTimeout for an optional hook receipt. Wire shape:
 // {type:notify, delivery_id, from_peer, to_peer, text, attachments?}. Returns
 // the hook_delivery map (nil when the hook didn't ack). deliveryID, when "", is
-// minted as "notif-delivery-<hex8>". A missing ack is not an error (older hooks
-// never ack). Mirrors MessageRouter.send_notification.
+// minted as "notif-delivery-<hex8>". messageID, when set, names the recipient's
+// message record (frame field message_id). A missing ack is not an error (older
+// hooks never ack). Mirrors MessageRouter.send_notification.
 func (m *MessageRouter) SendNotification(
 	ctx context.Context,
 	from Sender,
@@ -155,9 +156,10 @@ func (m *MessageRouter) SendNotification(
 	text string,
 	attachments []map[string]any,
 	deliveryID string,
+	messageID string,
 ) (hookDelivery map[string]any, err error) {
 	if deliveryID == "" {
-		deliveryID = "notif-delivery-" + uuid.NewString()[:8]
+		deliveryID = NewNotifyDeliveryID()
 	}
 	frame := map[string]any{
 		"type":        string(proto.FrameNotify),
@@ -168,6 +170,9 @@ func (m *MessageRouter) SendNotification(
 	if len(attachments) > 0 {
 		frame["attachments"] = attachments
 	}
+	if messageID != "" {
+		frame["message_id"] = messageID
+	}
 	m.stampSender(frame, from)
 	m.logDeliveryTrace("Notify", from.Name, intendedRecipientName, toName, to)
 	return m.transport.SendAndWaitDeliveryAck(ctx, to, frame, deliveryAckTimeout)
@@ -175,7 +180,7 @@ func (m *MessageRouter) SendNotification(
 
 // SendAsk puts a first-class ask frame on the wire and waits for the optional
 // hook receipt. Wire shape: {type:ask, delivery_id, correlation_id, from_peer,
-// to_peer, text(+close-hint), reply_to?, question?, attachments?}. A delivery_ack
+// to_peer, text(+close-hint), reply_to?, question?, attachments?, message_id?}. A delivery_ack
 // with status in {"failed","rejected"} is raised as a *DeliveryInjectionError
 // (FAIL LOUD); any other ack is returned as hookDelivery. The daemon does NOT
 // track pickup — open asks resurface via /asks/pending until acked. Mirrors
@@ -191,6 +196,7 @@ func (m *MessageRouter) SendAsk(
 	replyTo *string,
 	question map[string]any,
 	attachments []map[string]any,
+	messageID string,
 ) (hookDelivery map[string]any, err error) {
 	var hint string
 	if question != nil {
@@ -215,6 +221,9 @@ func (m *MessageRouter) SendAsk(
 	}
 	if question != nil {
 		frame["question"] = question
+	}
+	if messageID != "" {
+		frame["message_id"] = messageID
 	}
 	m.stampSender(frame, from)
 	m.logDeliveryTrace("Ask", from.Name, intendedRecipientName, toName, to)

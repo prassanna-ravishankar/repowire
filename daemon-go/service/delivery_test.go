@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -628,5 +629,68 @@ func TestNotifySkipSeedGateDeliversSeedImmediately(t *testing.T) {
 	}
 	if elapsed := time.Since(start); elapsed > 2*time.Second {
 		t.Fatalf("seed waited behind the seed gate: %s", elapsed)
+	}
+}
+
+// TestRuntimeCompletionReportsTheClose (#512): every way a runtime's answer
+// closes an ask reports it once through the close callback, with the reply,
+// so the hub can emit the same ack event and closed trace as an ack; an
+// answer stashed for an offline asker closes nothing and reports nothing.
+func TestRuntimeCompletionReportsTheClose(t *testing.T) {
+	type closed struct {
+		reason, reply string
+		delivered     bool
+	}
+	for _, tc := range []struct {
+		name          string
+		replyDelivery string
+		transport     *fakeTransport
+		queue         *fakeQueue
+		reply, err    string
+		want          []closed
+	}{
+		{name: "pull answer", replyDelivery: "pull", transport: &fakeTransport{}, reply: "done", want: []closed{{"ack_with_msg", "done", true}}},
+		{name: "pull error", replyDelivery: "pull", transport: &fakeTransport{}, err: "crashed", want: []closed{{"send_failed", "ACP error: crashed", false}}},
+		{name: "pushed answer", transport: &fakeTransport{}, reply: "done", want: []closed{{"ack_with_msg", "done", true}}},
+		{name: "queued answer", transport: &fakeTransport{ackErr: ErrNotConnected}, queue: &fakeQueue{}, reply: "done", want: []closed{{"ack_with_msg", "done", false}}},
+		{name: "stashed answer", transport: &fakeTransport{ackErr: ErrNotConnected}, reply: "done"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			asker := peerWith("repow-default-aaaa", "alpha", "default", proto.StatusOnline)
+			responder := peerWith("repow-default-bbbb", "beta", "default", proto.StatusOnline)
+			reg := &fakeRegistry{peers: []*proto.Peer{asker, responder}}
+			asks := NewAskTracker(0)
+			cid, err := asks.Register(context.Background(), RegisterAskParams{
+				FromPeerID: asker.PeerID, FromPeerName: asker.DisplayName,
+				ToPeerID: responder.PeerID, ToPeerName: responder.DisplayName,
+				ReplyDelivery: tc.replyDelivery,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			var queue queuedDeliveryStore
+			if tc.queue != nil {
+				queue = tc.queue
+			}
+			var got []closed
+			d := NewPeerDelivery(reg, newRouterWithFake(tc.transport), tc.transport, asks, queue).
+				OnAskClosed(func(_ context.Context, ask *Ask, reason, reply string, delivered bool) {
+					if ask.CorrelationID != cid || !ask.Closed {
+						t.Errorf("reported ask %+v, want closed %s", ask, cid)
+					}
+					got = append(got, closed{reason, reply, delivered})
+				})
+			var reply, errText *string
+			if tc.err != "" {
+				errText = &tc.err
+			} else {
+				reply = &tc.reply
+			}
+			d.completeACPAsk(context.Background(), cid, reply, errText)
+			d.completeACPAsk(context.Background(), cid, reply, errText) // a late duplicate reports nothing
+			if fmt.Sprint(got) != fmt.Sprint(tc.want) {
+				t.Fatalf("reported %+v, want %+v", got, tc.want)
+			}
+		})
 	}
 }

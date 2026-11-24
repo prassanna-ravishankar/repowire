@@ -8,14 +8,23 @@ Contact another peer only when its ownership, context, or independent work mater
 
 ## `ask`
 
-Non-blocking. Returns a `correlation_id` immediately. The recipient closes the thread with `ack(corr_id)` (bare), `ack(corr_id, message)` (reply), or `decline(corr_id, reason)` (return unresolved). Chain follow-ups with `ask(reply_to=corr_id, ...)`, which closes the prior thread and opens a new one referencing it.
+Non-blocking. Returns a `correlation_id` immediately. The recipient closes the thread with `ack(corr_id)` (bare), `ack(corr_id, message)` (reply), or `decline(corr_id, reason)` (return unresolved), or hands it to a better-placed peer with `delegate(corr_id, peer)`. Chain follow-ups with `ask(reply_to=corr_id, ...)`, which closes the prior thread and opens a new one referencing it.
 
 Use `ask` when closure matters: worker checkpoints, review requests, pre-commit
 handoffs, status checks you intend to track, and delegated work that should not
 quietly disappear. For durable implementation work with lifecycle/result state,
 prefer a job instead of overloading a long ask thread.
 
-If the recipient never acks, repowire injects a reminder block at the start of every subsequent prompt on the recipient side until the ask is acked. Tool-call detection is the source of truth — prose `[ack #cid]` mentions in agent output do not close anything, only a real `ack()` MCP call does.
+If the recipient never acks, repowire reminds it at the end of each turn until the ask is closed. For Claude Code and Codex the Stop hook fetches the recipient's open asks and returns a `decision: block` reminder listing them (Claude Code needs a tmux pane for this). The OpenCode plugin reminds when the session goes idle, and the Pi extension at the turn boundary. The prompt-start hook injects only the description reminder, not open asks. Tool-call detection is the source of truth: prose `[ack #cid]` mentions in agent output do not close anything, only a real `ack()` MCP call does.
+
+### Daemon-side closure
+
+The daemon also closes asks on its own:
+
+- **Age.** Asks older than `daemon.prune_max_age_hours` (default 24) are closed as `evicted`. This runs lazily, at most once every 5 minutes when any peer's pending asks are read, and during lazy repair. An ask holding a stashed reply for an offline asker is left to [lazy repair](lazy-repair.md), which emits `pending_reply_lost` before evicting it.
+- **Peer reap or eviction.** When a peer is reaped or evicted, every open ask to or from it is closed as `evicted`.
+- **Non-addressable demotion.** Open asks to a peer demoted to non-addressable are closed with `peer_not_addressable` (see [addressability](peers-and-circles.md)).
+- **Job completion.** A job's dispatch ask closes with `fire_completed` when the job finishes, or `executor_died` when its executor goes away.
 
 When the daemon can resolve a durable session binding for either side, ask events include nullable `repowire_session_id`, `from_repowire_session_id`, and `to_repowire_session_id` metadata. Peer IDs remain the routing authority.
 
@@ -28,6 +37,18 @@ Closes an open ask thread.
 - `decline(cid, reason)` returns work that cannot be handled to the original asker as `[declined #cid from @peer] reason`.
 
 Replies always reach the original asker regardless of circle — the thread was established at ask-time and the routing is locked then.
+
+A reply reaches the asker at most once: a reply claims the ask before it is sent, so of two racing replies one is delivered and the other is refused.
+
+## Delegation
+
+`delegate(cid, peer, note)` moves an open ask from its recipient to another peer. The correlation id, the asker, and the reply path do not change; the recipient does, and the hop is recorded on the ask, in the trace ledger (`delegated`), and on the event stream (`ask_delegated`). The new recipient receives the ask from the delegator, never as the asker, with a `[delegated by @old for @asker: note]` first line, so a peer's note can never arrive with the asker's (possibly the human's) authority. Its reply reaches the asker framed `[ack #cid from @new via @old]`, and the old recipient can no longer resolve the ask.
+
+The whole hand-off runs under the ask's claim, the same one replies take, so no reply, answer or second hand-off can interleave with it; every check runs before the ask moves, and a delivery that fails puts it back: delegating to an offline peer is refused and the ask stays with the delegator. Asks between machines and a live job's dispatch ask are not delegable. A job is the durable form of handed-off work (owner, assignee, attempts, result); delegation is the light form for an ask. See [`delegate`](../reference/mcp-tools.md#delegate).
+
+## Message ids and pull delivery
+
+Every notify, ask, and ask reply an agent peer receives is recorded with a `message_id`, shown as `message-id="msg-…"` on its `<peer-message>` tag. A peer can list its messages, peek at one, or fetch one (`list_messages`, `read_message`). A peer that sets `set_message_delivery("pull")` receives a one-line nudge naming the message instead of its body, and fetches the body when it chooses. Push stays the default. See [Messages](../reference/mcp-tools.md#messages).
 
 Bare ack events and reply notifications carry the same nullable session metadata when a binding is known. Detached or offline peers keep those fields `null`.
 

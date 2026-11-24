@@ -154,7 +154,9 @@ func clefError(status int, body []byte) (reason, code string) {
 		return FallbackTimeout, code
 	case status == http.StatusRequestEntityTooLarge: // 3006 (documented), 5021 (undocumented, observed for a state far past the cap)
 		return FallbackStateTooLarge, code
-	case code == "3036", code == "5035": // daily allocation used up; paid plan required
+	// Daily allocation used up (3036; 4006, undocumented, observed live on a
+	// 429 in #460, persisting past 00:00 UTC); paid plan required (5035).
+	case code == "3036", code == "4006", code == "5035":
 		return FallbackBilling, code
 	}
 	return statusReason(status), code

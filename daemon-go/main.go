@@ -358,7 +358,17 @@ func runDaemon() {
 	// lifecycle + the durable queued-delivery fallback (store satisfies the
 	// queue seam). The router (WS-only) is the one the hub minted in step 5.
 	asks := service.NewAskTracker(time.Duration(cfg.Daemon.PruneMaxAgeHours * float64(time.Hour)))
-	delivery := service.NewPeerDelivery(reg, h.Router(), transport, asks, store).WithQueueConfig(cfg.Daemon.DeliveryQueueTTLSeconds, cfg.Daemon.DeliveryQueueMaxPerPeer).WithOperationStore(store).WithOrchestratorRecall(cfg.Daemon.OrchestratorRecall)
+	// Retention (rfcs/retention.md): the store sweeps its tables, attachment
+	// files plug in as a pass, and the sweep is journaled through the
+	// registry; nothing younger than an open ask expires.
+	content, records := cfg.Retention.Durations()
+	retention := state.RetentionPolicy{Content: content, Records: records, AskLife: asks.TTL()}
+	h.WithRetention(retention)
+	if err := store.StartRetention(retention, state.RetentionPlugs{Passes: []func(context.Context, state.RetentionPolicy, time.Time) map[string]int{hub.ExpireAttachments}, Emit: reg.AddEvent}); err != nil {
+		log.Printf("retention: %v", err)
+	}
+	messages := service.NewMessages(store)
+	delivery := service.NewPeerDelivery(reg, h.Router(), transport, asks, store).WithQueueConfig(cfg.Daemon.DeliveryQueueTTLSeconds, cfg.Daemon.DeliveryQueueMaxPerPeer).WithOperationStore(store).WithOrchestratorRecall(cfg.Daemon.OrchestratorRecall).WithMessages(messages)
 	if recovered := service.ReconcileACPInflight(ctx, store, cfg.Daemon.DeliveryQueueTTLSeconds, cfg.Daemon.DeliveryQueueMaxPerPeer); recovered > 0 {
 		log.Printf("acp reconcile: closed %d ask(s) lost across restart", recovered)
 	}
@@ -466,6 +476,7 @@ func runDaemon() {
 	sessionControl := service.NewSessionControl(reg, spawnService, store).WithResume(service.ResolveLocalResume)
 	jobRunner := service.NewJobRunner(store, delivery, sessionControl)
 	jobCompletion := service.NewJobCompletion(store, asks, sessionControl, reg, delivery)
+	jobRunner.OnDeadline(jobCompletion.ExpireOverdue)
 	reg.OnTerminalOffline = jobCompletion.OnPeerTerminalOffline
 	scheduler := service.NewScheduler(store, delivery)
 	// Hosted runs report like hook turns: to job completion and the chat
@@ -514,9 +525,13 @@ func runDaemon() {
 		log.Printf("WARNING %s", warning)
 	}
 	h.WithReadDeps(asks, store).
+		WithMessages(messages).
 		StartRoutingHistory(ctx).
 		WithMessaging(delivery, store).
 		WithAskLifecycle(asks, delivery, reg).
+		// The orchestrator's read-only wire view over the tracker, the
+		// trace ledger and the registry (rfcs/wire-observability.md).
+		WithWire(service.NewWire(asks, store, reg, cfg.Wire.Stuck)).
 		WithRouting(router).
 		WithSessionRoutes(reg, store).
 		WithSpawn(spawnService, reg, asks, selfMachine, cfg.Daemon.CircleBoundary).

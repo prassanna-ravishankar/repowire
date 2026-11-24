@@ -48,6 +48,31 @@ type ConnectionInfo struct {
 	// HookVersion is what the connecting ws-hook declared in its connect frame
 	// (0 when it declared none).
 	HookVersion int
+
+	// AwaitReady marks a socket that is not ready for frames until its
+	// owner calls Ready (the hub writes the connected frame first). A frame
+	// re-sent to it after a replacement waits for that. Without it the socket
+	// is ready on Connect.
+	AwaitReady bool
+
+	// ended closes when this socket stops being the peer's connection
+	// (replaced, disconnected, or closed), so a frame waiting on it for a
+	// delivery_ack learns that it never will. ready closes once the socket
+	// may take frames. Both are set by Connect.
+	ended     chan struct{}
+	endOnce   sync.Once
+	ready     chan struct{}
+	readyOnce sync.Once
+}
+
+func (c *ConnectionInfo) markReady() {
+	c.readyOnce.Do(func() { close(c.ready) })
+}
+
+func (c *ConnectionInfo) end() {
+	if c.ended != nil {
+		c.endOnce.Do(func() { close(c.ended) })
+	}
 }
 
 // ackKey indexes an in-flight delivery ack by (peer, delivery id). Both halves
@@ -99,13 +124,36 @@ func NewWebSocketTransport() *WebSocketTransport {
 // Connect stores a fresh connection. If a connection already exists for the id
 // it is closed first — a reconnect must not silently leak the old socket.
 func (t *WebSocketTransport) Connect(ctx context.Context, info *ConnectionInfo) {
+	if info.ended == nil {
+		info.ended = make(chan struct{})
+	}
+	if info.ready == nil {
+		info.ready = make(chan struct{})
+		if !info.AwaitReady {
+			info.markReady()
+		}
+	}
 	t.mu.Lock()
 	old := t.conns[info.SessionID]
 	t.conns[info.SessionID] = info
 	t.mu.Unlock()
+	if old != nil && old != info {
+		old.end()
+	}
 
 	if old != nil && old.WS != nil {
 		_ = old.WS.Close(websocket.StatusNormalClosure, "superseded by reconnect")
+	}
+}
+
+// Ready marks ws, id's current socket, ready for frames (the connect
+// handshake is done). A no-op for any other socket.
+func (t *WebSocketTransport) Ready(id proto.PeerID, ws *websocket.Conn) {
+	t.mu.RLock()
+	info, ok := t.conns[id]
+	t.mu.RUnlock()
+	if ok && info.WS == ws {
+		info.markReady()
 	}
 }
 
@@ -125,17 +173,28 @@ func (t *WebSocketTransport) Disconnect(ctx context.Context, id proto.PeerID, ws
 		return false
 	}
 	delete(t.conns, id)
+	info.end()
 	return true
 }
 
 // Send writes a frame to the peer's socket as JSON.
 func (t *WebSocketTransport) Send(ctx context.Context, id proto.PeerID, v any) error {
+	_, err := t.send(ctx, id, v)
+	return err
+}
+
+// send writes v to id's current socket and returns that connection.
+func (t *WebSocketTransport) send(ctx context.Context, id proto.PeerID, v any) (*ConnectionInfo, error) {
 	t.mu.RLock()
 	info, ok := t.conns[id]
 	t.mu.RUnlock()
 	if !ok {
-		return fmt.Errorf("%w: %s", ErrNotConnected, id)
+		return nil, fmt.Errorf("%w: %s", ErrNotConnected, id)
 	}
+	return info, write(ctx, info, v)
+}
+
+func write(ctx context.Context, info *ConnectionInfo, v any) error {
 	writeCtx, cancel := context.WithTimeout(ctx, writeTimeout)
 	defer cancel()
 	if err := wsjson.Write(writeCtx, info.WS, v); err != nil {
@@ -144,10 +203,21 @@ func (t *WebSocketTransport) Send(ctx context.Context, id proto.PeerID, v any) e
 	return nil
 }
 
+func (t *WebSocketTransport) current(id proto.PeerID) *ConnectionInfo {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	return t.conns[id]
+}
+
 // SendAndWaitDeliveryAck sends a frame carrying a delivery_id and waits up to
-// timeout for the matching delivery_ack. Best-effort: a timeout returns
-// (nil, nil) rather than an error, since older hooks never ack. A frame without
-// a string delivery_id is sent as a plain Send (no ack channel registered).
+// timeout for the matching delivery_ack. Best-effort: a timeout on a socket
+// that stays open returns (nil, nil) rather than an error, since older hooks
+// never ack. A socket that ends first never acks either (#472): when a newer
+// connection replaced it, the frame is sent once more there, under the same
+// delivery_id and the same overall timeout; when none did, the wait fails with
+// ErrNotConnected, so the caller queues or fails the delivery instead of
+// reporting it delivered. A frame without a string delivery_id is sent as a
+// plain Send (no ack channel registered).
 func (t *WebSocketTransport) SendAndWaitDeliveryAck(ctx context.Context, id proto.PeerID, v any, timeout time.Duration) (map[string]any, error) {
 	deliveryID, ok := extractDeliveryID(v)
 	if !ok || deliveryID == "" {
@@ -168,17 +238,47 @@ func (t *WebSocketTransport) SendAndWaitDeliveryAck(ctx context.Context, id prot
 		t.mu.Unlock()
 	}()
 
-	if err := t.Send(ctx, id, v); err != nil {
+	info, err := t.send(ctx, id, v)
+	if err != nil {
 		return nil, err
 	}
-
-	select {
-	case data := <-ch:
-		return data, nil
-	case <-time.After(timeout):
-		return nil, nil
-	case <-ctx.Done():
-		return nil, ctx.Err()
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	resent := false
+	for {
+		select {
+		case data := <-ch:
+			return data, nil
+		case <-timer.C:
+			return nil, nil
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-info.ended:
+			select {
+			case data := <-ch: // the ack beat the close
+				return data, nil
+			default:
+			}
+			if next := t.current(id); next != nil && next != info && !resent {
+				// The replacement takes frames only once its handshake is
+				// done; a frame ahead of its connected frame would break it.
+				select {
+				case <-next.ready:
+				case <-next.ended:
+					return nil, fmt.Errorf("%w: %s: socket closed before delivery_ack", ErrNotConnected, id)
+				case <-timer.C:
+					return nil, fmt.Errorf("%w: %s: socket closed before delivery_ack and its replacement was not ready", ErrNotConnected, id)
+				case <-ctx.Done():
+					return nil, ctx.Err()
+				}
+				resent, info = true, next
+				if err := write(ctx, info, v); err != nil {
+					return nil, err
+				}
+				continue
+			}
+			return nil, fmt.Errorf("%w: %s: socket closed before delivery_ack", ErrNotConnected, id)
+		}
 	}
 }
 
@@ -358,6 +458,9 @@ func (t *WebSocketTransport) Close(id proto.PeerID) error {
 		delete(t.conns, id)
 	}
 	t.mu.Unlock()
+	if ok {
+		info.end()
+	}
 	if ok && info.WS != nil {
 		err := info.WS.Close(websocket.StatusGoingAway, "peer removed by daemon")
 		if manager != nil {

@@ -109,16 +109,20 @@ var routerEnvKeys = []string{"RECORD", "RECORD_TEXT", "SHADOW_ARMS", "TIMEOUT_SE
 func loadRouting(cfg *Config, raw []byte) error {
 	var probe struct {
 		Routing     yaml.Node `yaml:"routing"`
-		Experiments struct {
-			Router yaml.Node `yaml:"router"`
-		} `yaml:"experiments"`
+		Experiments yaml.Node `yaml:"experiments"`
 	}
 	if len(raw) > 0 {
 		if err := yaml.Unmarshal(raw, &probe); err != nil {
 			return err
 		}
 	}
-	hasRouting, hasLegacy := probe.Routing.Kind != 0, probe.Experiments.Router.Kind != 0
+	// An experiments block that is not a mapping has no router in it;
+	// decodeFile has already warned about it.
+	var legacyNode yaml.Node
+	if node := mappingValue(&probe.Experiments, "router"); node != nil {
+		legacyNode = *node
+	}
+	hasRouting, hasLegacy := probe.Routing.Kind != 0, legacyNode.Kind != 0
 	legacyEnv := envSet(legacyEnvPrefix, append([]string{"MODE", "ARM"}, routerEnvKeys...))
 	if hasRouting {
 		warnings, failed := decodeKeys(&probe.Routing, &cfg.Routing, "routing")
@@ -142,7 +146,7 @@ func loadRouting(cfg *Config, raw []byte) error {
 	}
 	legacy := legacyRouter{RouterConfig: defaultRouting(), Mode: RouterModeOff, Arm: "explicit"}
 	if hasLegacy {
-		warnings, _ := decodeKeys(&probe.Experiments.Router, &legacy, "experiments.router")
+		warnings, _ := decodeKeys(&legacyNode, &legacy, "experiments.router")
 		cfg.Warnings = append(cfg.Warnings, warnings...)
 	}
 	applyRouterEnv(&legacy.RouterConfig, legacyEnvPrefix)
@@ -172,14 +176,14 @@ func loadRouting(cfg *Config, raw []byte) error {
 func decodeKeys[T any](node *yaml.Node, dst *T, path string) (warnings, failed []string) {
 	var generic any
 	if err := node.Decode(&generic); err != nil {
-		return []string{fmt.Sprintf("config: %s is ignored because it cannot be read: %v", path, err)}, []string{""}
+		return []string{rejected(path, node.Line)}, []string{""}
 	}
 	if generic == nil {
 		return nil, nil
 	}
 	resolved, err := plainNode(generic)
 	if err != nil {
-		return []string{fmt.Sprintf("config: %s is ignored because it cannot be read: %v", path, err)}, []string{""}
+		return []string{rejected(path, node.Line)}, []string{""}
 	}
 	if resolved.Kind != yaml.MappingNode {
 		return []string{fmt.Sprintf("config: %s must be a mapping; ignored", path)}, []string{""}
@@ -196,7 +200,7 @@ func decodeKeys[T any](node *yaml.Node, dst *T, path string) (warnings, failed [
 			err = one.Decode(&trial)
 		}
 		if err != nil {
-			warnings = append(warnings, fmt.Sprintf("config: %s.%s is ignored: %v", path, key.Value, err))
+			warnings = append(warnings, rejected(path+"."+key.Value, value.Line))
 			failed = append(failed, key.Value)
 			continue
 		}

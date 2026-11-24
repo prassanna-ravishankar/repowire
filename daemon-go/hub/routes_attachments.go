@@ -8,10 +8,12 @@ package hub
 //	GET  /attachments/{id}   stream a previously-uploaded file by id-prefix (404 if absent)
 //
 // Files live under ~/.repowire/attachments. Limits (matching Python): 10MB per
-// file (413), 200MB total directory cap (507), and a 24h TTL swept on every
-// upload so a stale-but-expired dir doesn't deny a legitimate upload.
+// file (413), 200MB total directory cap (507), and expiry with other content
+// under the retention policy (ExpireAttachments, a pass of the store's
+// sweep).
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"net/http"
@@ -21,16 +23,17 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+
+	"github.com/repowire/repowire/daemon-go/state"
 )
 
 const (
 	maxAttachmentFileSize = 10 * 1024 * 1024  // 10MB
 	maxAttachmentDirSize  = 200 * 1024 * 1024 // 200MB
-	attachmentMaxAgeHours = 24
 )
 
-// attachmentsDir returns ~/.repowire/attachments (created on demand by callers).
-func attachmentsDir() string {
+// AttachmentsDir returns ~/.repowire/attachments (created on demand by callers).
+func AttachmentsDir() string {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return filepath.Join(".repowire", "attachments")
@@ -41,24 +44,6 @@ func attachmentsDir() string {
 func (h *Hub) registerAttachmentRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /attachments", h.requireAuth(h.uploadAttachment))
 	mux.HandleFunc("GET /attachments/{attachment_id}", h.requireAuth(h.getAttachment))
-}
-
-// cleanupExpiredAttachments removes files older than the TTL. Best-effort.
-func cleanupExpiredAttachments(dir string) {
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		return
-	}
-	cutoff := time.Now().Add(-attachmentMaxAgeHours * time.Hour)
-	for _, e := range entries {
-		info, err := e.Info()
-		if err != nil {
-			continue
-		}
-		if info.ModTime().Before(cutoff) {
-			_ = os.Remove(filepath.Join(dir, e.Name()))
-		}
-	}
 }
 
 // attachmentDirSize totals the bytes used by the attachments dir. Best-effort.
@@ -98,20 +83,22 @@ func (h *Hub) uploadAttachment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	dir := attachmentsDir()
+	dir := AttachmentsDir()
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to create attachments dir: "+err.Error())
 		return
 	}
 
-	// Sweep TTL'd files first so a stale-but-expired dir doesn't deny a legit upload.
-	cleanupExpiredAttachments(dir)
-
+	// The store's sweep expires files hourly; an upload that would hit the
+	// cap clears expired files itself rather than wait for it.
 	used := attachmentDirSize(dir)
+	if used+max(header.Size, 0) > maxAttachmentDirSize && expireAttachments(dir, h.attachmentRetention.ContentCutoff(time.Now())) > 0 {
+		used = attachmentDirSize(dir)
+	}
 	if used >= maxAttachmentDirSize {
 		writeError(w, http.StatusInsufficientStorage,
-			fmt.Sprintf("Attachments directory full (%dMB used, %dMB cap). Wait for the %dh TTL to clear older files.",
-				used/1024/1024, maxAttachmentDirSize/1024/1024, attachmentMaxAgeHours))
+			fmt.Sprintf("Attachments directory full (%dMB used, %dMB cap). Files expire after retention.content_days.",
+				used/1024/1024, maxAttachmentDirSize/1024/1024))
 		return
 	}
 
@@ -145,8 +132,8 @@ func (h *Hub) uploadAttachment(w http.ResponseWriter, r *http.Request) {
 				out.Close()
 				_ = os.Remove(dest)
 				writeError(w, http.StatusInsufficientStorage,
-					fmt.Sprintf("Attachments directory would exceed cap (%dMB). Wait for the %dh TTL to clear older files.",
-						maxAttachmentDirSize/1024/1024, attachmentMaxAgeHours))
+					fmt.Sprintf("Attachments directory would exceed cap (%dMB). Files expire after retention.content_days.",
+						maxAttachmentDirSize/1024/1024))
 				return
 			}
 			if _, werr := out.Write(buf[:n]); werr != nil {
@@ -192,7 +179,7 @@ func (h *Hub) getAttachment(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "Not found")
 		return
 	}
-	dir := attachmentsDir()
+	dir := AttachmentsDir()
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		writeError(w, http.StatusNotFound, "Not found")
@@ -209,4 +196,39 @@ func (h *Hub) getAttachment(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	writeError(w, http.StatusNotFound, "Attachment not found")
+}
+
+// WithRetention gives the attachment routes the retention policy, so an
+// upload that would hit the directory cap can expire files first.
+func (h *Hub) WithRetention(p state.RetentionPolicy) *Hub {
+	h.attachmentRetention = p
+	return h
+}
+
+// ExpireAttachments is the attachment files' retention pass, plugged into
+// the store's sweep (state.RetentionPlugs): it removes files modified before
+// the policy's content cutoff, which is never younger than an ask may stay
+// open. Best-effort.
+func ExpireAttachments(_ context.Context, p state.RetentionPolicy, now time.Time) map[string]int {
+	return map[string]int{"attachments.delete": expireAttachments(AttachmentsDir(), p.ContentCutoff(now))}
+}
+
+// expireAttachments removes regular files in dir modified before cutoff; a
+// zero cutoff keeps everything.
+func expireAttachments(dir string, cutoff time.Time) int {
+	if cutoff.IsZero() {
+		return 0
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return 0
+	}
+	n := 0
+	for _, e := range entries {
+		info, err := e.Info()
+		if err == nil && info.Mode().IsRegular() && info.ModTime().Before(cutoff) && os.Remove(filepath.Join(dir, e.Name())) == nil {
+			n++
+		}
+	}
+	return n
 }

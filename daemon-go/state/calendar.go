@@ -285,10 +285,9 @@ func (s *Store) UpdateCalendarRuntimeBinding(ctx context.Context, calendarID str
 	return s.GetCalendarEntry(ctx, calendarID)
 }
 
-// SecondsUntilNextDue returns seconds until the soonest active entry's
-// next_due_at relative to now, floored at 0. Returns (nil, nil) when no active
-// entry exists. Pass the reference time; the Python default is datetime.now(utc).
-func (s *Store) SecondsUntilNextDue(ctx context.Context, now time.Time) (*float64, error) {
+// NextCalendarDue returns the soonest active entry's next_due_at, as stored
+// (it may be past). Returns (nil, nil) when no active entry exists.
+func (s *Store) NextCalendarDue(ctx context.Context) (*time.Time, error) {
 	var nextDue string
 	err := s.db.QueryRowContext(ctx,
 		`SELECT next_due_at FROM calendar_entries WHERE state = 'active' ORDER BY next_due_at LIMIT 1`).Scan(&nextDue)
@@ -296,19 +295,17 @@ func (s *Store) SecondsUntilNextDue(ctx context.Context, now time.Time) (*float6
 		return nil, nil
 	}
 	if err != nil {
-		return nil, fmt.Errorf("seconds until next due: %w", err)
+		return nil, fmt.Errorf("next calendar due: %w", err)
 	}
 	due, err := calendarParseISO(nextDue)
 	if err != nil {
 		return nil, fmt.Errorf("parse next_due_at: %w", err)
 	}
-	secs := due.Sub(now.UTC()).Seconds()
-	if secs < 0 {
-		secs = 0
-	}
-	return &secs, nil
+	return &due, nil
 }
 
 func calendarCloneMap(m map[string]any) map[string]any {
 	return maps.Clone(m)
 }
+
+var calendarRetention = tableRetention{tables: []string{"calendar_entries"}, exempt: "configuration, not history"}

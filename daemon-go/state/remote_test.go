@@ -166,18 +166,3 @@ func TestOutboundChecksRotateAndRespectTheCutoff(t *testing.T) {
 		t.Fatalf("checked past retention: %v", old)
 	}
 }
-
-func TestPruneRemoteDropsRecordsAndFences(t *testing.T) {
-	s, ctx := remoteStore(t), context.Background()
-	_, _, _ = s.CreateInbound(ctx, inbound("ask-7"))
-	_, _ = s.ReadInbound(ctx, "ask-8", "laptop", "p1", 1000, 500)
-	if err := s.PruneRemote(ctx, 1001); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := s.GetInbound(ctx, "ask-7"); !errors.Is(err, ErrRemoteNotFound) {
-		t.Fatalf("record survived: %v", err)
-	}
-	if _, created, _ := s.CreateInbound(ctx, inbound("ask-8")); !created {
-		t.Fatal("fence survived prune")
-	}
-}

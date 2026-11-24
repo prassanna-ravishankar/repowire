@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -25,7 +26,7 @@ var _ peer.Store = (*Store)(nil)
 
 // SchemaVersion is the current user_version. Migrations advance older stores;
 // newer stores fail loud rather than risking corruption.
-const SchemaVersion = 17
+const SchemaVersion = 18
 
 // tsLayout is the exact format the Python daemon writes (strftime %Y-%m-%dT%H:%M:%fZ).
 const tsLayout = "2006-01-02T15:04:05.000Z"
@@ -49,6 +50,8 @@ type Store struct {
 	// path is the db file, "" for an in-memory store; background readers open
 	// their own read-only connection to it (see AskRefs).
 	path string
+	// retention is the sweep lifecycle, nil until StartRetention.
+	retention atomic.Pointer[retention]
 }
 
 // NewStore opens the daemon state db, creating and migrating it to
@@ -139,7 +142,9 @@ func OpenReadOnly(dbPath string) (*Store, error) {
 }
 
 // Close closes the underlying connection pool.
+// Close stops retention, waiting for a sweep in flight, then closes the db.
 func (s *Store) Close() error {
+	s.stopRetention()
 	return s.db.Close()
 }
 
@@ -437,6 +442,7 @@ func (s *Store) AppendEvent(ctx context.Context, e peer.Event) error {
 	if err != nil {
 		return fmt.Errorf("append event %s: %w", eventID, err)
 	}
+	s.maybeSweep()
 	return nil
 }
 
@@ -485,3 +491,6 @@ func (s *Store) LoadRecentEvents(ctx context.Context, limit int) ([]map[string]a
 	}
 	return reversed, nil
 }
+
+var identityRetention = tableRetention{tables: []string{"peer_session_mappings", "retired_peers"},
+	exempt: "identity state; retirement records expire on their own identity-safety window"}

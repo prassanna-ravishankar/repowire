@@ -41,6 +41,8 @@ type JobRunner struct {
 	control      *SessionControl
 	senderPeerID proto.PeerID
 	clock        wallClock
+	// expire ends jobs whose deadline_at has passed (JobCompletion.ExpireOverdue).
+	expire func(ctx context.Context, now time.Time)
 
 	wake    chan struct{}
 	stop    chan struct{}
@@ -112,8 +114,8 @@ func (r *JobRunner) loop(ctx context.Context) {
 
 		r.tick(ctx)
 
-		delay := r.secondsUntilNextDeadline(ctx)
-		if delay == nil {
+		deadline := r.nextDeadline(ctx)
+		if deadline == nil {
 			select {
 			case <-r.stop:
 				return
@@ -124,25 +126,36 @@ func (r *JobRunner) loop(ctx context.Context) {
 			continue
 		}
 		// Wall-clock wait (wall_clock.go): due jobs, recurring-job occurrences
-		// and lease expiry all ride this one deadline (repowire-2ph).
-		wait := time.Duration(*delay * float64(time.Second))
-		if wait <= 0 {
+		// and lease expiry all ride this one deadline (repowire-2ph). It is
+		// the stored instant, carried as is: rebuilding it as now + delay
+		// from a second clock reading would add the time in between (#429).
+		if now := r.clock.now(); !deadline.After(now) {
 			// Still due after a full tick means the tick could not advance it
 			// (e.g. a calendar entry whose cron no longer parses). Retry at
 			// most once per stuckDeadlineRetry instead of spinning; Wake still
 			// cuts the wait short.
-			wait = stuckDeadlineRetry
+			retry := now.Add(stuckDeadlineRetry)
+			deadline = &retry
 		}
-		deadline := r.clock.now().Add(wait)
-		if _, stopped := r.clock.waitUntil(ctx, deadline, r.wake, r.stop); stopped {
+		if _, stopped := r.clock.waitUntil(ctx, *deadline, r.wake, r.stop); stopped {
 			return
 		}
 	}
 }
 
+// OnDeadline installs what ends a job past its deadline_at (#457). Each tick
+// runs it, and job deadlines are among the instants the loop wakes for.
+func (r *JobRunner) OnDeadline(expire func(ctx context.Context, now time.Time)) {
+	r.expire = expire
+}
+
 func (r *JobRunner) tick(ctx context.Context) {
 	if _, err := r.store.RecoverStaleDispatching(ctx, workNowISORunner()); err != nil {
 		log.Printf("job_runner: recover_stale tick failed: %v", err)
+	}
+	// Before dispatch, so a queued job past its deadline is never sent out.
+	if r.expire != nil {
+		r.expire(ctx, r.clock.now())
 	}
 	if materialized, err := r.store.MaterializeDue(ctx, time.Now().UTC(), NextFireAfter); err != nil {
 		log.Printf("job_runner: materialize_due failed: %v", err)
@@ -175,11 +188,10 @@ func (r *JobRunner) runDueOnce(ctx context.Context) error {
 	return nil
 }
 
-// secondsUntilNextDeadline returns seconds until the soonest concrete due/lease/
-// calendar deadline, or nil for "sleep until woken". Mirrors
-// _seconds_until_next_deadline.
-func (r *JobRunner) secondsUntilNextDeadline(ctx context.Context) *float64 {
-	now := time.Now().UTC()
+// nextDeadline returns the soonest concrete due/lease/calendar instant, as
+// stored (it may be past), or nil for "sleep until woken". A queued job with no
+// due_at is due now.
+func (r *JobRunner) nextDeadline(ctx context.Context) *time.Time {
 	var soonest *time.Time
 	consider := func(t time.Time) {
 		if soonest == nil || t.Before(*soonest) {
@@ -190,7 +202,7 @@ func (r *JobRunner) secondsUntilNextDeadline(ctx context.Context) *float64 {
 	queued := "queued"
 	if rows, err := r.store.ListWork(ctx, state.WorkFilter{State: &queued}); err == nil {
 		for _, work := range rows {
-			due := now
+			due := r.clock.now()
 			if d := scheduleDueAt(work); d != "" {
 				if parsed, perr := parseRunnerISO(d); perr == nil {
 					due = parsed
@@ -210,17 +222,21 @@ func (r *JobRunner) secondsUntilNextDeadline(ctx context.Context) *float64 {
 			}
 		}
 	}
-	if secs, err := r.store.SecondsUntilNextDue(ctx, now); err == nil && secs != nil {
-		consider(now.Add(time.Duration(*secs * float64(time.Second))))
+	if due, err := r.store.NextCalendarDue(ctx); err == nil && due != nil {
+		consider(*due)
 	}
-	if soonest == nil {
-		return nil
+	if r.expire != nil {
+		// Job deadlines (#457). Dispatching work is left to its lease, which
+		// is already a deadline above, and expires on the tick after it.
+		if deadlines, err := r.store.WorkDeadlines(ctx); err == nil {
+			for _, d := range deadlines {
+				if d.State != "dispatching" {
+					consider(d.At)
+				}
+			}
+		}
 	}
-	d := soonest.Sub(now).Seconds()
-	if d < 0 {
-		d = 0
-	}
-	return &d
+	return soonest
 }
 
 // RunJob acquires the work for dispatch and runs the attempt. ignoreDueAt skips
@@ -241,6 +257,10 @@ func (r *JobRunner) RunJob(ctx context.Context, workID string, ignoreDueAt, retr
 	if acquired == nil {
 		return nil, nil
 	}
+	// The run changed what the loop waits for (a lease now, an attempt whose
+	// deadline_at matters after): a run from outside the loop must not leave
+	// it asleep with nothing to wait for.
+	defer r.Wake()
 	runner := mapAtAny(acquired.Provenance, "runner")
 	attemptID, _ := runner["current_attempt_id"].(string)
 	if attemptID == "" {

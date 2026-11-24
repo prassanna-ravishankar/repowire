@@ -516,3 +516,235 @@ func TestInboxLocalSurfaceReceiptsPresenceAndBroadcastOptIn(t *testing.T) {
 		t.Fatalf("dashboard took a broadcast it did not opt in to: %v", dash.items)
 	}
 }
+
+// itemTexts lists the texts of the inbox_item frames a surface was handed.
+func itemTexts(frames []map[string]any) []string {
+	var out []string
+	for _, f := range frames {
+		if item, _ := f["item"].(map[string]any); item != nil {
+			out = append(out, item["text"].(string))
+		}
+	}
+	return out
+}
+
+func (f *inboxFixture) notifyHuman(t *testing.T, text string) string {
+	t.Helper()
+	res, err := f.delivery.Notify(context.Background(), NotifyParams{FromPeer: "alpha", ToPeer: "prass", Text: text, DeliveryID: "notif-delivery-" + text})
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.settle()
+	time.Sleep(2 * time.Millisecond) // distinct created_at (millisecond precision)
+	return res.Inbox.ItemID
+}
+
+// TestInboxCatchUpPushesWhatASurfaceMissed (#480): items stored while a
+// surface was offline reach it when it reconnects, oldest first, once.
+func TestInboxCatchUpPushesWhatASurfaceMissed(t *testing.T) {
+	f := newInboxFixture(t, config.HumanConfig{})
+	ctx := context.Background()
+	f.notifyHuman(t, "before")
+	f.transport.connected[f.telegram.PeerID] = false
+	f.notifyHuman(t, "a")
+	read := f.notifyHuman(t, "b")
+	f.notifyHuman(t, "c")
+	item, _ := f.store.InboxItem(ctx, read)
+	if err := f.inbox.MarkRead(ctx, item, "cli"); err != nil {
+		t.Fatal(err)
+	}
+
+	f.transport.connected[f.telegram.PeerID] = true
+	f.inbox.CatchUp(f.telegram, time.Now())
+	f.settle()
+	if got := strings.Join(itemTexts(f.transport.framesFor(f.telegram.PeerID)), ","); got != "before,a,c" {
+		t.Fatalf("telegram saw %s, want before,a,c (read items skipped, oldest first)", got)
+	}
+	if rows := f.stages(t, "notif-delivery-a"); stageNames(rows)[len(rows)-1] != "surface_pushed" {
+		t.Fatalf("catch-up push not traced: %v", stageNames(rows))
+	}
+
+	f.inbox.CatchUp(f.telegram, time.Now()) // a second connect pushes nothing again
+	f.settle()
+	if n := len(f.transport.framesFor(f.telegram.PeerID)); n != 3 {
+		t.Fatalf("repeat catch-up re-pushed: %d frames", n)
+	}
+	if n := len(f.transport.framesFor(f.slack.PeerID)); n != 4 {
+		t.Fatalf("slack was live throughout and must not be caught up: %d frames", n)
+	}
+}
+
+// TestInboxCatchUpIsBoundedToTheNewest: a long outage pushes only the newest
+// items, in order, and the older ones do not trickle in on later connects.
+func TestInboxCatchUpIsBoundedToTheNewest(t *testing.T) {
+	f := newInboxFixture(t, config.HumanConfig{})
+	f.inbox.catchUpLimit = 2
+	f.transport.connected[f.telegram.PeerID] = false
+	for _, text := range []string{"1", "2", "3", "4"} {
+		f.notifyHuman(t, text)
+	}
+	f.transport.connected[f.telegram.PeerID] = true
+	f.inbox.CatchUp(f.telegram, time.Now())
+	f.settle()
+	if got := strings.Join(itemTexts(f.transport.framesFor(f.telegram.PeerID)), ","); got != "3,4" {
+		t.Fatalf("telegram saw %s, want 3,4", got)
+	}
+
+	f.transport.connected[f.telegram.PeerID] = false
+	f.notifyHuman(t, "5")
+	f.transport.connected[f.telegram.PeerID] = true
+	f.inbox.CatchUp(f.telegram, time.Now())
+	f.settle()
+	if got := strings.Join(itemTexts(f.transport.framesFor(f.telegram.PeerID)), ","); got != "3,4,5" {
+		t.Fatalf("telegram saw %s, want 3,4,5 (1 and 2 predate what it already has)", got)
+	}
+}
+
+// TestInboxCatchUpKeepsBroadcastOptIn: a broadcast the surface did not opt
+// into is not pushed by catch-up either.
+func TestInboxCatchUpKeepsBroadcastOptIn(t *testing.T) {
+	f := newInboxFixture(t, config.HumanConfig{Broadcast: true})
+	f.transport.connected[f.telegram.PeerID] = false
+	if _, err := f.delivery.Broadcast(context.Background(), "alpha", "deploy at noon", nil, true); err != nil {
+		t.Fatal(err)
+	}
+	f.settle()
+	f.transport.connected[f.telegram.PeerID] = true
+	f.inbox.CatchUp(f.telegram, time.Now())
+	f.settle()
+	if frames := f.transport.framesFor(f.telegram.PeerID); len(frames) != 0 {
+		t.Fatalf("telegram did not opt into broadcasts, got %+v", frames)
+	}
+}
+
+// TestInboxPushIsOncePerSurface: a catch-up racing the item's own push
+// renders it once.
+func TestInboxPushIsOncePerSurface(t *testing.T) {
+	f := newInboxFixture(t, config.HumanConfig{})
+	id := f.notifyHuman(t, "x")
+	item, _ := f.store.InboxItem(context.Background(), id)
+	if f.inbox.claimPush(context.Background(), item.ID, "telegram") {
+		f.inbox.push(item, surfaceTarget{name: "telegram", peer: f.telegram})
+	}
+	if n := len(f.transport.framesFor(f.telegram.PeerID)); n != 1 {
+		t.Fatalf("item pushed %d times to one surface", n)
+	}
+}
+
+// TestInboxCatchUpSurvivesALivePushFirst: an item pushed live after the
+// surface reconnected, and recorded before the catch-up runs, must not hide
+// the items it missed while it was down.
+func TestInboxCatchUpSurvivesALivePushFirst(t *testing.T) {
+	f := newInboxFixture(t, config.HumanConfig{})
+	f.notifyHuman(t, "seen")
+	f.transport.connected[f.telegram.PeerID] = false
+	f.notifyHuman(t, "missed")
+	liveSince := time.Now()
+	f.transport.connected[f.telegram.PeerID] = true
+	f.notifyHuman(t, "live") // pushed and recorded before the catch-up starts
+	f.inbox.CatchUp(f.telegram, liveSince)
+	f.settle()
+	if got := strings.Join(itemTexts(f.transport.framesFor(f.telegram.PeerID)), ","); got != "seen,live,missed" {
+		t.Fatalf("telegram saw %s, want seen,live,missed", got)
+	}
+}
+
+// TestInboxCatchUpSurvivesAStoreRacingTheConnect: an item stored just before
+// the surface went live whose push lands after it must not hide what the
+// surface missed either.
+func TestInboxCatchUpSurvivesAStoreRacingTheConnect(t *testing.T) {
+	f := newInboxFixture(t, config.HumanConfig{})
+	ctx := context.Background()
+	f.notifyHuman(t, "seen")
+	f.transport.connected[f.telegram.PeerID] = false
+	f.notifyHuman(t, "missed")
+	racer := &state.InboxItem{ID: state.NewInboxItemID(), Kind: InboxNotify, TraceID: "notif-delivery-racer", TraceKind: "notify",
+		FromPeerID: string(f.alpha.PeerID), FromName: "alpha", ToPeerID: string(f.human.PeerID), ToName: "prass", Text: "racer"}
+	if err := f.store.InsertInboxItem(ctx, racer); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(2 * time.Millisecond)
+	liveSince := time.Now()
+	time.Sleep(2 * time.Millisecond)
+	f.transport.connected[f.telegram.PeerID] = true
+	if !f.inbox.claim(racer.ID, "telegram") {
+		t.Fatal("claim")
+	}
+	f.inbox.push(racer, surfaceTarget{name: "telegram", peer: f.telegram}) // its push lands after the connect
+	f.inbox.CatchUp(f.telegram, liveSince)
+	f.settle()
+	if got := strings.Join(itemTexts(f.transport.framesFor(f.telegram.PeerID)), ","); got != "seen,racer,missed" {
+		t.Fatalf("telegram saw %s, want seen,racer,missed", got)
+	}
+}
+
+// TestInboxCatchUpBoundCountsOnlyWhatTheSurfaceTakes: broadcasts a surface
+// did not opt into do not use up the catch-up bound.
+func TestInboxCatchUpBoundCountsOnlyWhatTheSurfaceTakes(t *testing.T) {
+	f := newInboxFixture(t, config.HumanConfig{Broadcast: true})
+	f.inbox.catchUpLimit = 1
+	f.transport.connected[f.telegram.PeerID] = false
+	f.notifyHuman(t, "missed")
+	if _, err := f.delivery.Broadcast(context.Background(), "alpha", "deploy at noon", nil, true); err != nil {
+		t.Fatal(err)
+	}
+	f.settle()
+	f.transport.connected[f.telegram.PeerID] = true
+	f.inbox.CatchUp(f.telegram, time.Now())
+	f.settle()
+	if got := strings.Join(itemTexts(f.transport.framesFor(f.telegram.PeerID)), ","); got != "missed" {
+		t.Fatalf("telegram saw %q, want missed", got)
+	}
+}
+
+// TestInboxCatchUpBoundIgnoresLiveItems: items stored once the surface was
+// live are pushed live; with their receipts outstanding they must not use up
+// the bound meant for what the surface missed.
+func TestInboxCatchUpBoundIgnoresLiveItems(t *testing.T) {
+	f := newInboxFixture(t, config.HumanConfig{})
+	ctx := context.Background()
+	f.inbox.catchUpLimit = 1
+	f.transport.connected[f.telegram.PeerID] = false
+	f.notifyHuman(t, "missed")
+	liveSince := time.Now()
+	f.transport.connected[f.telegram.PeerID] = true
+	live := &state.InboxItem{ID: state.NewInboxItemID(), Kind: InboxNotify, TraceID: "notif-delivery-live", TraceKind: "notify",
+		FromPeerID: string(f.alpha.PeerID), FromName: "alpha", ToPeerID: string(f.human.PeerID), ToName: "prass", Text: "live"}
+	time.Sleep(2 * time.Millisecond)
+	if err := f.store.InsertInboxItem(ctx, live); err != nil {
+		t.Fatal(err)
+	}
+	if !f.inbox.claim(live.ID, "telegram") { // its live push is still awaiting a receipt
+		t.Fatal("claim")
+	}
+	f.inbox.CatchUp(f.telegram, liveSince)
+	f.settle()
+	f.inbox.release(live.ID, "telegram")
+	if got := strings.Join(itemTexts(f.transport.framesFor(f.telegram.PeerID)), ","); got != "missed" {
+		t.Fatalf("telegram saw %q, want missed", got)
+	}
+}
+
+// TestInboxCatchUpBoundHoldsOnTimestampTies: items stored in the same
+// millisecond are still ordered, so one left out by the bound stays out.
+func TestInboxCatchUpBoundHoldsOnTimestampTies(t *testing.T) {
+	f := newInboxFixture(t, config.HumanConfig{})
+	ctx := context.Background()
+	f.inbox.catchUpLimit = 2
+	stamp := time.Now().UTC().Format("2006-01-02T15:04:05.000Z")
+	for _, text := range []string{"1", "2", "3"} {
+		if err := f.store.InsertInboxItem(ctx, &state.InboxItem{ID: state.NewInboxItemID(), Kind: InboxNotify, TraceID: "notif-delivery-tie" + text,
+			TraceKind: "notify", FromName: "alpha", ToPeerID: string(f.human.PeerID), ToName: "prass", Text: text, CreatedAt: stamp}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	time.Sleep(2 * time.Millisecond)
+	f.inbox.CatchUp(f.telegram, time.Now())
+	f.settle()
+	time.Sleep(2 * time.Millisecond)
+	f.inbox.CatchUp(f.telegram, time.Now())
+	f.settle()
+	if got := strings.Join(itemTexts(f.transport.framesFor(f.telegram.PeerID)), ","); got != "2,3" {
+		t.Fatalf("telegram saw %s, want 2,3 (1 stays out)", got)
+	}
+}

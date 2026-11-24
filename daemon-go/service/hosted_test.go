@@ -602,3 +602,44 @@ func TestHostedRestoreLeavesAFailedResubmissionForItsReport(t *testing.T) {
 		t.Fatalf("the genuine report must close the ask with its reply, got %+v", ask)
 	}
 }
+
+// The operations sweep removes only settled records: a delivery the runtime
+// still works on, or whose report was cut short between observers, keeps its
+// record however old it is, so its report still settles it.
+func TestHostedRetentionSweepKeepsUnsettledDeliveries(t *testing.T) {
+	f := newHostedFixture(t)
+	flaky := 0
+	f.hosted.OnSettled("flaky", func(context.Context, HostedDelivery, HostedResult) error {
+		if flaky++; flaky == 1 {
+			return errors.New("store unavailable")
+		}
+		return nil
+	})
+	working, cutShort := f.ask(t), f.ask(t)
+	if err := f.hosted.Report(context.Background(), string(f.target.PeerID), cutShort, HostedResult{Status: "done", Text: "half"}); err == nil {
+		t.Fatal("a failed observer must leave the report unacknowledged")
+	}
+	sweep := func() map[string]int {
+		t.Helper()
+		counts, err := f.store.Sweep(context.Background(), state.RetentionPolicy{Records: time.Nanosecond}, time.Now().Add(365*24*time.Hour))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return counts
+	}
+	sweep()
+	if open := f.openDeliveries(t); open != 2 {
+		t.Fatalf("the sweep removed unsettled deliveries: %d open, want 2", open)
+	}
+
+	f.report(working, HostedResult{Status: "done", Text: "42"})
+	f.report(cutShort, HostedResult{Status: "done", Text: "half"})
+	for _, cid := range []string{working, cutShort} {
+		if ask := waitClosed(t, f.asks, cid); ask.CloseReason != "ack_with_msg" {
+			t.Fatalf("ask %s closed %q after the sweep, want ack_with_msg", cid, ask.CloseReason)
+		}
+	}
+	if counts := sweep(); counts["operations.delete"] != 2 {
+		t.Fatalf("settled deliveries must expire: %v", counts)
+	}
+}

@@ -220,3 +220,5 @@ func firstLegacyString(values map[string]any, keys ...string) string {
 	}
 	return ""
 }
+
+var legacyImportRetention = tableRetention{tables: []string{"legacy_imports"}, exempt: "import bookkeeping"}

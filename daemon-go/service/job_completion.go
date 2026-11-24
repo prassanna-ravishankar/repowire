@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"regexp"
+	"time"
 
 	"github.com/repowire/repowire/daemon-go/proto"
 	"github.com/repowire/repowire/daemon-go/state"
@@ -238,6 +239,60 @@ func (c *JobCompletion) failWork(ctx context.Context, work *state.TrackedWork, a
 		return nil
 	}
 	return c.afterTerminal(ctx, updated, prior, reason, reason)
+}
+
+// ExpireOverdue ends every job whose deadline_at is at or before now and that
+// is not yet terminal (#457): its current attempt and the work become
+// expired with deadline_exceeded, its dispatch ask closes, its executor is
+// released and its owner is told, as when an executor dies. Work still
+// dispatching is left to its lease and expires on a later tick. The job
+// runner calls this when its deadline wakes it; there is no timer of its own.
+func (c *JobCompletion) ExpireOverdue(ctx context.Context, now time.Time) {
+	if c == nil || c.store == nil {
+		return
+	}
+	deadlines, err := c.store.WorkDeadlines(ctx)
+	if err != nil {
+		log.Printf("job completion: list deadlines: %v", err)
+		return
+	}
+	for _, d := range deadlines {
+		if d.At.After(now) || d.State == "dispatching" {
+			continue
+		}
+		work, err := c.store.GetWork(ctx, d.WorkID)
+		if err != nil || work == nil || work.Terminal() {
+			continue
+		}
+		reason := "deadline_exceeded"
+		errorData := map[string]any{"reason": reason, "deadline_at": d.At.Format(time.RFC3339)}
+		update := state.WorkUpdate{State: "expired", StateReason: &reason, Phase: &reason, Error: errorData}
+		if attemptID := currentWorkAttempt(work); attemptID != "" {
+			// "expired", unlike "failed", does not move the work itself; the
+			// work update below records the terminal state and its reason.
+			status := "expired"
+			if _, err := c.store.UpdateAttempt(ctx, work.WorkID, attemptID, state.AttemptUpdate{Status: &status, Phase: &reason, Error: errorData}); err != nil {
+				log.Printf("job completion: expire attempt %s/%s: %v", work.WorkID, attemptID, err)
+				continue
+			}
+			update.AttemptID = &attemptID
+		}
+		updated, err := c.store.UpdateWorkState(ctx, work.WorkID, update)
+		if err != nil || updated == nil {
+			log.Printf("job completion: expire work %s: %v", work.WorkID, err)
+			continue
+		}
+		if c.asks != nil && updated.CorrelationID != nil {
+			_, _ = c.asks.Close(ctx, *updated.CorrelationID, reason)
+		}
+		c.emit(updated, work.State)
+		if c.control != nil && updated.AssignedPeerID != nil {
+			if _, err := c.control.ReleaseExecutorForWork(ctx, updated, reason); err != nil {
+				log.Printf("job completion: release expired work %s: %v", updated.WorkID, err)
+			}
+		}
+		c.notifyOwner(ctx, updated)
+	}
 }
 
 // ReconcileInflight performs a one-shot startup repair after live hooks have

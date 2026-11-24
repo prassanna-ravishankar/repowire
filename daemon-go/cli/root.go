@@ -65,7 +65,10 @@ func newRootCommand() *cobra.Command {
 		{"register [flags]", "Register a peer"}, {"unregister NAME_OR_ID", "Retire a peer"}, {"restart NAME_OR_ID [flags]", "Restart and resume a peer"},
 		{"doctor NAME_OR_ID [flags]", "Diagnose a peer"}, {"rehook NAME_OR_ID [flags]", "Repair inbound delivery"}, {"ask NAME QUERY [flags]", "Send a blocking compatibility ask"},
 		{"prune [flags]", "Remove offline peers"}, {"whoami [flags]", "Show the current peer identity"}, {"asks [flags]", "List pending asks"},
-		{"deliveries [flags]", "Drain queued deliveries"}, {"ack CORRELATION_ID [flags]", "Acknowledge an ask"}, {"decline CORRELATION_ID [flags]", "Return an ask to its asker"}, {"claim-role orchestrator [flags]", "Claim the orchestrator role"},
+		{"deliveries [flags]", "Drain queued deliveries"}, {"ack CORRELATION_ID [flags]", "Acknowledge an ask"}, {"decline CORRELATION_ID [flags]", "Return an ask to its asker"},
+		{"delegate CORRELATION_ID PEER [flags]", "Hand an ask to another peer; the reply still reaches the asker"}, {"messages [flags]", "List messages this peer received"},
+		{"read MESSAGE_ID [flags]", "Show one message (marks it read unless --peek)"}, {"delivery push|pull [flags]", "Choose full messages or one-line nudges"},
+		{"claim-role orchestrator [flags]", "Claim the orchestrator role"},
 	}))
 	root.AddCommand(group("jobs", "Create and control durable jobs", runJobs, []leaf{
 		{"create TITLE [flags]", "Create a job"}, {"list [flags]", "List jobs"}, {"show JOB_ID [--json]", "Show a job"}, {"update JOB_ID [flags]", "Update a job"},
@@ -81,6 +84,12 @@ func newRootCommand() *cobra.Command {
 	})
 	inbox.RunE = func(*cobra.Command, []string) error { return codeError(runInbox(nil)) }
 	root.AddCommand(inbox)
+	wire := group("wire", "Show ask and notify threads across every circle (metadata only)", runWire, []leaf{
+		{"ls [--stuck] [--circle C] [--peer P] [--kind ask|notify] [--state S] [--since 24h] [--limit N] [--cursor C] [--json]", "List threads, newest activity first"},
+		{"show THREAD_ID [--json]", "Show one thread's envelope and stage timeline"},
+	})
+	wire.RunE = func(*cobra.Command, []string) error { return codeError(runWire(nil)) }
+	root.AddCommand(wire)
 	root.AddCommand(group("session", "Control durable sessions", runSession, []leaf{{"resume SESSION_ID [flags]", "Resume a durable session"}}))
 	root.AddCommand(group("route", "Ask routing: config and research tools", runRoute, []leaf{
 		{"show", "Show the routing strategy, recording and shadow arms"},
@@ -96,6 +105,7 @@ func newRootCommand() *cobra.Command {
 	}))
 	root.AddCommand(group("config", "Inspect Repowire configuration", runConfig, []leaf{
 		{"path", "Print the config path"}, {"show", "Print the config file"}, {"get KEY", "Read one config value"},
+		{"check [--file PATH] [--require relay,telegram,slack]", "Load a config the way the daemon will; report warnings and subsystems"},
 	}))
 	root.AddCommand(group("relay", "Run the hosted relay server", runRelay, []leaf{
 		{"start [flags]", "Start the relay server"}, {"generate-key [--user-id ID]", "Generate a relay API key"},
@@ -201,9 +211,13 @@ var documentedFlags = map[string][]documentedFlag{
 		{name: "http-mcp", usage: "Accepted for compatibility; HTTP MCP is enabled by default", boolean: true}, {name: "update-checks", usage: "Enable release update checks", boolean: true},
 		{name: "no-update-checks", usage: "Disable release update checks", boolean: true}, {name: "no-service", usage: "Skip user-service installation", boolean: true}, {name: "non-interactive", usage: "Use defaults without prompting", boolean: true},
 	},
-	"link":                {{name: "pane", usage: "tmux pane id"}, {name: "backend", usage: "Agent backend"}, {name: "name", usage: "Display name"}, {name: "circle", usage: "Circle"}, {name: "cwd", usage: "Working directory"}},
-	"trace":               {{name: "json", usage: "Emit JSON", boolean: true}},
-	"why":                 {{name: "json", usage: "Emit JSON", boolean: true}},
+	"link":  {{name: "pane", usage: "tmux pane id"}, {name: "backend", usage: "Agent backend"}, {name: "name", usage: "Display name"}, {name: "circle", usage: "Circle"}, {name: "cwd", usage: "Working directory"}},
+	"trace": {{name: "json", usage: "Emit JSON", boolean: true}},
+	"why":   {{name: "json", usage: "Emit JSON", boolean: true}},
+	"wire ls": {{name: "stuck", usage: "Only threads with a stuck signal", boolean: true}, {name: "circle", usage: "Only threads with a party in this circle"}, {name: "peer", usage: "Only threads with this party"},
+		{name: "kind", usage: "ask or notify"}, {name: "state", usage: "Only this state"}, {name: "since", usage: "Activity window (90m, 24h, 7d)"}, {name: "limit", usage: "At most this many threads"},
+		{name: "cursor", usage: "Resume after the previous page"}, {name: "json", usage: "Emit JSON", boolean: true}},
+	"wire show":           {{name: "json", usage: "Emit JSON", boolean: true}},
 	"share":               {{name: "rw", usage: "Create a read-write share", boolean: true}, {name: "list", usage: "List active shares", boolean: true}, {name: "ttl", usage: "Lifetime in seconds"}, {name: "revoke", usage: "Revoke a share id"}},
 	"uninstall":           {{name: "yes", usage: "Also remove Repowire state", boolean: true}},
 	"peer list":           {{name: "show-offline", usage: "Include offline peers", boolean: true}, {name: "include-hidden", usage: "Include peers hidden from the default view (no direct input, runtime-internal threads, sub-agents with an offline parent)", boolean: true}, {name: "source", usage: "Only peers from this source: hook, codex-app-server, unknown"}},
@@ -220,6 +234,10 @@ var documentedFlags = map[string][]documentedFlag{
 	"peer deliveries":     {{name: "peer-id", usage: "Peer id"}, {name: "pane-id", usage: "tmux pane id"}, {name: "peer", usage: "Display name"}, {name: "json", usage: "Emit JSON", boolean: true}},
 	"peer ack":            {{name: "message", shorthand: "m", usage: "Reply message"}, {name: "from-peer", usage: "Sender identity"}},
 	"peer decline":        {{name: "reason", shorthand: "r", usage: "Reason the ask cannot be handled"}, {name: "from-peer", usage: "Sender identity"}},
+	"peer delegate":       {{name: "note", usage: "Why you are handing it over, shown to the new recipient"}, {name: "from-peer", usage: "Sender identity"}},
+	"peer messages":       {{name: "peer", usage: "Peer id or display name (default: this pane's peer)"}, {name: "unread", usage: "Only unread messages", boolean: true}, {name: "limit", usage: "Maximum messages"}, {name: "json", usage: "Emit JSON", boolean: true}},
+	"peer read":           {{name: "peek", usage: "Leave the message unread", boolean: true}, {name: "json", usage: "Emit JSON", boolean: true}},
+	"peer delivery":       {{name: "peer", usage: "Peer id or display name (default: this pane's peer)"}},
 	"peer claim-role":     {{name: "peer", usage: "Peer id or display name"}, {name: "circle", usage: "Circle"}, {name: "force", usage: "Replace a stale holder", boolean: true}},
 	"jobs create":         {{name: "kind", usage: "Job kind"}, {name: "prompt", usage: "Prompt text"}, {name: "prompt-file", usage: "Prompt file"}, {name: "assigned-peer", usage: "Assigned peer"}, {name: "owner", usage: "Owner peer id"}, {name: "path", usage: "Worker path"}, {name: "backend", usage: "Worker backend"}, {name: "profile", usage: "Spawn profile"}, {name: "due-at", usage: "One-shot due time"}, {name: "cron", usage: "Cron expression"}, {name: "process-scope", usage: "per-fire or persistent"}, {name: "continuity", usage: "fresh or resume"}, {name: "result-surface", usage: "Result destination"}, {name: "circle", usage: "Circle"}, {name: "visibility", usage: "Visibility scope"}, {name: "json", usage: "Emit JSON", boolean: true}},
 	"jobs list":           {{name: "state", usage: "Filter by state"}, {name: "owner", usage: "Filter by owner"}, {name: "created-by", usage: "Filter by creator"}, {name: "session", usage: "Filter by session"}, {name: "circle", usage: "Filter by circle"}, {name: "json", usage: "Emit JSON", boolean: true}},

@@ -145,6 +145,9 @@ func (s *Server) remoteRequest(ctx context.Context, target *daemonConn, fromMach
 		if ctx.Err() != nil {
 			return ended()
 		}
+		if errors.Is(err, errConnEnded) {
+			return http.StatusBadGateway, errorBody("machine disconnected")
+		}
 		return http.StatusBadGateway, errorBody("failed to reach machine")
 	}
 	select {

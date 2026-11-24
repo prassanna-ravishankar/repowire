@@ -904,7 +904,7 @@ func TestInstallCodexUsesNativeThreadsWhenCodexAutoStartsAppServer(t *testing.T)
 	if err != nil || !strings.Contains(config, "[mcp_servers.repowire]") || !strings.Contains(config, "hooks.state.") {
 		t.Fatalf("Codex MCP config missing: %v %s", err, configRaw)
 	}
-	for _, tool := range []string{"ack", "answer", "decline"} {
+	for _, tool := range []string{"ack", "answer", "decline", "delegate", "list_messages", "read_message"} {
 		if !strings.Contains(config, "[mcp_servers.repowire.tools."+tool+"]\napproval_mode = \"approve\"") {
 			t.Fatalf("Codex %s tool is not pre-approved:\n%s", tool, config)
 		}
@@ -988,4 +988,72 @@ func TestPeerRestartFlagsParseAsBooleans(t *testing.T) {
 	if len(a.pos) != 1 || a.pos[0] != "orch" || !a.bool("fresh") || a.string("wait", "true") != "false" {
 		t.Fatalf("parsed = %+v", a)
 	}
+}
+
+// TestStableExecutableKeepsTheInstallLauncher (#463): install.sh unpacks each
+// version under ~/.local/share/repowire/<version>/ and points
+// ~/.local/bin/repowire (or $REPOWIRE_BIN_DIR/repowire) at it. Hooks must name
+// the launcher, which the next install repoints, not the versioned binary.
+func TestStableExecutableKeepsTheInstallLauncher(t *testing.T) {
+	for _, custom := range []bool{false, true} {
+		homeDir := t.TempDir()
+		t.Setenv("HOME", homeDir)
+		binDir := filepath.Join(homeDir, ".local", "bin")
+		if custom {
+			binDir = filepath.Join(homeDir, "tools")
+			t.Setenv("REPOWIRE_BIN_DIR", binDir)
+		} else {
+			t.Setenv("REPOWIRE_BIN_DIR", "")
+		}
+		versioned := filepath.Join(homeDir, ".local", "share", "repowire", "v0.21.1", "repowire")
+		launcher := filepath.Join(binDir, "repowire")
+		for _, dir := range []string{filepath.Dir(versioned), binDir} {
+			if err := os.MkdirAll(dir, 0o700); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := os.WriteFile(versioned, nil, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(versioned, launcher); err != nil {
+			t.Fatal(err)
+		}
+		canonicalLauncher := filepath.Join(must(filepath.EvalSymlinks(binDir)), "repowire")
+		if got := stableExecutable(versioned); got != canonicalLauncher {
+			t.Fatalf("custom=%v: stable executable = %q, want the launcher %q", custom, got, canonicalLauncher)
+		}
+
+		// A launcher that points at another version is not this binary's.
+		other := filepath.Join(homeDir, ".local", "share", "repowire", "v0.20.0", "repowire")
+		if err := os.MkdirAll(filepath.Dir(other), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(other, nil, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if got := stableExecutable(other); got != must(filepath.EvalSymlinks(other)) {
+			t.Fatalf("custom=%v: a binary the launcher does not point at resolved to %q", custom, got)
+		}
+	}
+}
+
+// TestHookBinarySkew (#463): status names the binary the hooks run when it is
+// not this one, so an upgrade that left hooks behind is visible.
+func TestHookBinarySkew(t *testing.T) {
+	settings := map[string]any{"hooks": map[string]any{"Stop": []any{map[string]any{"hooks": []any{
+		map[string]any{"type": "command", "command": strconv.Quote("/old/v0.20.0/repowire") + " hook stop"},
+	}}}}}
+	if got := hookBinary(settings); got != "/old/v0.20.0/repowire" {
+		t.Fatalf("hook binary = %q", got)
+	}
+	if got := hookBinary(map[string]any{}); got != "" {
+		t.Fatalf("no hooks: hook binary = %q", got)
+	}
+}
+
+func must(s string, err error) string {
+	if err != nil {
+		panic(err)
+	}
+	return s
 }

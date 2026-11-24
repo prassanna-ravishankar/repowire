@@ -30,6 +30,9 @@ type Hub struct {
 	transport *service.WebSocketTransport
 	router    *service.MessageRouter
 	authToken string
+	// beforeConnect, when set by a test, runs between a peer's registration
+	// and the attach of its socket.
+	beforeConnect func(proto.PeerID)
 
 	// Read-path deps for the HTTP route groups. Optional and nil-safe: the
 	// peer-read handlers degrade gracefully (no inbound-health probe) when these
@@ -49,6 +52,15 @@ type Hub struct {
 	// inbox is the human peer's inbox, wired via WithInbox. nil → no human
 	// peer: /inbox routes 503 and phone bridges are ordinary service peers.
 	inbox *service.Inbox
+	// attachmentRetention is the retention policy (WithRetention), for an
+	// upload that would hit the directory cap; the zero policy keeps files.
+	attachmentRetention state.RetentionPolicy
+	// messages is the agent peers' message record behind /messages, wired
+	// via WithMessages. nil → those routes 503.
+	messages *service.Messages
+	// wire is the orchestrator's read-only thread view (WithWire). nil →
+	// its MCP tools answer an error and /wire routes are not registered.
+	wire *service.Wire
 	// dashboard is the inbox surface rendered over the dashboard's event
 	// stream; nil without an inbox.
 	dashboard *dashboardSurface
@@ -262,10 +274,12 @@ func (h *Hub) Routes(mux *http.ServeMux) {
 	h.EventsStreamRoutes(mux)
 	h.registerAskLifecycleRoutes(mux)
 	h.registerInboxRoutes(mux)
+	h.registerMessageRoutes(mux)
 	if h.session != nil {
 		h.registerSessionRoutes(mux)
 	}
 	if h.messaging != nil {
+		h.messaging.remote = h
 		h.messaging.Register(mux, h.requireAuth)
 	}
 	if h.lifecycle != nil {
@@ -291,6 +305,7 @@ func (h *Hub) Routes(mux *http.ServeMux) {
 	h.registerShareRoutes(mux)
 	h.registerAttachmentRoutes(mux)
 	h.registerTraceRoutes(mux)
+	h.registerWireRoutes(mux)
 	h.registerSessionControlRoutes(mux)
 }
 

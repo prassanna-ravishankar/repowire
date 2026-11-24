@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"testing"
 
 	clienthooks "github.com/repowire/repowire/daemon-go/hooks"
@@ -26,6 +27,7 @@ import (
 type fakeSpawnRegistry struct {
 	peers        []*proto.Peer
 	unregistered []string
+	closed       []proto.PeerID
 	allocID      proto.PeerID
 	allocName    proto.DisplayName
 	turnStates   map[proto.PeerID]proto.TurnState
@@ -71,6 +73,11 @@ func (r *fakeSpawnRegistry) GetPeerByPane(paneID string) (*proto.Peer, bool) {
 func (r *fakeSpawnRegistry) UnregisterPeer(_ context.Context, identifier string, _ *string) (bool, error) {
 	r.unregistered = append(r.unregistered, identifier)
 	return true, nil
+}
+
+func (r *fakeSpawnRegistry) ClosePeer(_ context.Context, id proto.PeerID, _ string) (int, error) {
+	r.closed = append(r.closed, id)
+	return 0, nil
 }
 
 func (r *fakeSpawnRegistry) MarkOffline(context.Context, proto.PeerID, bool) (int, error) {
@@ -237,6 +244,9 @@ func TestKillPeerSpawnedPaneKillsAndUnregisters(t *testing.T) {
 	if len(reg.unregistered) != 1 {
 		t.Fatalf("unregistered = %v, want one peer", reg.unregistered)
 	}
+	if len(reg.closed) != 1 || reg.closed[0] != p.PeerID {
+		t.Fatalf("closed = %v, want %s hard-retired so its runtime cannot re-register it (#530)", reg.closed, p.PeerID)
+	}
 }
 
 // TestKillPeerNoProofUnregistersButSkipsKill enforces the fail-loud rule: a peer
@@ -272,6 +282,9 @@ func TestKillPeerNoProofUnregistersButSkipsKill(t *testing.T) {
 	}
 	if len(reg.unregistered) != 1 {
 		t.Fatalf("unregistered = %v, want the peer still unregistered", reg.unregistered)
+	}
+	if len(reg.closed) != 1 || reg.closed[0] != p.PeerID {
+		t.Fatalf("closed = %v, want %s hard-retired even when its pane is left alone (#530)", reg.closed, p.PeerID)
 	}
 }
 
@@ -509,14 +522,14 @@ func writeSpawnTestPaneMeta(t *testing.T, paneID string, meta map[string]any) {
 }
 
 // TestDestructivePaneProof_VerifiedByPaneMetadata proves the third proof mode:
-// a live pane whose ws-hook meta.json names THIS peer_id authorizes destructive
-// control; a mismatching/absent file does not (path match alone is never proof).
+// a live pane whose ws-hook meta.json names THIS peer_id, with that agent still
+// running in the pane, authorizes destructive control; a mismatching/absent file does not (path match alone is never proof).
 func TestDestructivePaneProof_VerifiedByPaneMetadata(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("REPOWIRE_CONFIG_DIR", t.TempDir())
 
-	pane := "%77"
-	tmux := &fakeTmux{killOK: true, evidence: map[string]*service.TmuxPaneEvidence{pane: {TmuxSession: "sess"}}}
+	pane, occupant := "%77", startOccupant(t)
+	tmux := &fakeTmux{killOK: true, evidence: map[string]*service.TmuxPaneEvidence{pane: {PaneID: pane, TmuxSession: "sess", PanePID: strconv.Itoa(occupant)}}}
 	own := service.NewFileOwnership("test-host", tmux.ProbePane)
 	svc := newHermeticSpawnService(t, tmux, own,
 		map[proto.AgentType]string{proto.AgentClaudeCode: "claude"}, []string{t.TempDir()})
@@ -526,7 +539,7 @@ func TestDestructivePaneProof_VerifiedByPaneMetadata(t *testing.T) {
 	id := proto.PeerID("repow-ops-abc123")
 	p := &proto.Peer{PeerID: id, PaneID: &pane}
 
-	writeSpawnTestPaneMeta(t, pane, map[string]any{"peer_id": string(id)})
+	writeSpawnTestPaneMeta(t, pane, map[string]any{"peer_id": string(id), "agent_pid": occupant})
 	if proof := h.destructivePaneProof(p); !proof.ok || proof.mode != "verified_pane_metadata" {
 		t.Fatalf("matching pane metadata must prove ownership: ok=%v mode=%q err=%q",
 			proof.ok, proof.mode, proof.errCode)

@@ -3,13 +3,10 @@ package hub
 import (
 	"context"
 	"crypto/subtle"
-	"errors"
 	"fmt"
 	"net/http"
 	"strings"
 	"time"
-
-	"github.com/google/uuid"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
@@ -272,6 +269,7 @@ func registerMCPTools(srv *mcp.Server, h *Hub, delivery *service.PeerDelivery, c
 	})
 
 	registerMCPParityTools(srv, h, cfg)
+	registerWireTools(srv, h)
 
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "broadcast",
@@ -393,17 +391,11 @@ func (h *Hub) mcpNotifyPeer(ctx context.Context, delivery *service.PeerDelivery,
 	if delivery == nil {
 		return nil, fmt.Errorf("notify_peer is not wired (no delivery service configured)")
 	}
-	if name, machine, err := h.remoteAddress(ctx, args.PeerName); err == nil {
-		if len(args.Attachments) > 0 {
-			return nil, fmt.Errorf("cross-machine notifies carry text only")
-		}
-		id, state, err := h.remoteNotify(ctx, fromPeer, name, machine, args.Message)
+	if handled, id, state, err := h.notifyAddress(ctx, fromPeer, args.PeerName, args.Message, args.Attachments); handled {
 		if err != nil {
-			return nil, fmt.Errorf("notify failed: %w", err)
+			return nil, err
 		}
 		return textResult(fmt.Sprintf("%s delivery_state=%s", id, state)), nil
-	} else if !errors.Is(err, errNotRemote) {
-		return nil, err
 	}
 	params := service.NotifyParams{
 		FromPeer:    fromPeer,
@@ -420,7 +412,7 @@ func (h *Hub) mcpNotifyPeer(ctx context.Context, delivery *service.PeerDelivery,
 		// trail (it used to leave none).
 		result, deliveryID, err = h.messaging.notifyTraced(ctx, params)
 	} else {
-		deliveryID = "notif-delivery-" + uuid.NewString()[:8]
+		deliveryID = service.NewNotifyDeliveryID()
 		params.DeliveryID = deliveryID
 		result, err = delivery.Notify(ctx, params)
 	}
@@ -467,10 +459,8 @@ func (h *Hub) mcpBroadcast(ctx context.Context, delivery *service.PeerDelivery, 
 	}
 	sent, failed := delivery.Broadcast(ctx, fromPeer, args.Message, nil, false)
 	text := fmt.Sprintf("sent=%d failed=%d", len(sent), len(failed))
-	if h.remote != nil {
-		if _, from, err := h.remoteCaller(fromPeer); err == nil {
-			text += h.broadcastRemote(ctx, from, args.Message)
-		}
+	if remote := h.broadcastAcross(ctx, fromPeer, args.Message); remote != nil {
+		text += remote.String()
 	}
 	return textResult(text), nil
 }

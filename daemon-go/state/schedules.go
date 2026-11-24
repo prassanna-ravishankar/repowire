@@ -228,3 +228,5 @@ func (s *Store) DeleteSchedule(ctx context.Context, scheduleID string) (*Schedul
 	}
 	return sched, nil
 }
+
+var scheduleRetention = tableRetention{tables: []string{"schedules"}, exempt: "configuration, not history"}

@@ -67,9 +67,14 @@ func (s *Store) EnqueueDelivery(
 	}
 	now = now.UTC()
 
-	id, err := newDeliveryID()
-	if err != nil {
-		return nil, fmt.Errorf("mint delivery id: %w", err)
+	// A caller that already traces the delivery keeps its id, so the queue
+	// and the trace ledger name the same delivery.
+	id := d.DeliveryID
+	if id == "" {
+		var err error
+		if id, err = newDeliveryID(); err != nil {
+			return nil, fmt.Errorf("mint delivery id: %w", err)
+		}
 	}
 
 	out := d
@@ -169,10 +174,8 @@ func (s *Store) DrainDeliveries(
 	}
 
 	for _, d := range out {
-		if _, err := tx.ExecContext(ctx,
-			"DELETE FROM queued_deliveries WHERE delivery_id = ?", d.DeliveryID,
-		); err != nil {
-			return nil, fmt.Errorf("delete drained delivery %s: %w", d.DeliveryID, err)
+		if _, err := removeQueuedTx(ctx, tx, QueueDequeued, "", "delivery_id = ?", d.DeliveryID); err != nil {
+			return nil, fmt.Errorf("drain delivery %s: %w", d.DeliveryID, err)
 		}
 	}
 
@@ -220,29 +223,88 @@ func (s *Store) ListDeliveries(
 	return out, nil
 }
 
-// DeleteDelivery removes one queued delivery by id, returning whether a row was
-// deleted (confirmed-handoff path).
+// DeleteDelivery removes one queued delivery by id once it has been handed to
+// the peer (the replayed frame is on the wire), returning whether a row was
+// deleted. A traced notify records it as dequeued.
 func (s *Store) DeleteDelivery(ctx context.Context, deliveryID string) (bool, error) {
-	res, err := s.db.ExecContext(ctx,
-		"DELETE FROM queued_deliveries WHERE delivery_id = ?", deliveryID,
-	)
+	n, err := s.removeQueued(ctx, QueueDequeued, "", "delivery_id = ?", deliveryID)
 	if err != nil {
 		return false, fmt.Errorf("delete delivery %s: %w", deliveryID, err)
-	}
-	n, err := res.RowsAffected()
-	if err != nil {
-		return false, fmt.Errorf("rows affected: %w", err)
 	}
 	return n > 0, nil
 }
 
 func deleteExpiredTx(ctx context.Context, tx *sql.Tx, cutoffISO string) error {
-	if _, err := tx.ExecContext(ctx,
-		"DELETE FROM queued_deliveries WHERE expires_at <= ?", cutoffISO,
-	); err != nil {
+	if _, err := removeQueuedTx(ctx, tx, QueueExpired, "", "expires_at <= ?", cutoffISO); err != nil {
 		return fmt.Errorf("delete expired deliveries: %w", err)
 	}
 	return nil
+}
+
+// How a queued delivery left the queue. For a traced notify the queue
+// records it as a stage under the notify's delivery id, so its trace says
+// what happened (the wire view reads it).
+const (
+	QueueDequeued = "dequeued" // handed to the reconnected peer (replayed or drained); not a receipt
+	QueueExpired  = "expired"  // its TTL passed first
+	QueueDropped  = "dropped"  // removed undelivered: the per-peer cap, or a peer that cannot take input
+)
+
+// removeQueued is removeQueuedTx in its own transaction.
+func (s *Store) removeQueued(ctx context.Context, outcome, reason, where string, args ...any) (int, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, fmt.Errorf("begin queue removal: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	n, err := removeQueuedTx(ctx, tx, outcome, reason, where, args...)
+	if err != nil {
+		return 0, err
+	}
+	return n, tx.Commit()
+}
+
+// removeQueuedTx deletes the queue rows where selects and, for each traced
+// notify among them, records outcome as a stage of its trace.
+func removeQueuedTx(ctx context.Context, tx *sql.Tx, outcome, reason, where string, args ...any) (int, error) {
+	rows, err := tx.QueryContext(ctx, `SELECT delivery_id, peer_id, COALESCE(from_peer_id, '') FROM queued_deliveries
+		WHERE kind = 'notify' AND `+where+`
+		  AND EXISTS (SELECT 1 FROM delivery_traces t WHERE t.trace_id = queued_deliveries.delivery_id)`, args...)
+	if err != nil {
+		return 0, fmt.Errorf("select %s deliveries: %w", outcome, err)
+	}
+	type traced struct{ id, peer, from string }
+	var notifies []traced
+	for rows.Next() {
+		var t traced
+		if err := rows.Scan(&t.id, &t.peer, &t.from); err != nil {
+			_ = rows.Close()
+			return 0, fmt.Errorf("scan %s delivery: %w", outcome, err)
+		}
+		notifies = append(notifies, t)
+	}
+	if err := rows.Close(); err != nil {
+		return 0, err
+	}
+	status := "fail"
+	if outcome == QueueDequeued {
+		status = "ok"
+	}
+	var detail map[string]any
+	if reason != "" {
+		detail = map[string]any{"reason": reason}
+	}
+	for _, t := range notifies {
+		if err := recordTrace(ctx, tx, t.id, "notify", outcome, status, t.id, t.peer, t.from, detail); err != nil {
+			return 0, err
+		}
+	}
+	res, err := tx.ExecContext(ctx, `DELETE FROM queued_deliveries WHERE `+where, args...)
+	if err != nil {
+		return 0, fmt.Errorf("delete %s deliveries: %w", outcome, err)
+	}
+	n, _ := res.RowsAffected()
+	return int(n), nil
 }
 
 // enforceCapTx deletes the oldest rows beyond maxPerPeer for one peer. The
@@ -273,9 +335,7 @@ func enforceCapTx(ctx context.Context, tx *sql.Tx, peerID string, maxPerPeer int
 	_ = rows.Close()
 
 	for _, id := range ids {
-		if _, err := tx.ExecContext(ctx,
-			"DELETE FROM queued_deliveries WHERE delivery_id = ?", id,
-		); err != nil {
+		if _, err := removeQueuedTx(ctx, tx, QueueDropped, "queue_cap", "delivery_id = ?", id); err != nil {
 			return fmt.Errorf("delete over-cap delivery %s: %w", id, err)
 		}
 	}
@@ -361,12 +421,26 @@ func scanDelivery(rows *sql.Rows) (QueuedDelivery, error) {
 }
 
 // DeleteDeliveriesForPeer drops every queued delivery addressed to peerID
-// (a peer that can no longer take input). Returns the number removed.
+// (a peer that can no longer take input). Returns the number removed. Each
+// traced notify records it as dropped (peer_not_addressable).
 func (s *Store) DeleteDeliveriesForPeer(ctx context.Context, peerID string) (int, error) {
-	res, err := s.db.ExecContext(ctx, `DELETE FROM queued_deliveries WHERE peer_id = ?`, peerID)
+	n, err := s.removeQueued(ctx, QueueDropped, "peer_not_addressable", "peer_id = ?", peerID)
 	if err != nil {
 		return 0, fmt.Errorf("delete deliveries for %s: %w", peerID, err)
 	}
-	n, _ := res.RowsAffected()
-	return int(n), nil
+	return n, nil
+}
+
+var queuedDeliveryRetention = tableRetention{tables: []string{"queued_deliveries"}, exempt: "live queue with its own TTL (daemon.delivery_queue_ttl_seconds)"}
+
+// DeliveryQueued reports whether delivery id is still waiting in the queue
+// (present and not expired).
+func (s *Store) DeliveryQueued(ctx context.Context, id string, now time.Time) (bool, error) {
+	var n int
+	err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM queued_deliveries WHERE delivery_id = ? AND expires_at > ?`,
+		id, formatISO(now.UTC())).Scan(&n)
+	if err != nil {
+		return false, fmt.Errorf("queued delivery %s: %w", id, err)
+	}
+	return n > 0, nil
 }

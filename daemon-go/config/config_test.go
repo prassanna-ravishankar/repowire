@@ -3,7 +3,9 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 )
 
 func TestLoadMissingConfigUsesDefaults(t *testing.T) {
@@ -153,5 +155,304 @@ func TestLoadRejectsInvalidCircleBoundary(t *testing.T) {
 	}
 	if _, err := Load(); err == nil {
 		t.Fatal("invalid circle boundary was accepted")
+	}
+}
+
+func hasWarning(cfg Config, part string) bool {
+	for _, w := range cfg.Warnings {
+		if strings.Contains(w, part) {
+			return true
+		}
+	}
+	return false
+}
+
+// TestLoadMistypedOptionalKeyWarnsAndKeepsTheRest (#427): a type error in an
+// optional key is a warning and that key's default, never a failed load, which
+// under launchd KeepAlive is a crash loop. Its siblings still load.
+func TestLoadMistypedOptionalKeyWarnsAndKeepsTheRest(t *testing.T) {
+	cfg, err := tryLoadYAML(t, `
+daemon:
+  port: 9100
+  heartbeat_interval: 45
+  spawn:
+    commands: [codex]
+    allowed_paths: [/work]
+  mcp_http:
+    enabled: true
+    require_auth: maybe
+relay:
+  enabled: definitely
+  url: wss://relay.example
+telegram:
+  chat_id: [1, 2]
+  bot_token: tok
+experiments:
+  chat_turn_streaming: true
+  remote_tool_approval:
+    enabled: true
+    timeout_seconds: soon
+`)
+	if err != nil {
+		t.Fatalf("a mistyped optional key failed the load: %v", err)
+	}
+	checks := []struct {
+		ok   bool
+		what string
+	}{
+		{cfg.Daemon.Port == 9100 && cfg.Daemon.HeartbeatInterval == 45, "daemon siblings kept"},
+		{len(cfg.Daemon.Spawn.Commands) == 0 && len(cfg.Daemon.Spawn.AllowedPaths) == 1, "spawn.commands dropped, allowed_paths kept"},
+		{cfg.Daemon.MCPHTTP.Enabled && cfg.Daemon.MCPHTTP.RequireAuth, "mcp_http.enabled kept, require_auth back to its default (true)"},
+		{cfg.Relay == Defaults().Relay, "relay is all or nothing: back to its defaults"},
+		{cfg.Telegram == (TelegramConfig{}), "telegram is all or nothing: unset"},
+		{cfg.Experiments.ChatTurnStreaming && cfg.Experiments.RemoteToolApproval.Enabled && cfg.Experiments.RemoteToolApproval.TimeoutSeconds == 45, "remote_tool_approval.timeout_seconds back to default, enabled kept"},
+	}
+	for _, c := range checks {
+		if !c.ok {
+			t.Errorf("%s: %+v", c.what, cfg)
+		}
+	}
+	for _, key := range []string{"daemon.spawn.commands", "daemon.mcp_http.require_auth", "relay.enabled", "relay is disabled", "telegram.chat_id", "telegram is disabled", "experiments.remote_tool_approval.timeout_seconds"} {
+		if !hasWarning(cfg, key) {
+			t.Errorf("no warning names %s: %q", key, cfg.Warnings)
+		}
+	}
+}
+
+// TestLoadCoreKeyErrorsStayFatal: a key the daemon cannot run correctly
+// without, a syntax error, or an unreadable daemon block still fails the load
+// rather than starting on a silently different address or without its token.
+func TestLoadCoreKeyErrorsStayFatal(t *testing.T) {
+	for name, body := range map[string]string{
+		"port":            "daemon:\n  port: eighty\n",
+		"host":            "daemon:\n  host: [a, b]\n",
+		"auth_token":      "daemon:\n  auth_token: {a: b}\n",
+		"circle_boundary": "daemon:\n  circle_boundary: [session]\n",
+		"daemon block":    "daemon: [1, 2]\n",
+		"syntax":          "daemon:\n  port: 1\n bad indent: [\n",
+	} {
+		if _, err := tryLoadYAML(t, body); err == nil {
+			t.Errorf("%s: load succeeded", name)
+		}
+	}
+}
+
+// Review #561: decoding key by key must not change a value that loaded before.
+// A scalar that reads as a number in YAML keeps its exact text in a string
+// field (a leading zero, an octal-looking token).
+func TestLoadKeepsScalarTextExactly(t *testing.T) {
+	cfg, err := tryLoadYAML(t, "daemon:\n  auth_token: 012345\n  heartbeat_interval: soon\ntelegram:\n  chat_id: 00042\n  bot_token: tok\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Daemon.AuthToken != "012345" || cfg.Telegram.ChatID != "00042" {
+		t.Fatalf("auth_token %q chat_id %q; want the text as written", cfg.Daemon.AuthToken, cfg.Telegram.ChatID)
+	}
+}
+
+// Review #561: a security control that does not decode fails closed. A
+// mistyped remote_tool_approval.enabled turns approval on rather than off.
+func TestLoadMistypedApprovalFailsClosed(t *testing.T) {
+	for name, body := range map[string]string{
+		"enabled mistyped": "experiments:\n  remote_tool_approval:\n    enabled: [true]\n",
+		"block unreadable": "experiments:\n  remote_tool_approval: [enabled]\n",
+	} {
+		cfg, err := tryLoadYAML(t, body)
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if !cfg.Experiments.RemoteToolApproval.Enabled || len(cfg.Experiments.RemoteToolApproval.GatedTools) == 0 {
+			t.Errorf("%s: approval %+v; want enabled with the default gated tools", name, cfg.Experiments.RemoteToolApproval)
+		}
+		if !hasWarning(cfg, "remote_tool_approval") {
+			t.Errorf("%s: no warning: %q", name, cfg.Warnings)
+		}
+	}
+}
+
+// Review #561: an experiments block that is not a mapping is an optional
+// section like any other, for routing's probe too.
+func TestLoadUnreadableExperimentsBlockDegrades(t *testing.T) {
+	cfg, err := tryLoadYAML(t, "experiments: []\ndaemon:\n  port: 9101\n")
+	if err != nil || cfg.Daemon.Port != 9101 || !hasWarning(cfg, "experiments") {
+		t.Fatalf("experiments: [] = %v, port %d, warnings %q", err, cfg.Daemon.Port, cfg.Warnings)
+	}
+}
+
+// Review #561 round 2: a block that carries credentials is read whole or not
+// at all. A relay whose url cannot be read must not send its key to the
+// default relay; a bridge whose settings are partly unreadable stays off.
+func TestLoadPartlyUnreadableCredentialBlockIsOff(t *testing.T) {
+	cfg, err := tryLoadYAML(t, `
+relay:
+  enabled: true
+  url: [wss://private.example]
+  api_key: private-secret
+telegram:
+  bot_token: tok
+  chat_id: [1]
+slack:
+  bot_token: b
+  app_token: a
+  channel_id: {c: 1}
+`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Relay.Enabled || cfg.Relay.APIKey != "" || cfg.Relay.URL != defaultRelayURL {
+		t.Errorf("relay = %+v; want the defaults (off, no key)", cfg.Relay)
+	}
+	if cfg.Telegram != (TelegramConfig{}) || cfg.Slack != (SlackConfig{}) {
+		t.Errorf("telegram %+v slack %+v; want both unset", cfg.Telegram, cfg.Slack)
+	}
+	for _, section := range []string{"relay", "telegram", "slack"} {
+		if !hasWarning(cfg, section+" is disabled") {
+			t.Errorf("no warning that %s is disabled: %q", section, cfg.Warnings)
+		}
+	}
+}
+
+// Review #561 round 2: nested recovery, and so the approval fail-closed rule,
+// sees through YAML aliases.
+func TestLoadMistypedApprovalFailsClosedThroughAnAlias(t *testing.T) {
+	cfg, err := tryLoadYAML(t, "settings: &exp\n  remote_tool_approval:\n    enabled: [true]\nexperiments: *exp\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.Experiments.RemoteToolApproval.Enabled {
+		t.Fatalf("approval through an alias = %+v; want enabled", cfg.Experiments.RemoteToolApproval)
+	}
+}
+
+// Review #561 round 3: keys that arrive through a merge key follow the same
+// rules as keys written out: a core key still refuses, approval still fails
+// closed, and an explicit key beats a merged one.
+func TestLoadMergedKeysFollowTheSameRules(t *testing.T) {
+	if _, err := tryLoadYAML(t, "daemon:\n  host: 0.0.0.0\n  <<: {auth_token: [secret]}\n"); err == nil {
+		t.Error("a mistyped auth_token through a merge key loaded")
+	}
+	cfg, err := tryLoadYAML(t, "experiments:\n  <<: {remote_tool_approval: {enabled: [true]}}\ndaemon:\n  <<: {port: 9200, heartbeat_interval: soon}\n  port: 9201\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.Experiments.RemoteToolApproval.Enabled {
+		t.Errorf("approval through a merge key = %+v; want enabled", cfg.Experiments.RemoteToolApproval)
+	}
+	if cfg.Daemon.Port != 9201 || !hasWarning(cfg, "daemon.heartbeat_interval") {
+		t.Errorf("port %d warnings %q; want the explicit 9201 and a warning naming the merged key", cfg.Daemon.Port, cfg.Warnings)
+	}
+}
+
+// Review #561 round 4: a merge that refers back to its own mapping is not
+// followed forever.
+func TestLoadRecursiveMergeDoesNotLoop(t *testing.T) {
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_, _ = tryLoadYAML(t, "daemon: &d\n  port: 9300\n  heartbeat_interval: soon\n  <<: *d\nexperiments: &e\n  <<: *e\n  remote_tool_approval: {enabled: [true]}\n")
+		_, _ = tryLoadYAML(t, "daemon:\n  heartbeat_interval: soon\n  <<: &s [*s]\nexperiments:\n  <<: &q [*q]\n  remote_tool_approval: {enabled: [true]}\n")
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("a recursive merge did not finish loading")
+	}
+}
+
+// A rejected value never appears in a warning or error: they are logged at
+// startup and printed by `repowire config check`, and the value may be a
+// credential (a token that YAML reads as a number).
+func TestLoadDiagnosticsNeverQuoteRejectedValues(t *testing.T) {
+	for name, body := range map[string]string{
+		"credential block":  "telegram:\n  bot_token: !!int SECRET_BOT_TOKEN\n  chat_id: \"42\"\n",
+		"optional key":      "daemon:\n  heartbeat_interval: !!binary c2VjcmV0LXZhbHVl\n",
+		"core key":          "daemon:\n  auth_token: !!int SECRET_AUTH_TOKEN\n",
+		"backtick in value": "daemon:\n  auth_token: !!int \"prefix`SECRET_AUTH_TOKEN\"\n",
+		"custom tag":        "daemon:\n  auth_token: !SECRET_AUTH_TOKEN {}\n",
+		"routing key":       "routing:\n  clef:\n    api_key: !!int SECRET_CLEF_KEY\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "config.yaml")
+			if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			cfg, err := LoadFile(path)
+			text := strings.Join(cfg.Warnings, "\n")
+			if err != nil {
+				text += "\n" + err.Error()
+			}
+			if text == "" {
+				t.Fatal("expected a diagnostic")
+			}
+			for _, secret := range []string{"SECRET_BOT_TOKEN", "c2VjcmV0LXZhbHVl", "SECRET_AUTH_TOKEN", "SECRET_CLEF_KEY"} {
+				if strings.Contains(text, secret) {
+					t.Fatalf("diagnostic quotes the rejected value %q:\n%s", secret, text)
+				}
+			}
+		})
+	}
+}
+
+func TestRetentionDefaultsOverridesAndBadValues(t *testing.T) {
+	t.Setenv("REPOWIRE_RETENTION__CONTENT_DAYS", "")
+	t.Setenv("REPOWIRE_RETENTION__RECORDS_DAYS", "")
+	if cfg := loadYAML(t, "daemon:\n  port: 9100\n"); cfg.Retention != (RetentionConfig{ContentDays: 7, RecordsDays: 180}) {
+		t.Fatalf("defaults = %+v", cfg.Retention)
+	}
+	if cfg := loadYAML(t, "retention:\n  content_days: 30\n  records_days: 0\n"); cfg.Retention != (RetentionConfig{ContentDays: 30, RecordsDays: 0}) {
+		t.Fatalf("file values = %+v", cfg.Retention)
+	}
+	t.Setenv("REPOWIRE_RETENTION__CONTENT_DAYS", "14")
+	if cfg := loadYAML(t, "retention:\n  content_days: 30\n"); cfg.Retention.ContentDays != 14 {
+		t.Fatalf("env override = %+v", cfg.Retention)
+	}
+	t.Setenv("REPOWIRE_RETENTION__CONTENT_DAYS", "")
+
+	cfg, err := tryLoadYAML(t, "retention:\n  content_days: soon\n  records_days: -1\n")
+	if err != nil {
+		t.Fatalf("a bad retention value failed the load: %v", err)
+	}
+	if cfg.Retention != (RetentionConfig{ContentDays: 7, RecordsDays: 180}) {
+		t.Fatalf("bad values not reset to defaults: %+v", cfg.Retention)
+	}
+	joined := strings.Join(cfg.Warnings, "\n")
+	if !strings.Contains(joined, "retention.content_days") || !strings.Contains(joined, "retention.records_days") || strings.Contains(joined, "soon") {
+		t.Fatalf("warnings = %q", cfg.Warnings)
+	}
+}
+
+// A retention shorter than the ask lifetime is honoured as the ask lifetime;
+// config says so instead of the sweep raising it silently.
+func TestRetentionShorterThanTheAskLifetimeWarns(t *testing.T) {
+	t.Setenv("REPOWIRE_RETENTION__CONTENT_DAYS", "")
+	t.Setenv("REPOWIRE_RETENTION__RECORDS_DAYS", "")
+	cfg := loadYAML(t, "daemon:\n  prune_max_age_hours: 480\nretention:\n  content_days: 10\n  records_days: 0\n")
+	warnings := strings.Join(cfg.Warnings, "\n")
+	if cfg.Retention.ContentDays != 10 || !strings.Contains(warnings, "retention.content_days (10 days) is shorter than the ask lifetime") || strings.Contains(warnings, "records_days") {
+		t.Fatalf("retention %+v, warnings %q", cfg.Retention, cfg.Warnings)
+	}
+	if cfg := loadYAML(t, "retention:\n  content_days: 2\n"); len(cfg.Warnings) != 0 {
+		t.Fatalf("2 days against a 24-hour ask lifetime warned: %q", cfg.Warnings)
+	}
+}
+
+func TestRetentionRejectsUnrepresentableDays(t *testing.T) {
+	t.Setenv("REPOWIRE_RETENTION__RECORDS_DAYS", "")
+	for _, value := range []string{".nan", ".inf", "1e12"} {
+		t.Setenv("REPOWIRE_RETENTION__CONTENT_DAYS", "")
+		cfg, err := tryLoadYAML(t, "retention:\n  content_days: "+value+"\n")
+		if err != nil {
+			t.Fatalf("%s failed the load: %v", value, err)
+		}
+		if cfg.Retention.ContentDays != 7 || !strings.Contains(strings.Join(cfg.Warnings, "\n"), "retention.content_days") {
+			t.Fatalf("yaml %s: retention %+v, warnings %q", value, cfg.Retention, cfg.Warnings)
+		}
+	}
+	for _, value := range []string{"NaN", "+Inf", "1e12"} {
+		t.Setenv("REPOWIRE_RETENTION__CONTENT_DAYS", value)
+		cfg := loadYAML(t, "daemon:\n  port: 9100\n")
+		if cfg.Retention.ContentDays != 7 {
+			t.Fatalf("env %s: retention %+v", value, cfg.Retention)
+		}
 	}
 }

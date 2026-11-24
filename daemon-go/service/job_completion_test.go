@@ -4,6 +4,7 @@ import (
 	"context"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/repowire/repowire/daemon-go/proto"
 	"github.com/repowire/repowire/daemon-go/state"
@@ -200,5 +201,64 @@ func TestJobCompletionHostedRunSettlesARecoveredAttempt(t *testing.T) {
 	}
 	if got, _ := store.GetWork(ctx, work.WorkID); got.State != "completed" {
 		t.Fatalf("a run for a replaced attempt must change nothing, got %q", got.State)
+	}
+}
+
+// TestJobCompletionExpiresWorkPastItsDeadline (#457): deadline_at ends a job
+// that is still going when it passes, whatever it is doing: a running attempt
+// fails, the work becomes expired with deadline_exceeded, and its dispatch ask
+// closes. Work not yet past its deadline, dispatching work (bounded by its
+// lease) and terminal work are left alone.
+func TestJobCompletionExpiresWorkPastItsDeadline(t *testing.T) {
+	ctx := context.Background()
+	store, err := state.NewStore(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	now := time.Now().UTC()
+	past, future := now.Add(-time.Minute).Format(time.RFC3339Nano), now.Add(time.Hour).Format(time.RFC3339Nano)
+	create := func(title string, deadline *string) *state.TrackedWork {
+		w, err := store.CreateWork(ctx, state.WorkCreate{Title: title, DeadlineAt: deadline})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return w
+	}
+
+	asks := NewAskTracker(0)
+	cid, err := asks.Register(ctx, RegisterAskParams{FromPeerID: "repow-jobs", FromPeerName: "jobs", ToPeerID: "repow-worker", ToPeerName: "worker", ReplyDelivery: "pull"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	running := create("running", &past)
+	attemptID := "attempt-0000deadline"
+	if _, err := store.AcquireForDispatch(ctx, running.WorkID, state.AcquireOptions{RunnerOwnerID: "test", AttemptID: attemptID, IgnoreDueAt: true}); err != nil {
+		t.Fatal(err)
+	}
+	status, phase, assigned := "delivered", "delivered", "repow-worker"
+	if _, err := store.UpdateAttempt(ctx, running.WorkID, attemptID, state.AttemptUpdate{Status: &status, Phase: &phase, AssignedPeerID: &assigned, CorrelationID: &cid}); err != nil {
+		t.Fatal(err)
+	}
+	queued := create("queued", &past)
+	later := create("later", &future)
+	none := create("no deadline", nil)
+
+	NewJobCompletion(store, asks, nil, nil, nil).ExpireOverdue(ctx, now)
+
+	got, _ := store.GetWork(ctx, running.WorkID)
+	if got.State != "expired" || got.StateReason == nil || *got.StateReason != "deadline_exceeded" {
+		t.Fatalf("running work past its deadline = %s (%v)", got.State, got.StateReason)
+	}
+	if ask, _ := asks.Get(cid); !ask.Closed || ask.CloseReason != "deadline_exceeded" {
+		t.Fatalf("dispatch ask = %+v; want closed deadline_exceeded", ask)
+	}
+	if got, _ := store.GetWork(ctx, queued.WorkID); got.State != "expired" {
+		t.Fatalf("queued work past its deadline = %s", got.State)
+	}
+	for _, w := range []*state.TrackedWork{later, none} {
+		if got, _ := store.GetWork(ctx, w.WorkID); got.State != "queued" {
+			t.Fatalf("%s = %s; want untouched", w.Title, got.State)
+		}
 	}
 }

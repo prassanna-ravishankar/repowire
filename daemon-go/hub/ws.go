@@ -220,6 +220,9 @@ func (h *Hub) HandleWS(w http.ResponseWriter, r *http.Request) {
 		AgentPID:      cf.AgentPID,
 		HookVersion:   cf.HookVersion != nil,
 		Provenance:    cf.Provenance,
+		// Lazy repair (started above) must not demote the peer before its
+		// socket is attached below.
+		AttachingSocket: true,
 	}
 	if cf.Provenance != nil && !cf.Provenance.Source.Valid() {
 		_ = wsjson.Write(ctx, conn, proto.ErrorFrame{Type: proto.FrameError, Error: "Invalid provenance.source"})
@@ -245,8 +248,11 @@ func (h *Hub) HandleWS(w http.ResponseWriter, r *http.Request) {
 
 	peerID, assignedName, err := h.reg.AllocateAndRegister(ctx, params)
 	if err != nil {
-		if errors.Is(err, peer.ErrPeerRetired) {
-			_ = wsjson.Write(ctx, conn, proto.ErrorFrame{Type: proto.FrameError, Code: "peer_retired", Error: err.Error()})
+		if errors.Is(err, peer.ErrPeerRetired) || errors.Is(err, peer.ErrPeerClosed) {
+			// One code for every client (running ws-hooks stop on it); final marks
+			// an operator close, which no live agent or certificate can recover.
+			_ = wsjson.Write(ctx, conn, proto.ErrorFrame{Type: proto.FrameError, Code: "peer_retired",
+				Error: err.Error(), Final: errors.Is(err, peer.ErrPeerClosed)})
 			_ = conn.Close(4004, "Peer retired")
 			log.Printf("ws: connect rejected (retired peer_id)")
 			return
@@ -267,14 +273,20 @@ func (h *Hub) HandleWS(w http.ResponseWriter, r *http.Request) {
 		connPane = p.PaneID
 	}
 
+	liveSince := time.Now().UTC() // before Connect: items stored from here on are pushed live
+	if h.beforeConnect != nil {
+		h.beforeConnect(peerID)
+	}
 	h.transport.Connect(ctx, &service.ConnectionInfo{
 		SessionID:   peerID,
 		WS:          conn,
 		PaneID:      connPane,
 		DisplayName: assignedName,
-		ConnectedAt: time.Now().UTC(),
+		ConnectedAt: liveSince,
 		HookVersion: derefInt(cf.HookVersion),
+		AwaitReady:  true,
 	})
+	h.reg.SocketAttached(peerID) // registered attaching, so lazy repair could not demote it meanwhile
 
 	if err := wsjson.Write(ctx, conn, proto.ConnectedFrame{
 		Type:        proto.FrameConnected,
@@ -283,8 +295,10 @@ func (h *Hub) HandleWS(w http.ResponseWriter, r *http.Request) {
 	}); err != nil {
 		return
 	}
+	h.transport.Ready(peerID, conn)
 	log.Printf("ws: connected %s@%s (%s, %s)", assignedName, circle, peerID, backend)
 	h.syncInboxPresence(peerID)
+	h.catchUpInbox(peerID, liveSince)
 
 	// Flush-on-connect: the moment a polling peer (re)connects, drain its durable
 	// queued-delivery queue and replay each row directly onto this connection.
@@ -325,6 +339,17 @@ func (h *Hub) syncInboxPresence(id proto.PeerID) {
 	}
 	if p, ok := h.reg.GetPeer(id); ok && proto.IsInboxSurface(p) {
 		h.inbox.SyncPresence(context.Background())
+	}
+}
+
+// catchUpInbox sends a reconnecting inbox surface what it missed. The pushes
+// run in the background and need this connection's read loop for receipts.
+func (h *Hub) catchUpInbox(id proto.PeerID, liveSince time.Time) {
+	if h.inbox == nil {
+		return
+	}
+	if p, ok := h.reg.GetPeer(id); ok {
+		h.inbox.CatchUp(p, liveSince)
 	}
 }
 
@@ -389,6 +414,9 @@ func (h *Hub) flushQueuedDeliveries(ctx context.Context, conn *websocket.Conn, i
 		}
 		if len(d.Attachments) > 0 {
 			frame["attachments"] = d.Attachments
+		}
+		if id := queuedMessageID(d); id != "" {
+			frame["message_id"] = id
 		}
 		// The batch is a snapshot; the verdict can change while it is being
 		// written. Re-check before every frame and stop on denial (the rest of

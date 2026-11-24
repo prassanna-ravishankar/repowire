@@ -28,6 +28,7 @@ var providerCodes = map[string]bool{
 	"5007": true, "5004": true, "3039": true, "3003": true, "5018": true, "5016": true,
 	"3023": true, "3041": true, "5035": true, "5019": true, "5005": true, "3042": true,
 	"3006": true, "3007": true, "3008": true, "3036": true, "3040": true,
+	"4006": true, // undocumented; observed live as the daily neuron allocation (#460)
 }
 
 // errorCode returns code if it is allowlisted, else "other".

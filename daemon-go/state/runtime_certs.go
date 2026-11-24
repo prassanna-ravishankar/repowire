@@ -327,3 +327,19 @@ func (s *Store) getCertByNonce(ctx context.Context, nonce string) (*RuntimeIdent
 	cert.Metadata = decodeJSONObject(metaRaw)
 	return cert, nil
 }
+
+// certificateRetention: an expired certificate is a record. A runtime renews
+// from its newest certificate even after it expired, so each peer keeps its
+// newest one.
+var certificateRetention = tableRetention{
+	tables: []string{"runtime_identity_certificates"},
+	rules: func(c retentionCutoffs) (records, content []sweepRule) {
+		if c.records != "" {
+			records = append(records, sweepRule{name: "runtime_identity_certificates.delete", table: "runtime_identity_certificates",
+				where: "expires_at < ? AND EXISTS (SELECT 1 FROM runtime_identity_certificates newer " +
+					"WHERE newer.peer_id = runtime_identity_certificates.peer_id AND newer.issued_at > runtime_identity_certificates.issued_at)",
+				args: []any{c.records}})
+		}
+		return records, nil
+	},
+}

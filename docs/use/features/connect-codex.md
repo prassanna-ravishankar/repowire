@@ -30,10 +30,21 @@ approval_mode = "approve"
 
 [mcp_servers.repowire.tools.decline]
 approval_mode = "approve"
+
+[mcp_servers.repowire.tools.delegate]
+approval_mode = "approve"
+
+[mcp_servers.repowire.tools.list_messages]
+approval_mode = "approve"
+
+[mcp_servers.repowire.tools.read_message]
+approval_mode = "approve"
 ```
 
 Setup pre-approves the ask-resolution tools so a non-interactive approval
-policy cannot leave the Stop hook permanently blocked on an ask it cannot close.
+policy cannot leave the Stop hook permanently blocked on an ask it cannot close,
+and the tools that read the peer's own messages, so pull delivery never waits on
+an approval prompt.
 
 Codex releases without `daemon_auto_start` (before 0.158, or with the feature
 disabled) retain the hooks transport.
@@ -45,9 +56,27 @@ background server if none is running (`daemon_auto_start`) and attaches to it,
 and Codex restarts that server across its own upgrades. `repowire setup`
 installs only the bridge, which attaches to the same control socket
 (`$CODEX_HOME/app-server-control/app-server-control.sock`) and waits while no
-server is running. Sessions started with `codex --no-daemon`, or that choose
-"Run without daemon" at startup, use a private embedded server and stay off the
-mesh.
+server is running.
+
+Some launches make Codex run a private embedded server instead of attaching to
+the shared one: `--no-daemon`, `--profile`/`-p`, `--search`, `--oss`,
+`--strict-config`, `--dangerously-bypass-hook-trust`, `--approve-for-me`,
+`CODEX_EXEC_SERVER_URL` or workload-identity variables, any `-c` override other
+than a boolean `features.*` toggle, and choosing "Run without daemon" at
+startup. The bridge cannot see those sessions, so they never
+receive mesh messages. `--model`, `-s`, `-a`, `--enable`, and `--disable` keep
+the shared server. Put other settings in `~/.codex/config.toml`.
+
+Spawn, fork, job workers, and restart refuse a Codex launch that would run
+embedded, with a `codex_embedded_app_server` error that names the option. They
+check the configured command plus profile args and its environment; restart also
+checks the command it would relaunch, including an observed argv. The check
+reads the launch line only, so it can miss settings it cannot see, such as
+variables inherited from the tmux server. `repowire peer doctor` reports `CODEX_NOT_ON_APP_SERVER` for a
+Codex peer the bridge did not register, for example one started by hand with
+those options. `repowire codex install` prints which transport it chose. None of
+this applies on the hooks transport, where every Codex session registers through
+its own hooks.
 
 A thread registers as soon as Codex creates it, before its first user prompt.
 There is no warmup prompt or `UserPromptSubmit` one-turn delay. Repowire sends an
@@ -59,6 +88,10 @@ restarts do not leave its MCP calls under the fallback `mcp-http` identity.
 A thread that stays connected past half its birth certificate's 24 h lifetime
 has the certificate renewed at its next turn start, so long-lived threads keep
 their MCP identity too.
+`kill_peer` on a thread's peer closes that `peer_id` for good. The bridge then
+interrupts the thread's active turn, unsubscribes from the thread, and keeps it
+off the mesh. It does not register the thread again under a new id. If someone
+resumes the thread in Codex, it rejoins under a fresh `peer_id`.
 Because completed-item
 notifications are scoped to the App Server client that started the turn, the
 bridge reads the completed turn once when the thread becomes idle; it does not
