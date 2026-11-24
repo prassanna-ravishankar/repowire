@@ -69,7 +69,10 @@ const paneHeartbeatTolerance = 60 * time.Second
 // sensitive routing only ever flows through proto.PeerID (ClaimedPeerID); the
 // human-facing DisplayName is derived, never an input key for routing.
 type AllocateParams struct {
-	Circle string
+	// AttachingSocket marks a registration by a WebSocket connect: lazy repair
+	// leaves the peer alone until SocketAttached.
+	AttachingSocket bool
+	Circle          string
 	// CircleSource distinguishes current placement (tmux/tmux_window/spawn_hint)
 	// from fallback values restored from durable identity.
 	CircleSource string
@@ -138,6 +141,9 @@ var ErrPaneHijackRejected = fmt.Errorf("peer: pane claim rejected (direct-child 
 type peerState struct {
 	peer  *proto.Peer
 	state LifecycleState
+	// attaching: registered by a WebSocket connect whose socket is not
+	// attached yet, so lazy repair must not read the missing socket as a ghost.
+	attaching bool
 }
 
 // Registry is the lifecycle heart: peer state keyed by PeerID, a separate
@@ -427,6 +433,9 @@ func (r *Registry) AllocateAndRegister(ctx context.Context, params AllocateParam
 			}
 		}
 		existing.state = target
+		// Only the connect that set it clears it (SocketAttached); another
+		// registration meanwhile must not reopen the demotion window.
+		existing.attaching = existing.attaching || params.AttachingSocket
 		if status, ok := target.ToStatus(); ok {
 			existing.peer.Status = status
 		}
@@ -609,7 +618,7 @@ func (r *Registry) AllocateAndRegister(ctx context.Context, params AllocateParam
 	if params.Path != nil {
 		p.Path = *params.Path
 	}
-	r.peers[id] = &peerState{peer: p, state: next}
+	r.peers[id] = &peerState{peer: p, state: next, attaching: params.AttachingSocket}
 
 	// A proven pane claim displaces any other (non-sticky) peer still holding it.
 	if effectivePane != nil && *effectivePane != "" {
@@ -1254,6 +1263,26 @@ func (r *Registry) UpdateStatus(ctx context.Context, id proto.PeerID, status pro
 	return nil
 }
 
+// SocketAttached ends the attaching window AllocateAndRegister opened for a
+// WebSocket connect: the socket is live now, so lazy repair judges the peer
+// by it again.
+func (r *Registry) SocketAttached(id proto.PeerID) {
+	r.mu.Lock()
+	if ps, ok := r.peers[id]; ok {
+		ps.attaching = false
+	}
+	r.mu.Unlock()
+}
+
+// Attaching reports whether a WebSocket connect registered the peer and has
+// not attached its socket yet.
+func (r *Registry) Attaching(id proto.PeerID) bool {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	ps, ok := r.peers[id]
+	return ok && ps.attaching
+}
+
 // statusToEvent maps a desired wire status onto the lifecycle event that reaches
 // it from a live state. online->Stop (Busy->Online or Online->Online),
 // busy->UserPromptSubmit, offline->TransportDisconnect.
@@ -1454,7 +1483,7 @@ func (r *Registry) demoteDisconnected(ctx context.Context) {
 		if ps.state != StateOnline && ps.state != StateBusy {
 			continue
 		}
-		if r.transport.IsConnected(id) {
+		if ps.attaching || r.transport.IsConnected(id) {
 			continue
 		}
 		if exempt(ps.peer) {
@@ -1493,7 +1522,9 @@ func (r *Registry) demoteDisconnected(ctx context.Context) {
 	r.mu.Lock()
 	for _, id := range candidates {
 		ps, ok := r.peers[id]
-		if !ok {
+		// Re-check under the lock: the evidence probe ran off it, and a peer
+		// registered just before this pass may have attached its socket since.
+		if !ok || (ps.state != StateOnline && ps.state != StateBusy) || ps.attaching || r.transport.IsConnected(id) {
 			continue
 		}
 		r.emitContradictionCode(ctx, ps.peer, ContradictionOnlineButNoWS, severityError,
