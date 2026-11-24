@@ -319,3 +319,37 @@ func TestNameFieldLengthCap(t *testing.T) {
 
 // ensure the time import is exercised (registry hydration deadline parity).
 var _ = time.Second
+
+type signalRecorder struct {
+	got chan string
+}
+
+func (s signalRecorder) CheckSignal(_ context.Context, signal string, p *proto.Peer) {
+	s.got <- signal + " " + string(p.PeerID)
+}
+
+// Each tmux offline signal is checked against the exit watch (recorded only),
+// before the peer goes offline as before.
+func TestPaneDiedIsCheckedAgainstTheExitWatch(t *testing.T) {
+	h := newTestHub(t)
+	mux := http.NewServeMux()
+	rec := signalRecorder{got: make(chan string, 1)}
+	h.WithLifecycle(NewLifecycleHandler(h.reg, h.transport, fakePaneLister{}, nil, nil, proto.CircleBoundarySession).WithExitWatch(rec))
+	h.Routes(mux)
+	id := registerPanePeer(t, h.reg, "default", "%42")
+
+	if code := postLifecycle(t, mux, "/hooks/lifecycle/pane-died", paneDiedRequest{PaneID: "%42"}).Code; code != http.StatusOK {
+		t.Fatalf("pane-died: status %d", code)
+	}
+	select {
+	case got := <-rec.got:
+		if got != "pane_died "+string(id) {
+			t.Fatalf("checked %q, want pane_died %s", got, id)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("pane-died was not checked against the exit watch")
+	}
+	if p, _ := h.reg.GetPeer(id); p.Status != proto.StatusOffline {
+		t.Fatalf("status %s; the signal still decides", p.Status)
+	}
+}

@@ -465,6 +465,25 @@ func runDaemon() {
 	// isn't registered here, so dispatch asks carry an empty `from`
 	// (accessRegistry treats an unresolved sender as allowed, mirroring Python
 	// notify behavior).
+	// Exit watches (rfcs/agent-container.md, step 2) observe spawned agents'
+	// process exits and check each tmux offline signal against them. They only
+	// record events; offline state still follows the tmux signals. Bind runs at
+	// every registration and once now for the restored peers (adopt).
+	exitWatch := service.NewExitWatch(func(p *proto.Peer) bool {
+		own := spawnService.Ownership()
+		return (p.PaneID != nil && own.IsSpawned(*p.PaneID)) || own.ValidateForPeer(p).OK
+	}, reg.AddEvent, func(id proto.PeerID) (proto.PeerStatus, bool) {
+		p, ok := reg.GetPeer(id)
+		if !ok || p == nil {
+			return "", false
+		}
+		return p.Status, true
+	})
+	reg.OnRegistered = func(p proto.Peer) { go exitWatch.Bind(p) }
+	for _, p := range reg.GetAllPeers() {
+		go exitWatch.Bind(*p)
+	}
+
 	sessionControl := service.NewSessionControl(reg, spawnService, store).WithResume(service.ResolveLocalResume)
 	jobRunner := service.NewJobRunner(store, delivery, sessionControl)
 	jobCompletion := service.NewJobCompletion(store, asks, sessionControl, reg, delivery)
@@ -525,7 +544,8 @@ func runDaemon() {
 		// clearPaneRuntimeState is nil here because NewLifecycleHandler defaults
 		// it to hooks.ClearPaneRuntimeState.
 		WithLifecycle(hub.NewLifecycleHandler(reg, transport, hub.TmuxPaneLister{}, spawnService.Ownership().Forget, nil, cfg.Daemon.CircleBoundary).
-			WithPlacementUpdater(spawnService.Ownership().UpdatePlacement))
+			WithPlacementUpdater(spawnService.Ownership().UpdatePlacement).
+			WithExitWatch(exitWatch))
 	// Reviews defaults its JSON store at Routes() time if unset; leave it.
 
 	// Cross-machine circles: the relay client serves the /remote API in-process
@@ -627,6 +647,7 @@ func runDaemon() {
 	inbox.Close() // joins in-flight surface pushes before the store closes
 	delivery.Close()
 	transport.CloseACP()
+	exitWatch.Close()
 	reg.Close()
 	if err := store.Close(); err != nil {
 		log.Printf("close state db: %v", err)

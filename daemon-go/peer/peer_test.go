@@ -631,3 +631,29 @@ func TestAllocate_RemotePeerIDIsReserved(t *testing.T) {
 		t.Fatalf("err = %v", err)
 	}
 }
+
+// OnRegistered sees every successful registration, new or reconnect, after
+// the lock is released (it may call back into the registry).
+func TestOnRegisteredObservesRegistrations(t *testing.T) {
+	r, _ := newRegistry(t)
+	var seen []proto.Peer
+	r.OnRegistered = func(p proto.Peer) {
+		if _, ok := r.GetPeer(p.PeerID); !ok { // re-enters the registry
+			t.Errorf("peer %s not readable from OnRegistered", p.PeerID)
+		}
+		seen = append(seen, p)
+	}
+	pid := 4242
+	params := AllocateParams{Circle: "alpha", Backend: proto.AgentClaudeCode, Path: ptr("/work/x"), Machine: "m", Role: proto.RoleAgent, PaneID: ptr("%9"), AgentPID: &pid}
+	id, _, err := r.AllocateAndRegister(context.Background(), params)
+	if err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	params.ClaimedPeerID = &id
+	if _, _, err := r.AllocateAndRegister(context.Background(), params); err != nil {
+		t.Fatalf("reconnect: %v", err)
+	}
+	if len(seen) != 2 || seen[0].PeerID != id || seen[1].AgentPID == nil || *seen[1].AgentPID != pid {
+		t.Fatalf("seen %+v; want both registrations of %s with its agent pid", seen, id)
+	}
+}
