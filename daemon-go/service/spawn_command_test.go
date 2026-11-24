@@ -65,14 +65,14 @@ func TestTmuxReserveThenLaunchSplitsTheOldWindow(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ctl := realTmuxController{}
+	ctl := tmuxContainer{}
 	cfg := SpawnConfig{Circle: "mesh", Path: dir, Backend: proto.AgentClaudeCode, Command: "sleep 61", TargetPane: old, SameWindow: true}
-	placement, err := ctl.CreatePane(cfg)
+	placement, err := ctl.Reserve(cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
 	cfg.Reserved = &placement
-	result, err := ctl.Spawn(cfg)
+	result, err := ctl.Launch(cfg)
 	if err != nil || result.PaneID != placement.PaneID || result.TmuxSession != "mesh:work" {
 		t.Fatalf("launch = %+v, %v; want reserved pane in mesh:work", result, err)
 	}
@@ -104,7 +104,7 @@ func TestTmuxSpawnUsesExactCircle(t *testing.T) {
 		}
 	}
 	for _, circle := range []string{"1", "0", "mes", "1"} {
-		result, err := (realTmuxController{}).Spawn(SpawnConfig{
+		result, err := (tmuxContainer{}).Launch(SpawnConfig{
 			Circle: circle, Path: project, Backend: proto.AgentCodex, Command: "sleep 60",
 		})
 		if err != nil {
@@ -129,12 +129,13 @@ func TestTmuxSpawnUsesExactCircle(t *testing.T) {
 
 type placementTmux struct{ evidence map[string]*TmuxPaneEvidence }
 
-func (t placementTmux) Spawn(SpawnConfig) (SpawnResult, error) { return SpawnResult{}, nil }
-func (t placementTmux) CreatePane(SpawnConfig) (PanePlacement, error) {
+func (placementTmux) Kind() string                              { return "tmux" }
+func (t placementTmux) Launch(SpawnConfig) (SpawnResult, error) { return SpawnResult{}, nil }
+func (t placementTmux) Reserve(SpawnConfig) (PanePlacement, error) {
 	return PanePlacement{}, nil
 }
-func (t placementTmux) KillPane(string) bool { return true }
-func (t placementTmux) ProbePane(target string) *TmuxPaneEvidence {
+func (t placementTmux) Stop(string) bool { return true }
+func (t placementTmux) Probe(target string) *TmuxPaneEvidence {
 	return t.evidence[target]
 }
 

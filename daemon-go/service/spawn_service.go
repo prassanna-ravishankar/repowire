@@ -3,7 +3,7 @@ package service
 // spawn_service.go owns tmux exec + ownership recording for the spawn area,
 // ported from repowire.spawn.spawn_peer + repowire.daemon.spawn_service.SpawnService
 // + repowire.spawn_hints.write_hint. The registry/store stay pure: the service
-// shells out (via the injected TmuxController) and records durable proof. Path
+// places and launches through the injected Container (container.go) and records durable proof. Path
 // allowlisting and command resolution gate every spawn before any pane is created
 // (fail loud over silent degrade — a misconfigured spawn 403/422s, never spawns
 // into an unexpected directory).
@@ -16,7 +16,6 @@ import (
 	"fmt"
 	"maps"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -51,7 +50,7 @@ type SpawnConfig struct {
 	// (restart keeps the replacement beside the pane it replaces). A failed
 	// split falls back to the boundary's normal placement.
 	SameWindow bool
-	// Reserved is a pane created earlier by CreatePane; Spawn launches into it
+	// Reserved is a pane created earlier by Container.Reserve; Launch uses it
 	// instead of creating one.
 	Reserved *PanePlacement
 }
@@ -72,17 +71,6 @@ type SpawnResult struct {
 	PaneID      string
 	Circle      string
 	Message     *string
-}
-
-// TmuxController is the shell-out seam: real impl shells to `tmux` (constructed in
-// main and injected, mirroring realPaneProbe/tmuxPaneLister); a fake is used in
-// tests. Spawn is libtmux-equivalent; KillPane/ProbePane wrap kill-pane and
-// display-message.
-type TmuxController interface {
-	Spawn(cfg SpawnConfig) (SpawnResult, error)
-	CreatePane(cfg SpawnConfig) (PanePlacement, error)
-	KillPane(paneID string) bool
-	ProbePane(paneID string) *TmuxPaneEvidence
 }
 
 // SpawnError carries an HTTP status + structured detail so the routes can surface
@@ -114,11 +102,11 @@ func AsSpawnError(err error) (*SpawnError, bool) {
 }
 
 // SpawnService spawns peers while preserving /spawn validation and ownership
-// semantics. It owns the TmuxController + PaneOwnership; commands/allowedPaths
+// semantics. It owns the Container + PaneOwnership; commands/allowedPaths
 // come from config (passed as plain maps/slices — there is no Go config package
 // yet).
 type SpawnService struct {
-	tmux          TmuxController
+	container     Container
 	own           PaneOwnership
 	boundary      proto.CircleBoundary
 	commands      map[proto.AgentType]string
@@ -165,21 +153,20 @@ func (s *SpawnService) currentCommands() (map[proto.AgentType]string, error) {
 	return commands, nil
 }
 
-// NewSpawnService constructs the service over an injected TmuxController and
+// NewSpawnService constructs the service over an injected Container and
 // PaneOwnership store. commands is the per-backend launch line; allowedPaths is
 // the spawn allowlist root set. Empty commands OR empty allowedPaths means spawn
 // is disabled (ValidatePath 403s).
-func NewSpawnService(tmux TmuxController, own PaneOwnership, commands map[proto.AgentType]string, allowedPaths []string) *SpawnService {
-	return &SpawnService{tmux: tmux, own: own, boundary: proto.CircleBoundarySession, commands: commands, allowedPaths: allowedPaths}
+func NewSpawnService(container Container, own PaneOwnership, commands map[proto.AgentType]string, allowedPaths []string) *SpawnService {
+	return &SpawnService{container: container, own: own, boundary: proto.CircleBoundarySession, commands: commands, allowedPaths: allowedPaths}
 }
 
 // Ownership exposes the PaneOwnership store so the routes (kill/restart/switch)
 // can consult/record proof without a second store instance.
 func (s *SpawnService) Ownership() PaneOwnership { return s.own }
 
-// Tmux exposes the TmuxController so routes can issue KillPane/ProbePane calls
-// without a second controller instance.
-func (s *SpawnService) Tmux() TmuxController { return s.tmux }
+// Container exposes the plug so routes can stop and probe what spawn placed.
+func (s *SpawnService) Container() Container { return s.container }
 
 // Enabled reports whether spawn is configured (commands AND allowed_paths set).
 func (s *SpawnService) Enabled() bool {
@@ -424,8 +411,8 @@ func (s *SpawnService) PrepareSpawn(cfg SpawnConfig) (SpawnConfig, error) {
 	if cfg.CircleBoundary != proto.CircleBoundaryWindow {
 		return cfg, nil
 	}
-	if s.tmux == nil {
-		return SpawnConfig{}, &SpawnError{Status: 503, Detail: "tmux controller is not configured"}
+	if s.container == nil {
+		return SpawnConfig{}, &SpawnError{Status: 503, Detail: "agent container is not configured"}
 	}
 	if cfg.TargetPane == "" {
 		id := strings.TrimPrefix(cfg.Circle, "window-")
@@ -434,7 +421,7 @@ func (s *SpawnService) PrepareSpawn(cfg SpawnConfig) (SpawnConfig, error) {
 		}
 		cfg.TargetPane = "@" + id
 	}
-	evidence := s.tmux.ProbePane(cfg.TargetPane)
+	evidence := s.container.Probe(cfg.TargetPane)
 	if evidence == nil {
 		return SpawnConfig{}, &SpawnError{Status: 409, Detail: "window-boundary spawn target is not live"}
 	}
@@ -516,7 +503,7 @@ func (s *SpawnService) Reserve(cfg SpawnConfig) (SpawnConfig, error) {
 	if cfg.Role == "" {
 		cfg.Role = proto.RoleAgent
 	}
-	placement, err := s.tmux.CreatePane(cfg)
+	placement, err := s.container.Reserve(cfg)
 	if err != nil {
 		return SpawnConfig{}, &SpawnError{Status: 500, Detail: err.Error()}
 	}
@@ -527,7 +514,7 @@ func (s *SpawnService) Reserve(cfg SpawnConfig) (SpawnConfig, error) {
 // Launch starts cfg.Command (in cfg.Reserved when set) and records durable
 // pane ownership.
 func (s *SpawnService) Launch(cfg SpawnConfig) (SpawnResult, error) {
-	result, err := s.tmux.Spawn(cfg)
+	result, err := s.container.Launch(cfg)
 	if err != nil {
 		return SpawnResult{}, &SpawnError{Status: 500, Detail: err.Error()}
 	}
@@ -637,164 +624,6 @@ func readHintQueue(target string) []map[string]any {
 	return nil
 }
 
-// ---------------------------------------------------------------------------
-// realTmuxController — the production TmuxController, constructed in main.
-// ---------------------------------------------------------------------------
-
-// realTmuxController shells to the `tmux` CLI. It reproduces spawn_peer's
-// get-or-create-session + unique-window-name flow without libtmux, writes the
-// spawn hint before launch (so codex's late MCP boot can discover its circle),
-// then starts the command directly in the newly created pane. Commands can
-// contain a multi-kilobyte captured PATH, so launch uses respawn-pane's direct
-// shell-command argument rather than interactive terminal input.
-type realTmuxController struct{}
-
-// NewRealTmuxController returns the production TmuxController (shells to `tmux`).
-func NewRealTmuxController() TmuxController { return realTmuxController{} }
-
-// Spawn writes the spawn hint and replaces the placeholder shell of a fresh
-// (or reserved) pane with the launch command.
-func (c realTmuxController) Spawn(cfg SpawnConfig) (SpawnResult, error) {
-	placement := cfg.Reserved
-	if placement == nil {
-		created, err := c.CreatePane(cfg)
-		if err != nil {
-			return SpawnResult{}, err
-		}
-		placement = &created
-	}
-
-	// Drop the spawn hint BEFORE launch so a fast-registering runtime sees it.
-	var rolePtr *string
-	if cfg.Role != "" {
-		r := string(cfg.Role)
-		rolePtr = &r
-	}
-	writeHint(cfg.Path, string(cfg.Backend), cfg.Circle, placement.PaneID, rolePtr, cfg.PeerID, cfg.Message != nil)
-
-	command := commandWithEnv(cfg.Command, cfg.Env)
-	if err := tmuxStartCommand(placement.PaneID, command); err != nil {
-		return SpawnResult{}, fmt.Errorf("tmux launch command: %w", err)
-	}
-
-	return SpawnResult{
-		DisplayName: placement.DisplayName,
-		TmuxSession: placement.TmuxSession,
-		PaneID:      placement.PaneID,
-		Message:     cfg.Message,
-	}, nil
-}
-
-// CreatePane creates a placeholder-shell pane according to the configured
-// circle boundary (or beside TargetPane when SameWindow is set).
-func (realTmuxController) CreatePane(cfg SpawnConfig) (PanePlacement, error) {
-	displayName := filepath.Base(cfg.Path)
-	if cfg.CircleBoundary == proto.CircleBoundaryWindow || (cfg.SameWindow && cfg.TargetPane != "") {
-		paneID, err := tmuxQuery(windowSplitArgs(cfg.TargetPane, cfg.Path)...)
-		if err == nil && paneID != "" {
-			target, err := tmuxQuery("display-message", "-t", paneID, "-p", "#{session_name}:#{window_name}")
-			if err != nil || target == "" {
-				return PanePlacement{}, fmt.Errorf("tmux could not resolve window for %s: %w", paneID, err)
-			}
-			return PanePlacement{PaneID: paneID, TmuxSession: target, DisplayName: displayName}, nil
-		}
-		if cfg.CircleBoundary == proto.CircleBoundaryWindow {
-			return PanePlacement{}, fmt.Errorf("tmux split-window: %w", err)
-		}
-	}
-
-	paneID, err := ensureSession(cfg.Circle, cfg.Path, displayName)
-	if err != nil {
-		return PanePlacement{}, err
-	}
-	windowName := displayName
-	if paneID == "" {
-		windowName = uniqueWindowName(cfg.Circle, displayName)
-		// Qualify the exact session; a bare numeric circle is a window index.
-		paneID, err = tmuxQuery("new-window", "-P", "-F", "#{pane_id}", "-t", "="+cfg.Circle+":", "-n", windowName, "-c", cfg.Path)
-		if err != nil {
-			return PanePlacement{}, fmt.Errorf("tmux new-window: %w", err)
-		}
-	}
-	target := cfg.Circle + ":" + windowName
-	if paneID == "" {
-		return PanePlacement{}, fmt.Errorf("tmux did not return a pane for %s", target)
-	}
-	return PanePlacement{PaneID: paneID, TmuxSession: target, DisplayName: windowName}, nil
-}
-
-// tmuxStartCommand replaces the fresh shell in paneID with command. The pane is
-// created immediately above and its spawn hint has already been persisted, so
-// killing that placeholder shell is safe and a fast runtime can still recover
-// its requested identity. Passing command as respawn-pane's shell-command avoids
-// interactive editor limits while retaining tmux's normal shell parsing.
-func tmuxStartCommand(paneID, command string) error {
-	cmd, cancel := TmuxCommand("respawn-pane", "-k", "-t", paneID, command)
-	defer cancel()
-	if out, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("respawn-pane: %w: %s", err, strings.TrimSpace(string(out)))
-	}
-	return nil
-}
-
-func windowSplitArgs(targetPane, path string) []string {
-	return []string{"split-window", "-P", "-F", "#{pane_id}", "-t", targetPane, "-c", path}
-}
-
-// KillPane wraps `tmux kill-pane -t <pane>`; true on success. Pane ids survive
-// renames, so this is the preferred kill handle for daemon-spawned peers.
-func (realTmuxController) KillPane(paneID string) bool {
-	if paneID == "" {
-		return false
-	}
-	cmd, cancel := TmuxCommand("kill-pane", "-t", paneID)
-	defer cancel()
-	return cmd.Run() == nil
-}
-
-// ProbePane wraps `tmux display-message` (delegates to realProbeTmuxPane).
-func (realTmuxController) ProbePane(paneID string) *TmuxPaneEvidence {
-	return realProbeTmuxPane(paneID)
-}
-
-// ensureSession returns the first pane of a new session, or an empty string
-// when the exact session already exists.
-func ensureSession(session, dir, windowName string) (string, error) {
-	if _, err := tmuxQuery("has-session", "-t", "="+session); err == nil {
-		return "", nil
-	}
-	paneID, err := tmuxQuery("new-session", "-d", "-P", "-F", "#{pane_id}", "-s", session, "-c", dir, "-n", windowName)
-	if err != nil {
-		return "", fmt.Errorf("tmux new-session: %w", err)
-	}
-	return paneID, nil
-}
-
-// uniqueWindowName ports _unique_window_name: append -2, -3, ... until the name
-// is free in the session. Best-effort: a listing failure returns the base name
-// (tmux will still pick a working window).
-func uniqueWindowName(session, base string) string {
-	out, err := tmuxQuery("list-windows", "-t", "="+session, "-F", "#{window_name}")
-	if err != nil {
-		return base
-	}
-	existing := map[string]struct{}{}
-	for _, name := range strings.Split(strings.TrimSpace(out), "\n") {
-		if name != "" {
-			existing[name] = struct{}{}
-		}
-	}
-	if _, taken := existing[base]; !taken {
-		return base
-	}
-	for i := 2; ; i++ {
-		candidate := fmt.Sprintf("%s-%d", base, i)
-		if _, taken := existing[candidate]; !taken {
-			return candidate
-		}
-	}
-}
-
 // commandWithEnv ports _command_with_env: prefix the command with explicit env
 // assignments. The daemon captures the login-shell PATH when no explicit PATH
 // is configured, so launchd-spawned agents see the same executables as a shell.
@@ -824,19 +653,4 @@ func ShellQuote(v string) string {
 		return v
 	}
 	return "'" + strings.ReplaceAll(v, "'", `'\''`) + "'"
-}
-
-// tmuxQuery returns trimmed stdout, preserving stderr diagnostics on failure.
-func tmuxQuery(args ...string) (string, error) {
-	cmd, cancel := TmuxCommand(args...)
-	defer cancel()
-	out, err := cmd.Output()
-	if err != nil {
-		var exitErr *exec.ExitError
-		if errors.As(err, &exitErr) && len(exitErr.Stderr) > 0 {
-			return "", fmt.Errorf("%w: %s", err, strings.TrimSpace(string(exitErr.Stderr)))
-		}
-		return "", err
-	}
-	return strings.TrimSpace(string(out)), nil
 }

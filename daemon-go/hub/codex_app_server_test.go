@@ -37,7 +37,7 @@ func TestSpawnRefusesEmbeddedCodexLaunch(t *testing.T) {
 	codexHome(t, false)
 	root := t.TempDir()
 	tmux := &fakeTmux{spawnResult: service.SpawnResult{DisplayName: "worker", TmuxSession: "mesh:work", PaneID: "%13"}}
-	own := service.NewFileOwnership("test-host", tmux.ProbePane)
+	own := service.NewFileOwnership("test-host", tmux.Probe)
 	svc := newHermeticSpawnService(t, tmux, own, map[proto.AgentType]string{proto.AgentCodex: "codex --no-daemon"}, []string{root})
 	h := &Hub{}
 	h.WithSpawn(svc, &fakeSpawnRegistry{}, service.NewAskTracker(0), "test-host", proto.CircleBoundarySession)
@@ -65,7 +65,7 @@ func TestDoctorExplainsCodexPeerOffAppServer(t *testing.T) {
 	path, pane := t.TempDir(), "%81"
 	tmux := &fakeTmux{evidence: map[string]*service.TmuxPaneEvidence{pane: {PaneID: pane, TmuxSession: "mesh:work", CurrentPath: path}}}
 	h := newTestHub(t)
-	h.WithSpawn(service.NewSpawnService(tmux, service.NewFileOwnership("test-host", tmux.ProbePane), nil, nil), nil, nil, "test-host", proto.CircleBoundarySession)
+	h.WithSpawn(service.NewSpawnService(tmux, service.NewFileOwnership("test-host", tmux.Probe), nil, nil), nil, nil, "test-host", proto.CircleBoundarySession)
 	mux := http.NewServeMux()
 	h.Routes(mux)
 	circle := "mesh"

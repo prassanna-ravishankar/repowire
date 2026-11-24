@@ -249,14 +249,14 @@ func (c *SessionControl) acquireAssignedPeer(ctx context.Context, work *state.Tr
 // ReleaseExecutorForWork releases the executor acquired for the current attempt.
 // Idempotent: a missing/dead pane is recorded as already-released, a live
 // mismatched peer fails closed. Mirrors release_executor_for_work but defers the
-// actual pane kill to the SpawnService (KillPane is the spawn area's concern).
+// actual pane stop to the spawn area's Container (rfcs/agent-container.md).
 //
-// ponytail: the pane-kill + ownership-forget half lives in the spawn area's
-// TmuxController/PaneOwnership. Until that's injected here, release records the
+// ponytail: the stop + ownership-forget half lives in the spawn area's
+// Container/PaneOwnership. Until that's injected here, release records the
 // terminal operation and unregisters the peer, returning a structured result;
-// the physical kill is wired in main once the spawn area exposes KillPane. The
-// upgrade path: inject a paneReaper seam (KillPane + ProbePane + Forget) and call
-// it between the mismatch check and unregister.
+// the physical stop is not wired yet. The upgrade path: inject the Container
+// (Stop + Probe) and PaneOwnership.Forget, and call them between the mismatch
+// check and unregister.
 func (c *SessionControl) ReleaseExecutorForWork(ctx context.Context, work *state.TrackedWork, terminalReason string) (map[string]any, error) {
 	runner := mapAtAny(work.Provenance, "runner")
 	attemptID, _ := runner["current_attempt_id"].(string)

@@ -414,8 +414,8 @@ func runDaemon() {
 	// shares the SAME *SpawnService instance with the work/jobs runner so an
 	// executor acquired for a durable job records ownership the spawn routes can
 	// later consult.
-	tmuxCtl := service.NewRealTmuxController()
-	ownership := service.NewFileOwnership(selfMachine, tmuxCtl.ProbePane)
+	container := service.NewTmuxContainer()
+	ownership := service.NewFileOwnership(selfMachine, container.Probe)
 	// Per-backend launch commands come from -spawn-commands (JSON), which
 	// `repowire serve` populates from config.daemon.spawn.commands. An empty/invalid
 	// map keeps spawn disabled-by-default (SpawnService.Enabled()==false → 503);
@@ -443,7 +443,7 @@ func runDaemon() {
 			spawnEnv["PATH"] = path
 		}
 	}
-	spawnService := service.NewSpawnService(tmuxCtl, ownership, spawnCommands, config.SplitCSV(*spawnPathsFlag)).
+	spawnService := service.NewSpawnService(container, ownership, spawnCommands, config.SplitCSV(*spawnPathsFlag)).
 		WithRuntimeConfig(profiles, spawnEnv).
 		WithCommandLoader(func() (map[proto.AgentType]string, error) {
 			live, err := config.Load()

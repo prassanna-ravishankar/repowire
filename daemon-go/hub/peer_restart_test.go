@@ -41,7 +41,9 @@ type fakeRuntime struct {
 	onLaunch   func(cfg service.SpawnConfig)
 }
 
-func (f *fakeRuntime) Spawn(cfg service.SpawnConfig) (service.SpawnResult, error) {
+func (f *fakeRuntime) Kind() string { return "tmux" }
+
+func (f *fakeRuntime) Launch(cfg service.SpawnConfig) (service.SpawnResult, error) {
 	f.mu.Lock()
 	f.launched = append(f.launched, cfg)
 	onLaunch := f.onLaunch
@@ -52,7 +54,7 @@ func (f *fakeRuntime) Spawn(cfg service.SpawnConfig) (service.SpawnResult, error
 	return service.SpawnResult{PaneID: cfg.Reserved.PaneID, TmuxSession: cfg.Reserved.TmuxSession, DisplayName: cfg.Reserved.DisplayName}, nil
 }
 
-func (f *fakeRuntime) CreatePane(cfg service.SpawnConfig) (service.PanePlacement, error) {
+func (f *fakeRuntime) Reserve(cfg service.SpawnConfig) (service.PanePlacement, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.created = append(f.created, cfg)
@@ -60,7 +62,7 @@ func (f *fakeRuntime) CreatePane(cfg service.SpawnConfig) (service.PanePlacement
 	return service.PanePlacement{PaneID: f.nextPane, TmuxSession: "mesh:work", DisplayName: "proj"}, nil
 }
 
-func (f *fakeRuntime) KillPane(paneID string) bool {
+func (f *fakeRuntime) Stop(paneID string) bool {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.killed = append(f.killed, paneID)
@@ -68,7 +70,7 @@ func (f *fakeRuntime) KillPane(paneID string) bool {
 	return true
 }
 
-func (f *fakeRuntime) ProbePane(paneID string) *service.TmuxPaneEvidence {
+func (f *fakeRuntime) Probe(paneID string) *service.TmuxPaneEvidence {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.evidence[paneID]
@@ -216,7 +218,7 @@ func newRestartFixture(t *testing.T, commands map[proto.AgentType]string) *resta
 		args:     map[int]string{101: "claude --dangerously-skip-permissions"},
 		paneRoot: map[int]int{101: 100},
 	}
-	own := service.NewFileOwnership("test-host", rt.ProbePane)
+	own := service.NewFileOwnership("test-host", rt.Probe)
 	bin := t.TempDir()
 	for _, name := range []string{"claude", "codex"} {
 		if err := os.WriteFile(filepath.Join(bin, name), []byte("#!/bin/sh\n"), 0o700); err != nil {
@@ -1018,11 +1020,11 @@ func TestRestartCancelAfterSignalKeepsTheWindowAndReportsTheEndState(t *testing.
 	if out.Failed == nil || out.Failed.Stage != restartStageWait || out.Failed.Reason != "cancelled" || !out.NeedsManualRelaunch || !out.CancelRequested {
 		t.Fatalf("result = %+v manual=%v", out.Failed, out.NeedsManualRelaunch)
 	}
-	if f.rt.ProbePane("%11") == nil || slices.Contains(f.rt.killed, "%11") {
+	if f.rt.Probe("%11") == nil || slices.Contains(f.rt.killed, "%11") {
 		t.Fatalf("the reserved pane must survive as the window's shell; killed=%v", f.rt.killed)
 	}
 	lk := out.Failed.LastKnown
-	if lk.PIDAlive == nil || *lk.PIDAlive != f.rt.Alive(101) || lk.OldPaneExists != (f.rt.ProbePane(restartOldPane) != nil) || !lk.NewPaneExists {
+	if lk.PIDAlive == nil || *lk.PIDAlive != f.rt.Alive(101) || lk.OldPaneExists != (f.rt.Probe(restartOldPane) != nil) || !lk.NewPaneExists {
 		t.Fatalf("last_known %+v does not match the end state (pid alive=%v)", lk, f.rt.Alive(101))
 	}
 	if *lk.PIDAlive || lk.OldPaneExists {
