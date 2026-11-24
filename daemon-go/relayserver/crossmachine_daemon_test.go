@@ -20,14 +20,14 @@ import (
 	"github.com/repowire/repowire/daemon-go/state"
 )
 
-type relayDaemon struct {
+type meshDaemon struct {
 	local *httptest.Server
 	hub   *hub.Hub
 }
 
-// startRelayDaemon runs a full daemon (registry, tracker, delivery, hub)
+// startMeshDaemon runs a full daemon (registry, tracker, delivery, hub)
 // joined to the relay the way main.go joins it.
-func startRelayDaemon(t *testing.T, ctx context.Context, f *authFixture, id string) *relayDaemon {
+func startMeshDaemon(t *testing.T, ctx context.Context, f *authFixture, id string) *meshDaemon {
 	t.Helper()
 	store, err := state.NewStore(filepath.Join(t.TempDir(), id+".db"))
 	if err != nil {
@@ -56,10 +56,10 @@ func startRelayDaemon(t *testing.T, ctx context.Context, f *authFixture, id stri
 	client.Start(ctx)
 	t.Cleanup(client.Stop)
 	waitForDaemon(t, f.http.URL, f.key, id)
-	return &relayDaemon{local: local, hub: h}
+	return &meshDaemon{local: local, hub: h}
 }
 
-func (d *relayDaemon) agent(t *testing.T, ctx context.Context, path string) (proto.PeerID, chan map[string]any) {
+func (d *meshDaemon) agent(t *testing.T, ctx context.Context, path string) (proto.PeerID, chan map[string]any) {
 	t.Helper()
 	conn, _, err := websocket.Dial(ctx, "ws"+strings.TrimPrefix(d.local.URL, "http")+"/ws", nil)
 	if err != nil {
@@ -97,8 +97,8 @@ func TestTunneledAskCrossesMachines(t *testing.T) {
 	f := newAuthFixture(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	alpha := startRelayDaemon(t, ctx, f, "alpha")
-	beta := startRelayDaemon(t, ctx, f, "beta")
+	alpha := startMeshDaemon(t, ctx, f, "alpha")
+	beta := startMeshDaemon(t, ctx, f, "beta")
 	askerID, askerFrames := alpha.agent(t, ctx, "/work/asker")
 	bobID, bobFrames := beta.agent(t, ctx, "/work/bob")
 

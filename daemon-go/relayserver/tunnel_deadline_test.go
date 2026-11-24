@@ -91,10 +91,10 @@ func TestTunnelHoldsALongPollForTheCallersDeadline(t *testing.T) {
 	}
 }
 
-// The relay's own MCP tools tunnel daemon calls too: a call that asks the
-// daemon to wait states that wait plus a margin as its deadline, and one
-// that does not keeps the default.
-func TestMCPDaemonCallStatesItsWait(t *testing.T) {
+// The relay's own MCP tools tunnel daemon calls too: a machine's wait states
+// that wait plus a margin as its deadline, and a call that does not wait keeps
+// the default.
+func TestDaemonMachineWaitStatesItsDeadline(t *testing.T) {
 	relay := New("")
 	server := httptest.NewServer(relay.Handler())
 	t.Cleanup(server.Close)
@@ -115,13 +115,17 @@ func TestMCPDaemonCallStatesItsWait(t *testing.T) {
 		}
 	}()
 	grant := oauthGrant{UserID: "token-" + secretHash(key)}
-	if _, err := relay.mcpDaemonCall(context.Background(), grant, "m1", http.MethodPost, "/asks/a/wait", nil, map[string]any{}, 15*time.Second); err != nil {
+	m, err := relay.machine(grant.UserID, "m1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.wait(context.Background(), "relay-sender", "a", 15); err != nil {
 		t.Fatal(err)
 	}
 	if frame := <-frames; frame["timeout_ms"] != float64((15*time.Second + tunnelWaitMargin).Milliseconds()) {
 		t.Fatalf("waiting call: timeout_ms = %v", frame["timeout_ms"])
 	}
-	if _, err := relay.mcpDaemonCall(context.Background(), grant, "m1", http.MethodGet, "/peers", nil, nil); err != nil {
+	if _, err := m.agents(context.Background(), ""); err != nil {
 		t.Fatal(err)
 	}
 	if frame := <-frames; frame["timeout_ms"] != float64(defaultTunnelTimeout.Milliseconds()) {
