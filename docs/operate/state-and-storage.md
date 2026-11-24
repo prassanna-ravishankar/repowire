@@ -33,12 +33,11 @@ Not covered, because they bound live state rather than history: open jobs, sched
 
 Each table declares its retention, or why it is exempt, next to its own queries in `daemon-go/state`; a test fails for a table with no declaration. The state store runs the sweep when the daemon starts and then at most once an hour, after a journal write finds one due. Attachment files plug into the same sweep. It writes in batches of 500 rows, records a `retention_swept` event with per-rule counts (shown live on the dashboard), and stops a sweep in flight when the daemon shuts down. Nothing younger than the ask lifetime (`daemon.prune_max_age_hours`) expires, whatever the policy. Ask history (routing's per-peer ask counts) reads peer ids, not text, so stripping leaves it intact; deleting records makes it cover the last `records_days`. SQLite reuses the freed pages but does not shrink the file; to shrink it, stop the daemon and run `sqlite3 ~/.repowire/state.db VACUUM`.
 
-**Upgrading to a release with retention.** The first daemon start on it sweeps at once, and a sweep cannot be undone: message text older than 7 days and records older than 180 days are gone, including the old ask text `repowire route reconstruct` reads and the oldest asks behind routing's per-peer ask counts. Before restarting on the new binary:
+**Upgrading to a release with retention.** The first daemon start on it sweeps at once: message text older than 7 days and records older than 180 days are removed from `state.db`, including the old ask text `repowire route reconstruct` reads and the oldest asks behind routing's per-peer ask counts.
 
-1. Back up the database with SQLite's online backup, which is consistent while the daemon runs: `sqlite3 ~/.repowire/state.db ".backup '$HOME/.repowire/state.db.pre-retention'"`.
-2. Set `retention` in `config.yaml` if the defaults are not what you want (`0` keeps a class forever), and confirm with `repowire config check`.
+Before that first sweep the daemon copies the whole database once, next to it, as `state.db.pre-retention-<UTC timestamp>`, and records the path in a `retention_backup` journal event. If the copy fails, nothing is swept (a `retention_backup_failed` event says why) and the daemon tries again at the next sweep. The daemon never deletes the copy; remove it yourself once you no longer need the old history. To keep everything instead, set `retention.content_days: 0` and `retention.records_days: 0` in `config.yaml` before upgrading, and confirm with `repowire config check`.
 
-After the restart, the `retention_swept` event in the journal records what the sweep removed.
+After the first sweep, the `retention_swept` event in the journal records what it removed.
 
 ## Related
 
