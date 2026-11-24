@@ -31,6 +31,7 @@ type fakeSpawnRegistry struct {
 	allocID      proto.PeerID
 	allocName    proto.DisplayName
 	turnStates   map[proto.PeerID]proto.TurnState
+	allocated    []peer.AllocateParams
 }
 
 func (r *fakeSpawnRegistry) LazyRepair(context.Context) {}
@@ -48,7 +49,8 @@ func (r *fakeSpawnRegistry) ResolvePeerStrict(identifier string, circle *string)
 	return out
 }
 
-func (r *fakeSpawnRegistry) AllocateAndRegister(_ context.Context, _ peer.AllocateParams) (proto.PeerID, proto.DisplayName, error) {
+func (r *fakeSpawnRegistry) AllocateAndRegister(_ context.Context, p peer.AllocateParams) (proto.PeerID, proto.DisplayName, error) {
+	r.allocated = append(r.allocated, p)
 	return r.allocID, r.allocName, nil
 }
 

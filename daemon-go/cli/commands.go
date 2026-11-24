@@ -218,6 +218,9 @@ func runPeer(argv []string) int {
 				body[key] = value
 			}
 		}
+		if a.bool("headless") {
+			body["headless"] = true // claude-code with no pane (experiments.headless_claude_code)
+		}
 		if body["message"] != nil {
 			if from, ferr := cliPeerIdentity(c); ferr == nil && from != "" {
 				body["from_peer"] = from // the opening message is sent from the spawner once the peer registers
@@ -831,7 +834,7 @@ func runShare(argv []string) int {
 }
 
 // peerBoolFlags are the `repowire peer` flags that take no value.
-var peerBoolFlags = []string{"show-offline", "dry-run", "json", "fix", "apply", "register", "force", "fresh", "wait", "status", "cancel", "unread", "peek"}
+var peerBoolFlags = []string{"show-offline", "dry-run", "json", "fix", "apply", "register", "force", "fresh", "wait", "status", "cancel", "unread", "peek", "headless"}
 
 // printRestartOutcome summarizes a restart result for a human on stderr (stdout
 // stays the JSON result) and returns the exit code: 1 when it failed.

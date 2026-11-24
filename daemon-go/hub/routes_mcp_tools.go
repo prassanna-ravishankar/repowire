@@ -236,6 +236,8 @@ type mcpSpawnArgs struct {
 	Command string `json:"command,omitempty"`
 	Circle  string `json:"circle,omitempty"`
 	Message string `json:"message,omitempty"`
+	// Headless starts a claude-code worker with no pane (experimental).
+	Headless bool `json:"headless,omitempty" jsonschema:"claude-code only: start the worker with no tmux pane, brokered over ACP (needs experiments.headless_claude_code)"`
 }
 type mcpCircleArgs struct {
 	Circle string `json:"circle,omitempty"`
@@ -490,7 +492,7 @@ func registerMCPParityTools(srv *mcp.Server, h *Hub, cfg config.MCPHTTPConfig) {
 			value := proto.AgentType(a.Backend)
 			backend = &value
 		}
-		result, err := h.spawnPeer(ctx, SpawnRequest{Path: a.Path, Backend: backend, Profile: strPtr(a.Profile), Command: strPtr(a.Command), Circle: circle, Message: strPtr(a.Message), SourcePane: sourcePane, FromPeer: caller})
+		result, err := h.spawnPeer(ctx, SpawnRequest{Path: a.Path, Backend: backend, Profile: strPtr(a.Profile), Command: strPtr(a.Command), Circle: circle, Message: strPtr(a.Message), SourcePane: sourcePane, FromPeer: caller, Headless: a.Headless})
 		if err != nil {
 			return "", err
 		}

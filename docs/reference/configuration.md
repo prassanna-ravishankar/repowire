@@ -228,11 +228,17 @@ experiments:
     gated_tools: [Bash, Edit, Write, MultiEdit, NotebookEdit]
     timeout_seconds: 45
   git_trailers: true            # enables the Git hook installed with setup --git-hooks
+  headless_claude_code:
+    enabled: false              # spawn_peer --headless: claude-code with no pane, over ACP (needs acp_broker_client)
+    command: npx                # the ACP adapter for the Claude Agent SDK
+    args: ["-y", "@zed-industries/claude-agent-acp"]
 ```
 
 `remote_tool_approval` gates `gated_tools` behind a blocking approval question: before a gated tool runs, a `PreToolUse` hook posts the question to the daemon and waits for an allow/deny from a human surface or peer, denying on timeout. The installer only registers the `PreToolUse` hook when `enabled` is set; toggling it off and re-running `repowire setup` removes the hook. Read-only tools are never gated. See [Structured questions](../concepts/message-types.md#pretooluse-tool-approval-claude-code).
 
 `git_trailers` is on by default, but requires `repowire setup --git-hooks` in each repository (or manual integration with an existing `prepare-commit-msg` hook). The native Git hook adds thread/session trailers using the committing repository’s HEAD and the registered tmux pane’s peer, across supported agent backends. It never rewrites shell input. Existing attribution, reused messages and replay operations are preserved; empty messages stay empty. Without a registered pane or available daemon history it leaves the message unchanged; operational errors warn and never block Git. Set `false` to disable it immediately, without reinstalling. See [`repowire why`](cli.md#repowire-why) for installation and amend/rebase behavior.
+
+`headless_claude_code` is off by default (`rfcs/agent-container.md`, Claude Code plug options). With it and `acp_broker_client` on, `spawn_peer` with `headless: true` (`repowire peer new PATH --headless`) starts a claude-code worker with no tmux pane. It is a peer whose `metadata.acp` launches the Claude Agent SDK behind its ACP adapter. The daemon's ACP broker starts it on its first prompt (the opening message), routes its tool approvals to the human surfaces, and `kill_peer` stops it. Its session hooks are off (`REPOWIRE_HOOKS=off`), since the broker already carries its identity and delivery. There is no live attach: observe it on the dashboard. A daemon restart ends its process, and the next prompt starts a fresh one.
 
 ## `routing`
 
