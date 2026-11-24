@@ -757,6 +757,10 @@ func (h *Hub) handleRehookPeer(w http.ResponseWriter, r *http.Request) {
 		h.writeSpawnError(w, err)
 		return
 	}
+	if err := h.paneOnly(resolved, "rehook"); err != nil {
+		h.writeSpawnError(w, err)
+		return
+	}
 	peerCopy := h.peerWithAdoptedOwnership(resolved)
 	wasConnected := h.transport.IsConnected(peerCopy.PeerID)
 	if wasConnected {
@@ -1014,4 +1018,18 @@ func (h *Hub) spawnHeadless(ctx context.Context, req SpawnRequest, backend proto
 		}
 	}
 	return resp, nil
+}
+
+// paneOnly refuses a pane-backed control (restart, rehook) for a peer a
+// PeerContainer owns outright: it has no pane, so say so plainly instead of
+// failing pane proof.
+func (h *Hub) paneOnly(p *proto.Peer, action string) error {
+	plug := h.spawn.svc.PeerContainerFor(p)
+	if plug == nil {
+		return nil
+	}
+	return &service.SpawnError{Status: http.StatusUnprocessableEntity, Detail: map[string]any{
+		"error": "not_supported", "container": plug.Kind(), "action": action,
+		"hint": action + " is not supported for " + plug.Kind() + " peers; kill it and spawn again.",
+	}}
 }

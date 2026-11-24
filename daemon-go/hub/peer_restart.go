@@ -332,6 +332,9 @@ func (h *Hub) restartPeer(ctx context.Context, name string, req RestartPeerReque
 	if err != nil {
 		return RestartResult{}, err
 	}
+	if err := h.paneOnly(resolved, "restart"); err != nil {
+		return RestartResult{}, err
+	}
 	p := h.peerWithAdoptedOwnership(resolved)
 	if run := h.spawn.restarts.get(p.PeerID); run != nil && run.active() {
 		return run.snapshot(), nil

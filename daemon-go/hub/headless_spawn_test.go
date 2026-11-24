@@ -101,3 +101,23 @@ func TestACPPlugStopsAnACPPeerThroughKill(t *testing.T) {
 		t.Fatalf("status %d %+v dropped %v closed %v", resp.StatusCode, out, dropped, reg.closed)
 	}
 }
+
+// Restart and rehook are pane controls: a plug-owned peer gets a plain
+// not_supported, not a pane-proof failure.
+func TestPaneControlsRefuseAPlugOwnedPeer(t *testing.T) {
+	p := &proto.Peer{PeerID: "repow-headless-1", DisplayName: "proj-claude-code", Backend: proto.AgentClaudeCode, Circle: "default", Role: proto.RoleAgent,
+		Metadata: map[string]any{"headless": true, "acp": map[string]any{"command": "npx"}}}
+	reg := &fakeSpawnRegistry{peers: []*proto.Peer{p}}
+	srv, svc := newSpawnTestHub(t, reg, &fakeTmux{killOK: true})
+	svc.WithPeerContainers(service.NewACPContainer(func(proto.PeerID) {}))
+	for _, path := range []string{"/peers/" + string(p.PeerID) + "/restart", "/peers/" + string(p.PeerID) + "/rehook"} {
+		resp := postSpawnJSON(t, srv, path, map[string]any{})
+		var body map[string]any
+		_ = json.NewDecoder(resp.Body).Decode(&body)
+		resp.Body.Close()
+		detail, _ := body["detail"].(map[string]any)
+		if resp.StatusCode != http.StatusUnprocessableEntity || detail["error"] != "not_supported" || detail["container"] != "acp" {
+			t.Fatalf("%s: status %d body %v", path, resp.StatusCode, body)
+		}
+	}
+}
