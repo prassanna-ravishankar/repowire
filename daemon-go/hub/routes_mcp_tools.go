@@ -487,6 +487,9 @@ func registerMCPParityTools(srv *mcp.Server, h *Hub, cfg config.MCPHTTPConfig) {
 		if err != nil {
 			return "", err
 		}
+		if a.Headless {
+			sourcePane = "" // inferred from the caller's pane; a headless worker gets none
+		}
 		var backend *proto.AgentType
 		if a.Backend != "" {
 			value := proto.AgentType(a.Backend)
