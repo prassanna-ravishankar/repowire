@@ -3,6 +3,7 @@ package peer
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/repowire/repowire/daemon-go/proto"
 )
@@ -32,29 +33,31 @@ func TestDemoteDisconnectedRechecksTheSocketAfterTheProbe(t *testing.T) {
 	}
 }
 
-// RestoreConnected brings back a peer that was demoted before its socket was
-// attached, and leaves a peer with no socket offline.
-func TestRestoreConnectedUndoesADemotionBeforeAttach(t *testing.T) {
+// A WebSocket connect registers its peer before attaching the socket; lazy
+// repair (which that connect starts) must not demote it in between, and judges
+// it by its socket again once attached (#569).
+func TestLazyRepairSparesAPeerWhoseSocketIsAttaching(t *testing.T) {
 	ctx := context.Background()
 	transport := &pingTransport{connected: map[proto.PeerID]bool{}}
 	r, _ := newRegistryWith(t, transport, fakeLive{alive: map[int]bool{}})
-	id, _, err := r.AllocateAndRegister(ctx, AllocateParams{Circle: "c", Backend: proto.AgentClaudeCode, Path: ptr("/w"), Machine: "m", Role: proto.RoleAgent})
+	id, _, err := r.AllocateAndRegister(ctx, AllocateParams{AttachingSocket: true, Circle: "c", Backend: proto.AgentClaudeCode, Path: ptr("/w"), Machine: "m", Role: proto.RoleAgent})
 	if err != nil {
 		t.Fatal(err)
 	}
-	r.LazyRepair(ctx) // no socket yet: demoted
-	if p, _ := r.GetPeer(id); p.Status != proto.StatusOffline {
-		t.Fatalf("precondition: status = %s, want offline", p.Status)
+	if !r.Attaching(id) {
+		t.Fatal("want attaching after a socket registration")
 	}
-	r.RestoreConnected(ctx, id)
-	if p, _ := r.GetPeer(id); p.Status != proto.StatusOffline {
-		t.Fatalf("no socket: status = %s, want offline", p.Status)
-	}
-	transport.mu.Lock()
-	transport.connected[id] = true
-	transport.mu.Unlock()
-	r.RestoreConnected(ctx, id)
+	r.LazyRepair(ctx)
 	if p, _ := r.GetPeer(id); p.Status != proto.StatusOnline {
-		t.Fatalf("socket attached: status = %s, want online", p.Status)
+		t.Fatalf("attaching: status = %s, want online", p.Status)
+	}
+
+	r.SocketAttached(id) // the attach failed to stick: no socket after all
+	r.repairMu.Lock()
+	r.lastRepair = time.Time{}
+	r.repairMu.Unlock()
+	r.LazyRepair(ctx)
+	if p, _ := r.GetPeer(id); p.Status != proto.StatusOffline {
+		t.Fatalf("attached without a socket: status = %s, want offline", p.Status)
 	}
 }

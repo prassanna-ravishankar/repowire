@@ -12,14 +12,13 @@ import (
 	"github.com/repowire/repowire/daemon-go/proto"
 )
 
-// The lazy repair a connect starts can demote the new peer in the window
-// between its registration and the attach of its socket. The handler undoes
-// that, so a peer holding a live socket is never left offline.
-func TestConnectSurvivesADemotionBeforeItsSocketAttaches(t *testing.T) {
+// The connect registers its peer as attaching, so the lazy repair it starts
+// cannot demote the peer before the socket is attached, and ends that window
+// once it is (#569).
+func TestConnectRegistersAttachingUntilTheSocketIsLive(t *testing.T) {
 	h := newTestHub(t)
-	h.beforeConnect = func(id proto.PeerID) {
-		_, _ = h.reg.MarkOffline(context.Background(), id, false)
-	}
+	var attachingBefore bool
+	h.beforeConnect = func(id proto.PeerID) { attachingBefore = h.reg.Attaching(id) }
 	srv := httptest.NewServer(http.HandlerFunc(h.HandleWS))
 	defer srv.Close()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -35,6 +34,9 @@ func TestConnectSurvivesADemotionBeforeItsSocketAttaches(t *testing.T) {
 	var connected proto.ConnectedFrame
 	if err := wsjson.Read(ctx, conn, &connected); err != nil || connected.Type != proto.FrameConnected {
 		t.Fatalf("connect: %v %+v", err, connected)
+	}
+	if !attachingBefore || h.reg.Attaching(connected.SessionID) {
+		t.Fatalf("attaching before socket = %v, after = %v; want true, false", attachingBefore, h.reg.Attaching(connected.SessionID))
 	}
 	if p, ok := h.reg.GetPeer(connected.SessionID); !ok || p.Status != proto.StatusOnline {
 		t.Fatalf("peer after connect = %+v, want online", p)

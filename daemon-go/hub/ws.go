@@ -220,6 +220,9 @@ func (h *Hub) HandleWS(w http.ResponseWriter, r *http.Request) {
 		AgentPID:      cf.AgentPID,
 		HookVersion:   cf.HookVersion != nil,
 		Provenance:    cf.Provenance,
+		// Lazy repair (started above) must not demote the peer before its
+		// socket is attached below.
+		AttachingSocket: true,
 	}
 	if cf.Provenance != nil && !cf.Provenance.Source.Valid() {
 		_ = wsjson.Write(ctx, conn, proto.ErrorFrame{Type: proto.FrameError, Error: "Invalid provenance.source"})
@@ -283,9 +286,7 @@ func (h *Hub) HandleWS(w http.ResponseWriter, r *http.Request) {
 		HookVersion: derefInt(cf.HookVersion),
 		AwaitReady:  true,
 	})
-	// The lazy repair this connect started may have demoted the peer before its
-	// socket was attached; now that it is, undo that.
-	h.reg.RestoreConnected(ctx, peerID)
+	h.reg.SocketAttached(peerID) // registered attaching, so lazy repair could not demote it meanwhile
 
 	if err := wsjson.Write(ctx, conn, proto.ConnectedFrame{
 		Type:        proto.FrameConnected,

@@ -69,7 +69,10 @@ const paneHeartbeatTolerance = 60 * time.Second
 // sensitive routing only ever flows through proto.PeerID (ClaimedPeerID); the
 // human-facing DisplayName is derived, never an input key for routing.
 type AllocateParams struct {
-	Circle string
+	// AttachingSocket marks a registration by a WebSocket connect: lazy repair
+	// leaves the peer alone until SocketAttached.
+	AttachingSocket bool
+	Circle          string
 	// CircleSource distinguishes current placement (tmux/tmux_window/spawn_hint)
 	// from fallback values restored from durable identity.
 	CircleSource string
@@ -138,6 +141,9 @@ var ErrPaneHijackRejected = fmt.Errorf("peer: pane claim rejected (direct-child 
 type peerState struct {
 	peer  *proto.Peer
 	state LifecycleState
+	// attaching: registered by a WebSocket connect whose socket is not
+	// attached yet, so lazy repair must not read the missing socket as a ghost.
+	attaching bool
 }
 
 // Registry is the lifecycle heart: peer state keyed by PeerID, a separate
@@ -427,6 +433,7 @@ func (r *Registry) AllocateAndRegister(ctx context.Context, params AllocateParam
 			}
 		}
 		existing.state = target
+		existing.attaching = params.AttachingSocket
 		if status, ok := target.ToStatus(); ok {
 			existing.peer.Status = status
 		}
@@ -609,7 +616,7 @@ func (r *Registry) AllocateAndRegister(ctx context.Context, params AllocateParam
 	if params.Path != nil {
 		p.Path = *params.Path
 	}
-	r.peers[id] = &peerState{peer: p, state: next}
+	r.peers[id] = &peerState{peer: p, state: next, attaching: params.AttachingSocket}
 
 	// A proven pane claim displaces any other (non-sticky) peer still holding it.
 	if effectivePane != nil && *effectivePane != "" {
@@ -1254,33 +1261,24 @@ func (r *Registry) UpdateStatus(ctx context.Context, id proto.PeerID, status pro
 	return nil
 }
 
-// RestoreConnected undoes a lazy-repair demotion that landed between a peer's
-// registration and the attach of its socket: an Offline peer whose socket is
-// now live reconnects. The WebSocket handler calls it right after attaching;
-// a demotion after that point sees the socket and skips the peer.
-func (r *Registry) RestoreConnected(ctx context.Context, id proto.PeerID) {
+// SocketAttached ends the attaching window AllocateAndRegister opened for a
+// WebSocket connect: the socket is live now, so lazy repair judges the peer
+// by it again.
+func (r *Registry) SocketAttached(id proto.PeerID) {
 	r.mu.Lock()
-	ps, ok := r.peers[id]
-	if !ok || ps.state != StateOffline || r.transport == nil || !r.transport.IsConnected(id) {
-		r.mu.Unlock()
-		return
+	if ps, ok := r.peers[id]; ok {
+		ps.attaching = false
 	}
-	next, err := Apply(StateOffline, EventReconnect)
-	if err != nil {
-		r.mu.Unlock()
-		return
-	}
-	now := time.Now().UTC()
-	ps.state = next
-	if s, ok := next.ToStatus(); ok {
-		ps.peer.Status = s
-	}
-	ps.peer.LastSeen = &now
-	name := ps.peer.DisplayName
 	r.mu.Unlock()
-	r.appendEvent(ctx, Event{Type: "peer_status", Timestamp: now, PeerID: id, PeerName: name, SessionID: id,
-		Payload: map[string]any{"status": string(proto.StatusOnline), "reason": "socket_attached"}})
-	r.scheduleRedelivery(ctx, id)
+}
+
+// Attaching reports whether a WebSocket connect registered the peer and has
+// not attached its socket yet.
+func (r *Registry) Attaching(id proto.PeerID) bool {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	ps, ok := r.peers[id]
+	return ok && ps.attaching
 }
 
 // statusToEvent maps a desired wire status onto the lifecycle event that reaches
@@ -1483,7 +1481,7 @@ func (r *Registry) demoteDisconnected(ctx context.Context) {
 		if ps.state != StateOnline && ps.state != StateBusy {
 			continue
 		}
-		if r.transport.IsConnected(id) {
+		if ps.attaching || r.transport.IsConnected(id) {
 			continue
 		}
 		if exempt(ps.peer) {
@@ -1524,7 +1522,7 @@ func (r *Registry) demoteDisconnected(ctx context.Context) {
 		ps, ok := r.peers[id]
 		// Re-check under the lock: the evidence probe ran off it, and a peer
 		// registered just before this pass may have attached its socket since.
-		if !ok || (ps.state != StateOnline && ps.state != StateBusy) || r.transport.IsConnected(id) {
+		if !ok || (ps.state != StateOnline && ps.state != StateBusy) || ps.attaching || r.transport.IsConnected(id) {
 			continue
 		}
 		r.emitContradictionCode(ctx, ps.peer, ContradictionOnlineButNoWS, severityError,
