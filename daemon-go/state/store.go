@@ -8,6 +8,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -115,9 +116,10 @@ func NewStoreKeeping(dbPath string, keepCopies int) (*Store, error) {
 	}
 	store := &Store{db: db, path: dbPath, keepCopies: keepCopies}
 	if copied != "" {
+		// The copy is on disk either way: a bookkeeping failure is logged,
+		// not a reason to refuse to start.
 		if err := store.recordMigrationSnapshot(context.Background(), copied, version); err != nil {
-			_ = db.Close()
-			return nil, err
+			log.Printf("state: copied the database to %s before migrating, but could not record it: %v", copied, err)
 		}
 	}
 	if dbPath != ":memory:" {

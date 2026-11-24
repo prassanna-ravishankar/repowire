@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"regexp"
@@ -139,9 +140,15 @@ func (s *Store) markSnapshot(ctx context.Context, path string) ([]string, error)
 	if _, err := s.db.ExecContext(ctx, `INSERT OR IGNORE INTO daemon_meta(key, value) VALUES (?, ?)`, retentionBackupKey, path); err != nil {
 		return nil, fmt.Errorf("record the snapshot as the retention backup: %w", err)
 	}
+	// Pruning runs only when both reads succeed: without the backup's path it
+	// could not protect it, and without the list it would forget copies.
 	var backup, raw string
-	_ = s.db.QueryRowContext(ctx, `SELECT value FROM daemon_meta WHERE key = ?`, retentionBackupKey).Scan(&backup)
-	_ = s.db.QueryRowContext(ctx, `SELECT value FROM daemon_meta WHERE key = ?`, snapshotsKey).Scan(&raw)
+	if err := s.db.QueryRowContext(ctx, `SELECT value FROM daemon_meta WHERE key = ?`, retentionBackupKey).Scan(&backup); err != nil {
+		return nil, fmt.Errorf("read the retention backup marker; nothing pruned: %w", err)
+	}
+	if err := s.db.QueryRowContext(ctx, `SELECT value FROM daemon_meta WHERE key = ?`, snapshotsKey).Scan(&raw); err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return nil, fmt.Errorf("read the snapshot list; nothing pruned: %w", err)
+	}
 	var recorded []string
 	if raw != "" {
 		if err := json.Unmarshal([]byte(raw), &recorded); err != nil {
