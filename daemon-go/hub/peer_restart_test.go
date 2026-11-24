@@ -690,6 +690,7 @@ func TestRestartRelaunchesUnmodeledPermissionsArgvVerbatim(t *testing.T) {
 		"codex -c approval_policy=never -m gpt-5",
 	} {
 		f := newRestartFixture(t, map[proto.AgentType]string{proto.AgentCodex: "codex --dangerously-bypass-approvals-and-sandbox resume old"})
+		codexHome(t, true) // a hook peer: the hooks transport reaches any launch
 		f.peer.Backend, f.peer.Metadata = proto.AgentCodex, map[string]any{"hook_session_id": "019a0000-0000-7000-8000-00000000c0de", "hook_version": float64(2)}
 		f.rt.args[101] = argv
 		f.rt.onLaunch = nil

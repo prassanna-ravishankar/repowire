@@ -286,7 +286,11 @@ func (s *SpawnService) ResolveCommand(b proto.AgentType, profile *string) (strin
 		return "", err
 	}
 	if b == proto.AgentCodex {
-		if err := s.refuseEmbeddedCodex(command, profile); err != nil {
+		source := "daemon.spawn.commands.codex"
+		if profile != nil && *profile != "" {
+			source += " or daemon.spawn.profiles.codex." + *profile
+		}
+		if err := s.CheckCodexLaunch(command, source+" in ~/.repowire/config.yaml"); err != nil {
 			return "", err
 		}
 	}
@@ -294,32 +298,38 @@ func (s *SpawnService) ResolveCommand(b proto.AgentType, profile *string) (strin
 }
 
 // CodexOnHooks reports whether Codex uses the hooks transport rather than the
-// codex bridge on Codex's shared App Server.
-func (s *SpawnService) CodexOnHooks() bool {
+// codex bridge on Codex's shared App Server, in the Codex home of env (the
+// spawn environment when nil).
+func (s *SpawnService) CodexOnHooks(env map[string]string) bool {
+	if env == nil {
+		env = s.env
+	}
 	if s.codexOnHooks != nil {
 		return s.codexOnHooks()
 	}
-	return codexHooksTransport()
+	return codexHooksTransport(env)
 }
 
-// refuseEmbeddedCodex refuses a Codex launch that would run Codex's private
+// CheckCodexLaunch refuses a Codex launch that would run Codex's private
 // embedded App Server while Repowire delivers through the shared one: the
-// pane would register but never receive a message (#567).
-func (s *SpawnService) refuseEmbeddedCodex(command string, profile *string) error {
-	reason := CodexEmbeddedReason(command, s.env)
-	if reason == "" || s.CodexOnHooks() {
+// pane would register but never receive a message (#567). source names where
+// the launch came from, for the hint.
+func (s *SpawnService) CheckCodexLaunch(command, source string) error {
+	words, ok := splitShellWords(command)
+	if !ok {
 		return nil
 	}
-	source := "daemon.spawn.commands.codex"
-	if profile != nil && *profile != "" {
-		source += " or daemon.spawn.profiles.codex." + *profile
+	env := codexLaunchEnv(words[:programIndex(words)], s.env)
+	reason := CodexEmbeddedReason(command, env)
+	if reason == "" || s.CodexOnHooks(env) {
+		return nil
 	}
 	return &SpawnError{Status: 422, Detail: map[string]any{
 		"error":  "codex_embedded_app_server",
 		"reason": reason,
 		"hint": fmt.Sprintf("Codex runs a private embedded App Server when launched with %s, and Repowire reaches Codex sessions only through the shared App Server, "+
-			"so this peer would register but never receive messages. Remove %s from %s in ~/.repowire/config.yaml and set it in ~/.codex/config.toml instead "+
-			"(--model, -s, -a, --enable and --disable keep the shared server).", reason, reason, source),
+			"so this peer would register but never receive messages. Remove %s from %s and set it in ~/.codex/config.toml instead "+
+			"(--model, -s, -a, --enable and --disable keep the shared server; feature toggles must be spelled features.<name>).", reason, reason, source),
 		"backend": string(proto.AgentCodex),
 	}}
 }

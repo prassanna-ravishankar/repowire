@@ -110,3 +110,28 @@ func TestDoctorExplainsCodexPeerOffAppServer(t *testing.T) {
 		t.Fatalf("hooks transport: contradictions = %v", got)
 	}
 }
+
+// Restart checks the command it would launch, so an observed argv relaunched
+// verbatim cannot bring back an embedded Codex, and a refused profile never
+// falls back to the built-in template (#567).
+func TestRestartRefusesEmbeddedCodexRelaunch(t *testing.T) {
+	for name, setup := range map[string]func(f *restartFixture){
+		"observed argv": func(f *restartFixture) { f.rt.args[101] = "codex -c approval_policy=never" },
+		"configured":    func(f *restartFixture) {},
+	} {
+		command := "codex --dangerously-bypass-approvals-and-sandbox"
+		if name == "configured" {
+			command = "codex -p work"
+		}
+		f := newRestartFixture(t, map[proto.AgentType]string{proto.AgentCodex: command})
+		codexHome(t, false)
+		f.peer.Backend, f.peer.Metadata = proto.AgentCodex, map[string]any{"hook_session_id": "019a0000-0000-7000-8000-00000000c0de", "hook_version": float64(2)}
+		setup(f)
+
+		out := f.restart(t, RestartPeerRequest{})
+
+		if out.Failed == nil || out.Failed.Reason != "codex_embedded_app_server" || len(f.launchedCommands()) != 0 || len(f.rt.terminated) != 0 {
+			t.Fatalf("%s: failed=%+v launched=%q terminated=%v", name, out.Failed, f.launchedCommands(), f.rt.terminated)
+		}
+	}
+}

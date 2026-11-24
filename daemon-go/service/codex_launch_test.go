@@ -21,7 +21,6 @@ func TestCodexEmbeddedReason(t *testing.T) {
 		{command: "codex --dangerously-bypass-approvals-and-sandbox"},
 		{command: "codex --model gpt-5 -s workspace-write -a never --enable foo --disable bar"},
 		{command: "codex -c features.foo=true -c tui.fullscreen_transcript=false --config=suppress_unstable_features_warning=true"},
-		{command: "codex -c 'features={foo=true}'"},
 		{command: "codex resume --last"},
 		{command: "codex -- --no-daemon"}, // after `--` it is the prompt
 		{command: "codex -m -p"},          // a value, not the profile flag
@@ -41,6 +40,19 @@ func TestCodexEmbeddedReason(t *testing.T) {
 		{command: "codex -c 'model_providers.x.api_key=sk-secret'", want: "-c model_providers.x.api_key"},
 		{command: "env CODEX_EXEC_SERVER_URL=ws://x codex", want: "CODEX_EXEC_SERVER_URL"},
 		{command: "codex", env: map[string]string{"CODEX_EXEC_SERVER_URL": "ws://x"}, want: "CODEX_EXEC_SERVER_URL"},
+		{command: "OPENAI_IDENTITY_TOKEN_FILE=/t codex", want: "OPENAI_IDENTITY_TOKEN_FILE"},
+		{command: "codex --approve-for-me", want: "--approve-for-me"},
+		{command: "codex --not-so-yolo", want: "--not-so-yolo"},
+		{command: "codex -pwork", want: "-p"},
+		{command: "codex -c=features.foo=true"},
+		{command: "codex -mgpt-5"},
+		{command: "codex -c 'features.foo=true # on'"},
+		{command: "codex -c 'features={a=true, b=false}'"},
+		{command: "codex -c 'tui={fullscreen_transcript=true}'"},
+		{command: "codex -c 'features={}'", want: "-c features"},
+		{command: "codex -c 'features={a=\"x\"}'", want: "-c features"},
+		{command: "codex -c 'tui={notifications=false}'", want: "-c tui"},
+		{command: "codex -c 'tui={fullscreen_transcript=true, x=true}'", want: "-c tui"},
 	}
 	for _, c := range cases {
 		if got := CodexEmbeddedReason(c.command, c.env); got != c.want {
@@ -52,7 +64,7 @@ func TestCodexEmbeddedReason(t *testing.T) {
 func TestCodexHooksTransportReadsInstalledHooks(t *testing.T) {
 	root := t.TempDir()
 	t.Setenv("CODEX_HOME", root)
-	if codexHooksTransport() {
+	if codexHooksTransport(nil) {
 		t.Fatal("no hooks.json: want App Server transport")
 	}
 	write := func(command string) {
@@ -62,12 +74,16 @@ func TestCodexHooksTransportReadsInstalledHooks(t *testing.T) {
 		}
 	}
 	write("hook stop --backend=codex --reminders-only")
-	if codexHooksTransport() {
+	if codexHooksTransport(nil) {
 		t.Fatal("reminder-only Stop hook is the App Server install")
 	}
 	write("hook session --backend=codex")
-	if !codexHooksTransport() {
+	if !codexHooksTransport(nil) {
 		t.Fatal("SessionStart hook installed: want hooks transport")
+	}
+	// The launch's own CODEX_HOME wins over the daemon's.
+	if codexHooksTransport(map[string]string{"CODEX_HOME": t.TempDir()}) {
+		t.Fatal("launch CODEX_HOME without hooks: want App Server transport")
 	}
 }
 
@@ -113,5 +129,25 @@ func TestResolveCommandRefusesEmbeddedCodexOnAppServer(t *testing.T) {
 	}
 	if _, err := svc.ResolveCommand(proto.AgentClaudeCode, nil); err != nil {
 		t.Fatalf("only codex launches are checked: %v", err)
+	}
+}
+
+// The hooks probe reads the Codex home the launch itself uses.
+func TestCheckCodexLaunchUsesTheLaunchCodexHome(t *testing.T) {
+	t.Setenv("CODEX_HOME", t.TempDir()) // the daemon's: no hooks
+	hooksHome := t.TempDir()
+	if err := os.WriteFile(filepath.Join(hooksHome, "hooks.json"), []byte(`{"hooks":{"SessionStart":[{"hooks":[{"command":"repowire hook session --backend=codex"}]}]}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	svc := NewSpawnService(nil, nil, nil, nil)
+	if err := svc.CheckCodexLaunch("codex -p work", "test"); !IsCodexEmbeddedRefusal(err) {
+		t.Fatalf("daemon home without hooks: want refusal, got %v", err)
+	}
+	if err := svc.CheckCodexLaunch("CODEX_HOME="+hooksHome+" codex -p work", "test"); err != nil {
+		t.Fatalf("launch home on the hooks transport: %v", err)
+	}
+	svc.WithRuntimeConfig(nil, map[string]string{"CODEX_HOME": hooksHome})
+	if err := svc.CheckCodexLaunch("codex -p work", "test"); err != nil {
+		t.Fatalf("spawn env home on the hooks transport: %v", err)
 	}
 }

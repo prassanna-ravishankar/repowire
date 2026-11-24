@@ -849,7 +849,7 @@ func codexTransportNote(appServer bool) string {
 		return "codex: hooks transport (this Codex has no shared App Server); every Codex session registers through its hooks"
 	}
 	return "codex: App Server transport; the repowire-codex bridge delivers to sessions on Codex's shared App Server. " +
-		"Sessions launched with --no-daemon, --profile/-p, --search, --oss, --strict-config, or a -c override other than a boolean features.* toggle " +
+		"Sessions launched with --no-daemon, --profile/-p, --search, --oss, --strict-config, --approve-for-me, or a -c override other than a boolean features.* toggle " +
 		"run a private server and cannot receive messages; put those settings in ~/.codex/config.toml instead"
 }
 

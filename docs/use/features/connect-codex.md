@@ -60,15 +60,19 @@ server is running.
 
 Some launches make Codex run a private embedded server instead of attaching to
 the shared one: `--no-daemon`, `--profile`/`-p`, `--search`, `--oss`,
-`--strict-config`, `--dangerously-bypass-hook-trust`, `CODEX_EXEC_SERVER_URL`,
-any `-c` override other than a boolean `features.*` toggle, and choosing "Run
-without daemon" at startup. The bridge cannot see those sessions, so they never
+`--strict-config`, `--dangerously-bypass-hook-trust`, `--approve-for-me`,
+`CODEX_EXEC_SERVER_URL` or workload-identity variables, any `-c` override other
+than a boolean `features.*` toggle, and choosing "Run without daemon" at
+startup. The bridge cannot see those sessions, so they never
 receive mesh messages. `--model`, `-s`, `-a`, `--enable`, and `--disable` keep
 the shared server. Put other settings in `~/.codex/config.toml`.
 
-Spawn, restart, and fork refuse a Codex launch (configured command plus profile
-args) that would run embedded, with a `422 codex_embedded_app_server` error that
-names the option. `repowire peer doctor` reports `CODEX_NOT_ON_APP_SERVER` for a
+Spawn, fork, job workers, and restart refuse a Codex launch that would run
+embedded, with a `codex_embedded_app_server` error that names the option. They
+check the configured command plus profile args and its environment; restart also
+checks the command it would relaunch, including an observed argv. The check
+reads the launch line only, so it can miss settings it cannot see, such as
+variables inherited from the tmux server. `repowire peer doctor` reports `CODEX_NOT_ON_APP_SERVER` for a
 Codex peer the bridge did not register, for example one started by hand with
 those options. `repowire codex install` prints which transport it chose. None of
 this applies on the hooks transport, where every Codex session registers through

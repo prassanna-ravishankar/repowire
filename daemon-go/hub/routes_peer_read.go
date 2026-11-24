@@ -214,7 +214,7 @@ func (h *Hub) getPeerDoctor(w http.ResponseWriter, r *http.Request) {
 
 const codexNotOnAppServerDetail = "this Codex session is not on Codex's shared App Server, so the codex bridge cannot deliver to it. " +
 	"Codex runs a private embedded server when launched with --no-daemon, --profile/-p, --search, --oss, --strict-config, " +
-	"--dangerously-bypass-hook-trust, CODEX_EXEC_SERVER_URL, or a -c override other than a boolean features.* toggle. " +
+	"--dangerously-bypass-hook-trust, --approve-for-me, CODEX_EXEC_SERVER_URL or workload identity, or a -c override other than a boolean features.* toggle. " +
 	"Move those settings into ~/.codex/config.toml and relaunch the session."
 
 // codexOffAppServer: a Codex peer the bridge did not register, while Codex
@@ -223,7 +223,7 @@ func (h *Hub) codexOffAppServer(p *proto.Peer) bool {
 	if p.Backend != proto.AgentCodex || p.Provenance.Source == proto.SourceCodexAppServer || h.spawn == nil || h.spawn.svc == nil {
 		return false
 	}
-	return !h.spawn.svc.CodexOnHooks()
+	return !h.spawn.svc.CodexOnHooks(nil)
 }
 
 func contradiction(code, severity, detail string) map[string]string {
