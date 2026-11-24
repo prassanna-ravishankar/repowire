@@ -121,6 +121,14 @@ func TestOperatorNudgeIsRateLimited(t *testing.T) {
 	if _, err := r.h.nudgeAsk(ctx, cid, ""); err == nil || !strings.Contains(err.Error(), "nudged_recently") {
 		t.Fatalf("second nudge: %v", err)
 	}
+	// A holder whose reply already waits for the asker is not nudged.
+	stashed := r.ask(t, alpha, beta, "another")
+	if !r.asks.SetPendingReply(ctx, stashed, "[ack #"+stashed+" from @beta] done", nil, false) {
+		t.Fatal("stash refused")
+	}
+	if _, err := r.h.nudgeAsk(ctx, stashed, ""); err == nil {
+		t.Fatal("nudged a holder whose reply is stashed")
+	}
 }
 
 // The action routes take only the daemon token: no tokenless pass and no

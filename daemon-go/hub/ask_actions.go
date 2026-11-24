@@ -201,15 +201,24 @@ func (h *Hub) cancelAsk(ctx context.Context, cid, reason string) (WireActionResu
 }
 
 // nudgeAsk reminds an open ask's holder, at most once per nudgeEvery, and
-// records the nudge on the ask's trace.
+// records the nudge on the ask's trace. It holds the ask's claim, so two
+// nudges cannot both pass the limit, and a holder whose reply already waits
+// for the asker is not nudged.
 func (h *Hub) nudgeAsk(ctx context.Context, cid, note string) (WireActionResult, error) {
 	note, err := actionText("note", note, false)
 	if err != nil {
 		return WireActionResult{}, err
 	}
-	ask, err := h.actionableAsk(ctx, cid)
-	if err != nil {
+	if _, err := h.actionableAsk(ctx, cid); err != nil {
 		return WireActionResult{}, err
+	}
+	ask, err := h.ask.asks.Claim(cid)
+	if err != nil {
+		return WireActionResult{}, resolveClaimErr(cid, err)
+	}
+	defer h.ask.asks.Release(cid)
+	if ask.PendingReply != nil {
+		return WireActionResult{}, resolveClaimErr(cid, service.ErrResultWaiting)
 	}
 	if h.store != nil {
 		rows, err := h.store.StagesFor(ctx, cid)
