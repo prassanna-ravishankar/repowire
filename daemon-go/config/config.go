@@ -28,6 +28,7 @@ type Config struct {
 	Human       HumanConfig       `yaml:"human"`
 	Experiments ExperimentsConfig `yaml:"experiments"`
 	Retention   RetentionConfig   `yaml:"retention"`
+	Wire        WireConfig        `yaml:"wire"`
 	// Routing is how asks find their target; see RouterConfig. It is decoded
 	// on its own (loadRouting), so a mistyped routing key can never fail
 	// the load.
@@ -44,6 +45,21 @@ type Config struct {
 // maxRetentionDays bounds a retention setting to what a time.Duration holds
 // with room to spare (100 years; a Duration tops out near 292).
 const maxRetentionDays = 36500
+
+// WireConfig shapes the orchestrator's wire view
+// (rfcs/wire-observability.md).
+type WireConfig struct {
+	Stuck WireStuckConfig `yaml:"stuck"`
+}
+
+// WireStuckConfig are the thresholds at which an open thread reads as stuck.
+// Each is checked when the thread is read, never on a timer.
+type WireStuckConfig struct {
+	IgnoredTurns       int     `yaml:"ignored_turns"`       // holder turns since assignment with the ask still open
+	SlowMinutes        float64 `yaml:"slow_minutes"`        // assignment age with no holder turn
+	AskerGoneMinutes   float64 `yaml:"asker_gone_minutes"`  // reply stashed for an offline asker
+	UndeliveredMinutes float64 `yaml:"undelivered_minutes"` // notify still queued
+}
 
 // RetentionConfig is how long the daemon keeps what it stores
 // (rfcs/retention.md). Content is text a peer or the human wrote; records are
@@ -179,6 +195,7 @@ func Defaults() Config {
 		},
 		Relay:     RelayConfig{URL: defaultRelayURL},
 		Retention: RetentionConfig{ContentDays: 7, RecordsDays: 180},
+		Wire:      WireConfig{Stuck: WireStuckConfig{IgnoredTurns: 3, SlowMinutes: 30, AskerGoneMinutes: 60, UndeliveredMinutes: 10}},
 		Human:     HumanConfig{Name: "human"},
 		Experiments: ExperimentsConfig{RemoteToolApproval: RemoteToolApprovalConfig{
 			GatedTools:     []string{"Bash", "Edit", "Write", "MultiEdit", "NotebookEdit"},
@@ -274,6 +291,7 @@ func decodeFile(raw []byte, cfg *Config) error {
 		Human       yaml.Node `yaml:"human"`
 		Experiments yaml.Node `yaml:"experiments"`
 		Retention   yaml.Node `yaml:"retention"`
+		Wire        yaml.Node `yaml:"wire"`
 	}
 	if err := yaml.Unmarshal(raw, &file); err != nil {
 		return err
@@ -317,6 +335,8 @@ func decodeFile(raw []byte, cfg *Config) error {
 	w, _ := decodeSection(&file.Human, &cfg.Human, "human")
 	warn(w)
 	w, _ = decodeSection(&file.Retention, &cfg.Retention, "retention")
+	warn(w)
+	w, _ = decodeSection(&file.Wire, &cfg.Wire, "wire")
 	warn(w)
 	return nil
 }
@@ -645,6 +665,18 @@ func normalize(cfg *Config) {
 		}
 		if v := *days.value; v > 0 && v*24 < askHours {
 			cfg.Warnings = append(cfg.Warnings, fmt.Sprintf("config: retention.%s (%g days) is shorter than the ask lifetime (daemon.prune_max_age_hours, %g hours): it acts as %g days so open asks keep their data", days.key, v, askHours, askHours/24))
+		}
+	}
+	stuck, stuckDefaults := &cfg.Wire.Stuck, Defaults().Wire.Stuck
+	if stuck.IgnoredTurns <= 0 {
+		stuck.IgnoredTurns = stuckDefaults.IgnoredTurns
+	}
+	for _, m := range []struct {
+		value    *float64
+		fallback float64
+	}{{&stuck.SlowMinutes, stuckDefaults.SlowMinutes}, {&stuck.AskerGoneMinutes, stuckDefaults.AskerGoneMinutes}, {&stuck.UndeliveredMinutes, stuckDefaults.UndeliveredMinutes}} {
+		if !(*m.value > 0) {
+			*m.value = m.fallback
 		}
 	}
 	if len(cfg.Experiments.RemoteToolApproval.GatedTools) == 0 {

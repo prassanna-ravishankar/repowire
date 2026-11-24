@@ -278,6 +278,35 @@ func (s *Store) TracesWithStage(ctx context.Context, stage string, since time.Ti
 	return out, rows.Err()
 }
 
+// TraceThread is one ask or notify trace and its latest activity.
+type TraceThread struct {
+	TraceID string
+	Kind    string
+	LastTS  string
+}
+
+// TraceThreadsSince lists ask and notify traces active since since, newest
+// activity first (then trace id, descending). The wire view pages through it.
+func (s *Store) TraceThreadsSince(ctx context.Context, since time.Time) ([]TraceThread, error) {
+	const q = `SELECT trace_id, MIN(kind), MAX(ts) AS last FROM delivery_traces
+		WHERE kind IN ('ask', 'notify') AND ts >= ?
+		GROUP BY trace_id ORDER BY last DESC, trace_id DESC`
+	rows, err := s.db.QueryContext(ctx, q, formatTS(since))
+	if err != nil {
+		return nil, fmt.Errorf("list trace threads: %w", err)
+	}
+	defer rows.Close()
+	var out []TraceThread
+	for rows.Next() {
+		var t TraceThread
+		if err := rows.Scan(&t.TraceID, &t.Kind, &t.LastTS); err != nil {
+			return nil, fmt.Errorf("scan trace thread: %w", err)
+		}
+		out = append(out, t)
+	}
+	return out, rows.Err()
+}
+
 // AssistantTurnsBetween counts the assistant chat turns peerID posted in the
 // window (from, to]: the work a recipient spent while an ask was open.
 func (s *Store) AssistantTurnsBetween(ctx context.Context, peerID string, from, to time.Time) (int, error) {
