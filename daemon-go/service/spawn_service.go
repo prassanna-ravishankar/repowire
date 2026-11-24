@@ -126,6 +126,9 @@ type SpawnService struct {
 	allowedPaths  []string
 	profiles      map[proto.AgentType]map[string][]string
 	env           map[string]string
+	// codexOnHooks reports whether Codex uses the hooks transport; nil reads
+	// the installed hooks (codexHooksTransport).
+	codexOnHooks func() bool
 }
 
 // WithCircleBoundary applies the daemon-wide circle boundary to every spawn path.
@@ -282,7 +285,43 @@ func (s *SpawnService) ResolveCommand(b proto.AgentType, profile *string) (strin
 	if err := s.validateCommandHead(command); err != nil {
 		return "", err
 	}
+	if b == proto.AgentCodex {
+		if err := s.refuseEmbeddedCodex(command, profile); err != nil {
+			return "", err
+		}
+	}
 	return command, nil
+}
+
+// CodexOnHooks reports whether Codex uses the hooks transport rather than the
+// codex bridge on Codex's shared App Server.
+func (s *SpawnService) CodexOnHooks() bool {
+	if s.codexOnHooks != nil {
+		return s.codexOnHooks()
+	}
+	return codexHooksTransport()
+}
+
+// refuseEmbeddedCodex refuses a Codex launch that would run Codex's private
+// embedded App Server while Repowire delivers through the shared one: the
+// pane would register but never receive a message (#567).
+func (s *SpawnService) refuseEmbeddedCodex(command string, profile *string) error {
+	reason := CodexEmbeddedReason(command, s.env)
+	if reason == "" || s.CodexOnHooks() {
+		return nil
+	}
+	source := "daemon.spawn.commands.codex"
+	if profile != nil && *profile != "" {
+		source += " or daemon.spawn.profiles.codex." + *profile
+	}
+	return &SpawnError{Status: 422, Detail: map[string]any{
+		"error":  "codex_embedded_app_server",
+		"reason": reason,
+		"hint": fmt.Sprintf("Codex runs a private embedded App Server when launched with %s, and Repowire reaches Codex sessions only through the shared App Server, "+
+			"so this peer would register but never receive messages. Remove %s from %s in ~/.repowire/config.yaml and set it in ~/.codex/config.toml instead "+
+			"(--model, -s, -a, --enable and --disable keep the shared server).", reason, reason, source),
+		"backend": string(proto.AgentCodex),
+	}}
 }
 
 func (s *SpawnService) validateCommandHead(command string) error {

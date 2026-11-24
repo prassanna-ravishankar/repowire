@@ -56,9 +56,23 @@ background server if none is running (`daemon_auto_start`) and attaches to it,
 and Codex restarts that server across its own upgrades. `repowire setup`
 installs only the bridge, which attaches to the same control socket
 (`$CODEX_HOME/app-server-control/app-server-control.sock`) and waits while no
-server is running. Sessions started with `codex --no-daemon`, or that choose
-"Run without daemon" at startup, use a private embedded server and stay off the
-mesh.
+server is running.
+
+Some launches make Codex run a private embedded server instead of attaching to
+the shared one: `--no-daemon`, `--profile`/`-p`, `--search`, `--oss`,
+`--strict-config`, `--dangerously-bypass-hook-trust`, `CODEX_EXEC_SERVER_URL`,
+any `-c` override other than a boolean `features.*` toggle, and choosing "Run
+without daemon" at startup. The bridge cannot see those sessions, so they never
+receive mesh messages. `--model`, `-s`, `-a`, `--enable`, and `--disable` keep
+the shared server. Put other settings in `~/.codex/config.toml`.
+
+Spawn, restart, and fork refuse a Codex launch (configured command plus profile
+args) that would run embedded, with a `422 codex_embedded_app_server` error that
+names the option. `repowire peer doctor` reports `CODEX_NOT_ON_APP_SERVER` for a
+Codex peer the bridge did not register, for example one started by hand with
+those options. `repowire codex install` prints which transport it chose. None of
+this applies on the hooks transport, where every Codex session registers through
+its own hooks.
 
 A thread registers as soon as Codex creates it, before its first user prompt.
 There is no warmup prompt or `UserPromptSubmit` one-turn delay. Repowire sends an
