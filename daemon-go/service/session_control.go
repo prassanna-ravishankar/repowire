@@ -39,7 +39,7 @@ type spawnExecutor interface {
 	// Spawn performs the tmux exec + ownership record.
 	Spawn(cfg SpawnConfig) (SpawnResult, error)
 	// StopProven stops a spawned agent's place on destructive proof only.
-	StopProven(proc ProcessControl, p *proto.Peer) StopOutcome
+	StopProven(proc ProcessControl, p *proto.Peer, want string) StopOutcome
 }
 
 // ExecutorAcquisition is the result of AcquireExecutorForWork.
@@ -299,22 +299,32 @@ func (c *SessionControl) ReleaseExecutorForWork(ctx context.Context, work *state
 		c.failOp(ctx, op.OperationID, "kill_pane", errObj)
 		return map[string]any{"status": "failed", "reason": "missing_pane_id", "operation_id": op.OperationID, "terminal_reason": terminalReason, "reap_error": errObj}, nil
 	}
+	// One registry snapshot decides both the mismatch and the stop target.
+	var live *proto.Peer
 	if peerID != "" {
-		if live, ok := c.reg.GetPeer(proto.PeerID(peerID)); ok && live.PaneID != nil && *live.PaneID != paneID {
-			errObj := map[string]any{"reason": "release_handle_mismatch", "peer_id": peerID, "expected_pane_id": paneID, "actual_pane_id": *live.PaneID}
-			c.failOp(ctx, op.OperationID, "kill_pane", errObj)
-			return map[string]any{"status": "failed", "reason": "release_handle_mismatch", "operation_id": op.OperationID, "terminal_reason": terminalReason, "reap_error": errObj}, nil
+		if p, ok := c.reg.GetPeer(proto.PeerID(peerID)); ok {
+			cp := *p
+			live = &cp
 		}
 	}
+	if live != nil && live.PaneID != nil && *live.PaneID != paneID {
+		errObj := map[string]any{"reason": "release_handle_mismatch", "peer_id": peerID, "expected_pane_id": paneID, "actual_pane_id": *live.PaneID}
+		c.failOp(ctx, op.OperationID, "kill_pane", errObj)
+		return map[string]any{"status": "failed", "reason": "release_handle_mismatch", "operation_id": op.OperationID, "terminal_reason": terminalReason, "reap_error": errObj}, nil
+	}
 
+	// The pane is stopped only for the registered executor still in the
+	// handle's pane, and only on a proof for that same pane: a peer the
+	// registry no longer knows carries no agent evidence, so its pane id may
+	// since name someone else's pane.
 	stopped, stopSkipped := false, ""
-	if c.spawn != nil && peerID != "" {
-		target := &proto.Peer{PeerID: proto.PeerID(peerID), PaneID: &paneID}
-		if live, ok := c.reg.GetPeer(proto.PeerID(peerID)); ok {
-			cp := *live
-			target = &cp
-		}
-		stop := c.spawn.StopProven(c.proc, target)
+	switch {
+	case c.spawn == nil:
+		stopSkipped = "spawn_unavailable"
+	case live == nil || live.PaneID == nil:
+		stopSkipped = "executor_not_registered"
+	default:
+		stop := c.spawn.StopProven(c.proc, live, paneID)
 		switch {
 		case stop.Stopped:
 			stopped = true

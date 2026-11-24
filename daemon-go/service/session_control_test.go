@@ -53,7 +53,7 @@ type scSpawner struct {
 	stopped []*proto.Peer
 }
 
-func (s *scSpawner) StopProven(_ ProcessControl, p *proto.Peer) StopOutcome {
+func (s *scSpawner) StopProven(_ ProcessControl, p *proto.Peer, _ string) StopOutcome {
 	s.stopped = append(s.stopped, p)
 	if s.stop != nil {
 		return s.stop(p)

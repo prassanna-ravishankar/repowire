@@ -189,7 +189,7 @@ type fakeSpawner struct {
 	session string
 }
 
-func (f *fakeSpawner) StopProven(_ service.ProcessControl, p *proto.Peer) service.StopOutcome {
+func (f *fakeSpawner) StopProven(_ service.ProcessControl, p *proto.Peer, _ string) service.StopOutcome {
 	f.stops++
 	return service.StopOutcome{Proof: service.DestructiveProof{OK: true, PaneID: *p.PaneID}, Stopped: true}
 }

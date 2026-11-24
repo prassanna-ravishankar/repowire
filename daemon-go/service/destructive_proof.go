@@ -121,9 +121,15 @@ type StopOutcome struct {
 // (rfcs/agent-container.md): destructive proof first, then Container.Stop,
 // then the ownership record and the pane's runtime state are forgotten so a
 // reused pane cannot be proved again. Without proof it touches nothing; a
-// proven place that does not stop comes back with Stopped false.
-func (s *SpawnService) StopProven(proc ProcessControl, p *proto.Peer) StopOutcome {
+// proven place that does not stop comes back with Stopped false. A non-empty
+// want pins the place: a proof for any other pane is refused (pane_mismatch)
+// and nothing is stopped.
+func (s *SpawnService) StopProven(proc ProcessControl, p *proto.Peer, want string) StopOutcome {
 	proof := s.DestructivePaneProof(proc, p)
+	if proof.OK && want != "" && proof.PaneID != want {
+		return StopOutcome{Proof: DestructiveProof{PaneID: proof.PaneID, TmuxSession: proof.TmuxSession, ErrCode: "pane_mismatch",
+			Hint: "The proven pane is not the one this stop was for; refusing."}}
+	}
 	if !proof.OK || proof.PaneID == "" || !s.Container().Stop(proof.PaneID) {
 		return StopOutcome{Proof: proof}
 	}

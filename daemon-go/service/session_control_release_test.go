@@ -64,3 +64,47 @@ func TestReleaseExecutorStopsTheExecutorsPane(t *testing.T) {
 		})
 	}
 }
+
+// A release handle whose peer the registry no longer knows names a pane that
+// may since be someone else's: nothing is stopped.
+func TestReleaseExecutorLeavesAnUnregisteredExecutorsPaneAlone(t *testing.T) {
+	spawner := &scSpawner{}
+	c := NewSessionControl(&scRegistry{}, spawner, scStore(t))
+	out, err := c.ReleaseExecutorForWork(context.Background(), releaseWork(), "completed")
+	if err != nil {
+		t.Fatalf("release: %v", err)
+	}
+	if len(spawner.stopped) != 0 || out["pane_stopped"] != false || out["stop_skipped"] != "executor_not_registered" {
+		t.Fatalf("got %v with stops %v; want no stop, skipped executor_not_registered", out, spawner.stopped)
+	}
+}
+
+type stopContainer struct {
+	evidence map[string]*TmuxPaneEvidence
+	stopped  []string
+}
+
+func (c *stopContainer) Kind() string                               { return "tmux" }
+func (c *stopContainer) Reserve(SpawnConfig) (PanePlacement, error) { return PanePlacement{}, nil }
+func (c *stopContainer) Launch(SpawnConfig) (SpawnResult, error)    { return SpawnResult{}, nil }
+func (c *stopContainer) Probe(pane string) *TmuxPaneEvidence        { return c.evidence[pane] }
+func (c *stopContainer) Stop(pane string) bool                      { c.stopped = append(c.stopped, pane); return true }
+
+// StopProven pinned to a pane refuses a proof for any other pane.
+func TestStopProvenRefusesAProofForAnotherPane(t *testing.T) {
+	t.Setenv("REPOWIRE_CONFIG_DIR", t.TempDir())
+	t.Setenv("HOME", t.TempDir()) // StopProven clears ws-hook pane files under ~/.cache
+	ct := &stopContainer{evidence: map[string]*TmuxPaneEvidence{}}
+	own := NewFileOwnership("test-host", ct.Probe)
+	own.MarkSpawned("%8")
+	svc := NewSpawnService(ct, own, nil, nil)
+	pane := "%8"
+	p := &proto.Peer{PeerID: "repow-x", PaneID: &pane}
+
+	if out := svc.StopProven(NewProcessControl(), p, "%7"); out.Stopped || out.Proof.ErrCode != "pane_mismatch" || len(ct.stopped) != 0 {
+		t.Fatalf("pinned to %%7: got %+v, stopped %v; want pane_mismatch and no stop", out, ct.stopped)
+	}
+	if out := svc.StopProven(NewProcessControl(), p, "%8"); !out.Stopped || len(ct.stopped) != 1 || ct.stopped[0] != "%8" {
+		t.Fatalf("pinned to %%8: got %+v, stopped %v; want %%8 stopped", out, ct.stopped)
+	}
+}

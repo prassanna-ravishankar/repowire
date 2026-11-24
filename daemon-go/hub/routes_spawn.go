@@ -484,7 +484,7 @@ func (h *Hub) killPeer(ctx context.Context, req KillPeerRequest) (KillResponse, 
 	}
 
 	peerCopy := h.peerWithAdoptedOwnership(resolved)
-	stop := h.spawn.svc.StopProven(h.spawn.proc, peerCopy)
+	stop := h.spawn.svc.StopProven(h.spawn.proc, peerCopy, "")
 	if !stop.Proof.OK || stop.Proof.PaneID == "" {
 		// No proof: close the identity but DO NOT touch any pane. tmux_killed=null.
 		h.closeKilledPeer(ctx, peerCopy.PeerID)
