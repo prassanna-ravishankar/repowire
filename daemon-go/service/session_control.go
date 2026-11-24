@@ -38,6 +38,8 @@ type spawnExecutor interface {
 	ResolveCommand(b proto.AgentType, profile *string) (string, error)
 	// Spawn performs the tmux exec + ownership record.
 	Spawn(cfg SpawnConfig) (SpawnResult, error)
+	// StopProven stops a spawned agent's place on destructive proof only.
+	StopProven(proc ProcessControl, p *proto.Peer) StopOutcome
 }
 
 // ExecutorAcquisition is the result of AcquireExecutorForWork.
@@ -69,13 +71,14 @@ type SessionControl struct {
 	spawn  spawnExecutor
 	store  *state.Store
 	resume func(proto.AgentType, string, string, *string, map[string]any) (map[string]any, bool)
+	proc   ProcessControl
 }
 
 // NewSessionControl wires the executor-acquisition service. spawn may be nil
 // (spawn-strategy acquisitions then fail loud with reason spawn_unavailable);
 // resume may be nil (resume disabled → fresh spawns).
 func NewSessionControl(reg controlRegistry, spawn spawnExecutor, store *state.Store) *SessionControl {
-	return &SessionControl{reg: reg, spawn: spawn, store: store}
+	return &SessionControl{reg: reg, spawn: spawn, store: store, proc: NewProcessControl()}
 }
 
 // WithResume attaches the shared resume-safety resolver. Returns the receiver.
@@ -248,15 +251,11 @@ func (c *SessionControl) acquireAssignedPeer(ctx context.Context, work *state.Tr
 
 // ReleaseExecutorForWork releases the executor acquired for the current attempt.
 // Idempotent: a missing/dead pane is recorded as already-released, a live
-// mismatched peer fails closed. Mirrors release_executor_for_work but defers the
-// actual pane stop to the spawn area's Container (rfcs/agent-container.md).
-//
-// ponytail: the stop + ownership-forget half lives in the spawn area's
-// Container/PaneOwnership. Until that's injected here, release records the
-// terminal operation and unregisters the peer, returning a structured result;
-// the physical stop is not wired yet. The upgrade path: inject the Container
-// (Stop + Probe) and PaneOwnership.Forget, and call them between the mismatch
-// check and unregister.
+// mismatched peer fails closed. The executor's pane is stopped through the
+// spawn area's StopProven (Container.Stop on destructive proof, as kill_peer
+// does), then the peer is unregistered. Without proof the pane is left alone
+// and the result says why; a proven pane that will not stop fails the release
+// and leaves the peer registered (#586).
 func (c *SessionControl) ReleaseExecutorForWork(ctx context.Context, work *state.TrackedWork, terminalReason string) (map[string]any, error) {
 	runner := mapAtAny(work.Provenance, "runner")
 	attemptID, _ := runner["current_attempt_id"].(string)
@@ -308,7 +307,28 @@ func (c *SessionControl) ReleaseExecutorForWork(ctx context.Context, work *state
 		}
 	}
 
-	// ponytail: physical kill deferred to the spawn area; unregister + record.
+	stopped, stopSkipped := false, ""
+	if c.spawn != nil && peerID != "" {
+		target := &proto.Peer{PeerID: proto.PeerID(peerID), PaneID: &paneID}
+		if live, ok := c.reg.GetPeer(proto.PeerID(peerID)); ok {
+			cp := *live
+			target = &cp
+		}
+		stop := c.spawn.StopProven(c.proc, target)
+		switch {
+		case stop.Stopped:
+			stopped = true
+		case stop.Proof.OK && stop.Proof.PaneID != "":
+			errObj := map[string]any{"reason": "kill_failed", "peer_id": peerID, "pane_id": stop.Proof.PaneID}
+			c.failOp(ctx, op.OperationID, "kill_pane", errObj)
+			return map[string]any{"status": "failed", "reason": "kill_failed", "operation_id": op.OperationID, "terminal_reason": terminalReason, "reap_error": errObj}, nil
+		default:
+			stopSkipped = stop.Proof.ErrCode
+			if stopSkipped == "" {
+				stopSkipped = "pane_unverified"
+			}
+		}
+	}
 	// peerID is already resolved (from the release handle), so the ambiguity
 	// error can't fire.
 	if peerID != "" {
@@ -322,6 +342,10 @@ func (c *SessionControl) ReleaseExecutorForWork(ctx context.Context, work *state
 		"peer_id":         peerID,
 		"pane_id":         paneID,
 		"released_at":     opReleaseNow(),
+		"pane_stopped":    stopped,
+	}
+	if stopSkipped != "" {
+		result["stop_skipped"] = stopSkipped
 	}
 	_, _ = c.store.CompleteOperation(ctx, op.OperationID, strPtr("kill_pane"), result)
 	return result, nil

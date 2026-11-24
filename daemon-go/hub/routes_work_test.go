@@ -183,9 +183,15 @@ func (f *fakeControlRegistry) UnregisterPeer(ctx context.Context, identifier str
 // pre-seeded so awaitSpawnedPeer resolves immediately by pane id.
 type fakeSpawner struct {
 	calls   int
+	stops   int
 	pane    string
 	display string
 	session string
+}
+
+func (f *fakeSpawner) StopProven(_ service.ProcessControl, p *proto.Peer) service.StopOutcome {
+	f.stops++
+	return service.StopOutcome{Proof: service.DestructiveProof{OK: true, PaneID: *p.PaneID}, Stopped: true}
 }
 
 func (f *fakeSpawner) ResolveCommand(b proto.AgentType, profile *string) (string, error) {

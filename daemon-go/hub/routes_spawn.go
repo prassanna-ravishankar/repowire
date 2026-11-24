@@ -484,24 +484,20 @@ func (h *Hub) killPeer(ctx context.Context, req KillPeerRequest) (KillResponse, 
 	}
 
 	peerCopy := h.peerWithAdoptedOwnership(resolved)
-	proof := h.destructivePaneProof(peerCopy)
-	if !proof.ok || proof.paneID == "" {
+	stop := h.spawn.svc.StopProven(h.spawn.proc, peerCopy)
+	if !stop.Proof.OK || stop.Proof.PaneID == "" {
 		// No proof: close the identity but DO NOT touch any pane. tmux_killed=null.
 		h.closeKilledPeer(ctx, peerCopy.PeerID)
 		return KillResponse{OK: true, TmuxKilled: nil}, nil
 	}
-
-	killed := h.spawn.svc.Container().Stop(proof.paneID)
-	if !killed {
+	if !stop.Stopped {
 		// Fail loud: verified pane could not be killed; leave the peer registered.
 		return KillResponse{}, &service.SpawnError{Status: http.StatusInternalServerError, Detail: map[string]any{
 			"error":   "kill_failed",
 			"hint":    "tmux kill-pane failed for the peer's verified pane; the peer remains registered so the operator can inspect it.",
-			"pane_id": proof.paneID,
+			"pane_id": stop.Proof.PaneID,
 		}}
 	}
-	h.spawn.svc.Ownership().Forget(proof.paneID)
-	clienthooks.ClearPaneRuntimeState(proof.paneID) // stale meta must not re-prove a reused pane
 	h.closeKilledPeer(ctx, peerCopy.PeerID)
 	t := true
 	return KillResponse{OK: true, TmuxKilled: &t}, nil
@@ -854,111 +850,13 @@ func (h *Hub) peerWithAdoptedOwnership(p *proto.Peer) *proto.Peer {
 	return &cp
 }
 
-// destructiveProof is the kill-authorization result (port of _DestructivePaneProof).
-type destructiveProof struct {
-	ok          bool
-	paneID      string
-	tmuxSession string
-	mode        string
-	errCode     string
-	hint        string
-}
-
-// destructivePaneProof ports _destructive_pane_proof: the only accepted proofs
-// are (1) the pane is in the in-process spawned set, (2) durable spawn ownership
-// validates, or (3) live pane metadata (the ws-hook meta.json) names THIS
-// peer_id and its agent still runs in the pane. Path match alone is NEVER proof.
-// A live pane whose metadata names a different peer is a mismatch (distinct from
-// no metadata); both refuse. Whatever the mode, a known agent pid for the peer
-// must be running in the pane (#529).
-func (h *Hub) destructivePaneProof(p *proto.Peer) destructiveProof {
-	proof := h.paneProof(p)
-	if !proof.ok || len(service.PeerAgentPIDs(proof.paneID, p)) == 0 {
-		return proof
-	}
-	// A known agent outside a visible pane vetoes every mode: the pane's proof
-	// was earned by a runtime that is no longer there. An unseen pane is left to
-	// the caller, which cannot kill it either.
-	if ev := h.spawn.svc.Container().Probe(proof.paneID); ev != nil && !service.PaneRunsPeer(h.spawn.proc, ev, p) {
-		return destructiveProof{paneID: proof.paneID, tmuxSession: proof.tmuxSession, errCode: "agent_not_in_pane",
-			hint: "The peer's agent is not running in its proven pane; refusing to kill whatever runs there now."}
-	}
-	return proof
-}
-
-func (h *Hub) paneProof(p *proto.Peer) destructiveProof {
-	own := h.spawn.svc.Ownership()
-
-	if p.PaneID != nil && *p.PaneID != "" && own.IsSpawned(*p.PaneID) {
-		return destructiveProof{ok: true, paneID: *p.PaneID, mode: "repowire_spawned_pane",
-			tmuxSession: derefString(p.TmuxSession)}
-	}
-
-	ownership := own.ValidateForPeer(p)
-	if ownership.OK && ownership.Record != nil {
-		return destructiveProof{ok: true, paneID: ownership.Record.PaneID,
-			tmuxSession: ownership.Record.TmuxSession, mode: "durable_spawn_ownership"}
-	}
-	if ownership.Error != "" && ownership.Error != "missing_ownership" {
-		pane := derefString(p.PaneID)
-		if ownership.Record != nil {
-			pane = ownership.Record.PaneID
-		}
-		ts := derefString(p.TmuxSession)
-		if ownership.Evidence != nil {
-			ts = ownership.Evidence.TmuxSession
-		} else if ownership.Record != nil {
-			ts = ownership.Record.TmuxSession
-		}
-		return destructiveProof{paneID: pane, tmuxSession: ts, errCode: ownership.Error, hint: ownership.Hint}
-	}
-
-	if p.PaneID == nil || *p.PaneID == "" {
-		return destructiveProof{errCode: "missing_pane",
-			hint: "Peer has no pane id, so Repowire has no pane to kill."}
-	}
-
-	ev := h.spawn.svc.Container().Probe(*p.PaneID)
-	if ev == nil {
-		return destructiveProof{paneID: *p.PaneID, errCode: "pane_not_live",
-			hint: "The peer's recorded pane is not visible in tmux."}
-	}
-
-	// (3) Live pane metadata names THIS peer_id. The ws-hook writes the pane's
-	// owning peer_id into ws-hook-<pane>.meta.json; a match proves this peer really
-	// occupies the live pane (not merely shares its path). Parity with
-	// spawn.py destructive proof mode 3. Path match alone is still NOT proof.
-	if meta := clienthooks.ReadPaneRuntimeMetadata(*p.PaneID); meta != nil {
-		if mpid, _ := meta["peer_id"].(string); mpid != "" {
-			if mpid == string(p.PeerID) {
-				if !service.PaneRunsPeer(h.spawn.proc, ev, p) {
-					return destructiveProof{paneID: *p.PaneID, tmuxSession: ev.TmuxSession, errCode: "pane_metadata_stale",
-						hint: "Pane metadata names this peer, but its agent no longer runs in the pane."}
-				}
-				return destructiveProof{ok: true, paneID: *p.PaneID, tmuxSession: ev.TmuxSession,
-					mode: "verified_pane_metadata"}
-			}
-			// Meta names a DIFFERENT peer — the live pane is another peer's, not this
-			// one. Distinguish from "no metadata" for diagnostics (parity with Python
-			// pane_metadata_mismatch). Same blocking behavior either way.
-			return destructiveProof{paneID: *p.PaneID, tmuxSession: ev.TmuxSession,
-				errCode: "pane_metadata_mismatch",
-				hint:    "Live pane's peer_id metadata names a different peer. Refusing destructive control."}
-		}
-	}
-
-	return destructiveProof{paneID: *p.PaneID, tmuxSession: ev.TmuxSession,
-		errCode: "missing_pane_metadata",
-		hint:    "Live pane has no peer_id metadata. Path match alone is not enough for destructive controls."}
-}
-
 // paneControlErrorDetail mirrors _pane_control_error_detail.
-func (h *Hub) paneControlErrorDetail(p *proto.Peer, proof destructiveProof) map[string]any {
-	errCode := proof.errCode
+func (h *Hub) paneControlErrorDetail(p *proto.Peer, proof service.DestructiveProof) map[string]any {
+	errCode := proof.ErrCode
 	if errCode == "" {
 		errCode = "pane_unverified"
 	}
-	hint := proof.hint
+	hint := proof.Hint
 	if hint == "" {
 		hint = "Destructive peer controls require a Repowire spawn proof or pane metadata whose peer_id matches the target peer."
 	}

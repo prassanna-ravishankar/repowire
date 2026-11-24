@@ -49,6 +49,16 @@ type scSpawner struct {
 	command string
 	pane    string
 	last    SpawnConfig
+	stop    func(p *proto.Peer) StopOutcome // nil: proven and stopped
+	stopped []*proto.Peer
+}
+
+func (s *scSpawner) StopProven(_ ProcessControl, p *proto.Peer) StopOutcome {
+	s.stopped = append(s.stopped, p)
+	if s.stop != nil {
+		return s.stop(p)
+	}
+	return StopOutcome{Proof: DestructiveProof{OK: true, PaneID: *p.PaneID}, Stopped: true}
 }
 
 func (s *scSpawner) ResolveCommand(proto.AgentType, *string) (string, error) {
