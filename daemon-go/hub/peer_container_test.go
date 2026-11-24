@@ -90,3 +90,39 @@ func TestPeerContainerForLeavesOtherPeersToThePanePath(t *testing.T) {
 		t.Fatal("the hosted peer was not claimed")
 	}
 }
+
+// DELETE /peers/{name} is an operator close too: a peer a plug owns outright
+// is stopped through the plug first, so closing its identity never leaves its
+// execution running. A stop that fails keeps the peer.
+func TestDeletePeerStopsAPlugOwnedPeerFirst(t *testing.T) {
+	h := newTestHub(t)
+	tmux := &fakeTmux{killOK: true}
+	svc := newHermeticSpawnService(t, tmux, service.NewFileOwnership("test-host", tmux.Probe), nil, []string{t.TempDir()})
+	h.WithSpawn(svc, h.reg, service.NewAskTracker(0), "test-host", proto.CircleBoundarySession)
+	plug := &fakePeerPlug{path: "/hosted/helper", err: errors.New("runtime unreachable")}
+	svc.WithPeerContainers(plug)
+	mux := http.NewServeMux()
+	h.Routes(mux)
+
+	path, circle := plug.path, "default"
+	registered := postLifecycleJSON(t, mux, "/peers", RegisterPeerRequest{Name: "helper", Path: &path, Backend: proto.AgentCodex, Circle: &circle})
+	var peer RegisterResponse
+	if err := json.Unmarshal(registered.Body.Bytes(), &peer); err != nil || registered.Code != http.StatusOK {
+		t.Fatalf("register: %d %s", registered.Code, registered.Body.String())
+	}
+
+	if failed := deleteLifecycle(t, mux, "/peers/"+peer.PeerID); failed.Code != http.StatusInternalServerError {
+		t.Fatalf("delete with a failing stop = %d %s, want 500", failed.Code, failed.Body.String())
+	}
+	if _, ok := h.reg.GetPeer(proto.PeerID(peer.PeerID)); !ok {
+		t.Fatal("a peer whose stop failed must stay registered")
+	}
+
+	plug.err = nil
+	if closed := deleteLifecycle(t, mux, "/peers/"+peer.PeerID); closed.Code != http.StatusOK {
+		t.Fatalf("delete: %d %s", closed.Code, closed.Body.String())
+	}
+	if _, ok := h.reg.GetPeer(proto.PeerID(peer.PeerID)); ok || len(plug.stopped) != 2 {
+		t.Fatalf("delete must stop through the plug, then close: stopped=%v", plug.stopped)
+	}
+}

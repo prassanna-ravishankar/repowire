@@ -1,0 +1,19 @@
+[
+  {"circle": "", "shared": false},
+  {"circle": "*", "shared": false},
+  {"circle": "default", "shared": false},
+  {"circle": "1", "shared": false},
+  {"circle": "007", "shared": false},
+  {"circle": "window-3", "shared": false},
+  {"circle": "window-12", "shared": false},
+  {"circle": "window-", "shared": true},
+  {"circle": "window-x", "shared": true},
+  {"circle": "managed", "shared": true},
+  {"circle": "repowire", "shared": true},
+  {"circle": "1a", "shared": true},
+  {"circle": "Default", "shared": true},
+  {"circle": "proj-x", "shared": true},
+  {"circle": "window", "shared": true},
+  {"circle": "0", "shared": false},
+  {"circle": "17", "shared": false}
+]
