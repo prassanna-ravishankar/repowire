@@ -86,14 +86,16 @@ func (h *Hosted) Connect(base, token, version string, tools HostedToolRunner) {
 
 func (h *Hosted) serveGateway(url, token, version string, tools HostedToolRunner) (bool, error) {
 	dial, cancel := context.WithTimeout(h.ctx, gatewayDial)
-	conn, _, err := websocket.Dial(dial, url, &websocket.DialOptions{
-		HTTPHeader: http.Header{
-			"Authorization":        {"Bearer " + token},
-			"X-Repowire-Machine":   {h.machine},
-			"X-Repowire-Daemon-Id": {h.machine},
-			"X-Repowire-Version":   {version},
-		},
-	})
+	header := http.Header{
+		"Authorization":        {"Bearer " + token},
+		"X-Repowire-Machine":   {h.machine},
+		"X-Repowire-Daemon-Id": {h.machine},
+		"X-Repowire-Version":   {version},
+	}
+	if h.retention != "" {
+		header.Set("X-Repowire-Retention", h.retention)
+	}
+	conn, _, err := websocket.Dial(dial, url, &websocket.DialOptions{HTTPHeader: header})
 	cancel()
 	if err != nil {
 		return false, err

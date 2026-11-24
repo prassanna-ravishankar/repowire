@@ -110,10 +110,13 @@ test('a submit that never reached the agent settles as not delivered, and a late
 test('a read while the submission holds admission returns pending within its wait', async () => {
   const { call, agent } = relay();
   let release!: () => void;
+  let entered!: () => void;
+  const admitted = new Promise<void>((resolve) => { entered = resolve; });
   const start = agent.lifecycle.start;
-  agent.lifecycle.start = () => new Promise<void>((resolve) => { release = resolve; });
+  agent.lifecycle.start = () => new Promise<void>((resolve) => { release = resolve; entered(); });
   const sending = call('POST', '/requests', ask(11));
-  await flush();
+  // The submit is recorded and holding admission once the agent starts it.
+  await admitted;
   for (const wait of [0, 1]) {
     const began = Date.now();
     assert.deepEqual(await (await call('GET', `/requests/${id(11)}?requester=relay-mcp-g1&wait=${wait}`)).json(),
@@ -162,4 +165,18 @@ test('a managed agent has a shared circle, editable here; a daemon agent has non
 
   const daemonOwned = relay('daemon');
   assert.equal((await daemonOwned.call('PATCH', '/agents/a', { circle: 'research' })).status, 409);
+});
+
+test('a retry still finds its request after retention has stripped the text', async () => {
+  const { call, pi, directory } = relay();
+  assert.equal((await call('POST', '/requests', ask(40))).status, 202);
+  pi.settle(id(40), { status: 'done', text: '42' });
+  await flush();
+  await (await call('GET', `/requests/${id(40)}?requester=relay-mcp-g1&wait=5`)).json();
+  assert.deepEqual(directory.housekeep(Date.now() + 30 * 24 * 3600 * 1000), { 'runs.strip': 1, 'requests.strip': 1 });
+  assert.equal(directory.request(id(40))?.text, '');
+  const retry = await call('POST', '/requests', ask(40));
+  assert.equal(retry.status, 202);
+  assert.equal((await retry.json()).created, false);
+  assert.equal((await call('POST', '/requests', ask(40, { text: 'something else' }))).status, 409);
 });

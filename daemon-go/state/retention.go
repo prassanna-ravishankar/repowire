@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/repowire/repowire/daemon-go/peer"
+	"github.com/repowire/repowire/daemon-go/proto"
 )
 
 // Retention (rfcs/retention.md): one policy for everything the daemon keeps.
@@ -48,7 +49,7 @@ const retentionInterval = time.Hour
 // RemoteWindow is the fixed life of a cross-machine record: it is protocol
 // state (a live ask is retried and answered from its row until then), so the
 // policy does not move it.
-const RemoteWindow = 7 * 24 * time.Hour
+var RemoteWindow = proto.RemoteWindow
 
 type sweepRule struct {
 	name string
