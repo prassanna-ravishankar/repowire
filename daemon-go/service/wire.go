@@ -21,10 +21,11 @@ import (
 // ask and notify threads for orchestrators and the operator.
 //
 // It keeps no state of its own. Open asks come from the AskTracker, history
-// from the delivery-trace ledger, names, circles and liveness from the
-// registry, and holder turns from the chat-turn journal; retention bounds
-// all of them. The envelope never carries message text, delegation notes or
-// reasons. Later pieces (reassign, cancel, bodies) plug in through Thread.
+// from the delivery-trace ledger, whether a notify still waits from the
+// delivery queue, names, circles and liveness from the registry, and holder
+// turns from the chat-turn journal; retention bounds all of them. The envelope never carries message text, delegation notes or
+// reasons. Later pieces (reassign, cancel, bodies) plug in through Resolve
+// and Thread.
 // ============================================================================
 
 // WireLedger is the delivery-trace ledger seam; *state.Store satisfies it.
@@ -32,6 +33,9 @@ type WireLedger interface {
 	TraceThreadsSince(ctx context.Context, since time.Time) ([]state.TraceThread, error)
 	StagesFor(ctx context.Context, traceID string) ([]state.TraceRow, error)
 	AssistantTurnsBetween(ctx context.Context, peerID string, from, to time.Time) (int, error)
+	// DeliveryQueued is the delivery queue's answer for a notify traced as
+	// pending: still waiting, or gone (drained or expired).
+	DeliveryQueued(ctx context.Context, deliveryID string, now time.Time) (bool, error)
 }
 
 // WirePeers resolves a party; *peer.Registry satisfies it.
@@ -179,24 +183,38 @@ func (w *Wire) Threads(ctx context.Context, f WireFilter) (WirePage, error) {
 // Thread returns one thread with its stages. id is a thread id as Threads
 // shows it (an h- alias included).
 func (w *Wire) Thread(ctx context.Context, id string) (WireThread, bool, error) {
-	traceID, kind := id, ""
-	if isWireAlias(id) {
-		candidates, err := w.candidates(ctx, time.Time{})
+	traceID, ok, err := w.Resolve(ctx, id)
+	if err != nil || !ok {
+		return WireThread{}, false, err
+	}
+	return w.reduce(ctx, traceID, "", true)
+}
+
+// Resolve maps a thread id as the view shows it (an h- alias included) to
+// the ask correlation id or notify delivery id it stands for. ok is false
+// for an id that names no ask or notify thread. Actions that take a thread
+// id from the view (delegate, reassign, cancel) resolve it here.
+func (w *Wire) Resolve(ctx context.Context, id string) (string, bool, error) {
+	if !isWireAlias(id) {
+		if _, tracked := w.asks.Get(id); tracked {
+			return id, true, nil
+		}
+		rows, err := w.ledger.StagesFor(ctx, id)
 		if err != nil {
-			return WireThread{}, false, err
+			return "", false, err
 		}
-		traceID = ""
-		for _, c := range candidates {
-			if wireAlias(c.id) == id {
-				traceID, kind = c.id, c.kind
-				break
-			}
-		}
-		if traceID == "" {
-			return WireThread{}, false, nil
+		return id, len(rows) > 0 && (rows[0].Kind == "ask" || rows[0].Kind == "notify"), nil
+	}
+	candidates, err := w.candidates(ctx, time.Time{})
+	if err != nil {
+		return "", false, err
+	}
+	for _, c := range candidates {
+		if wireAlias(c.id) == id {
+			return c.id, true, nil
 		}
 	}
-	return w.reduce(ctx, traceID, kind, true)
+	return "", false, nil
 }
 
 // candidates are the ledger's threads active since since, plus open asks the
@@ -285,7 +303,9 @@ func (w *Wire) reduce(ctx context.Context, traceID, kind string, withStages bool
 	}
 	t := WireThread{ID: wireDisplayID(traceID), Kind: kind, HolderTurns: -1}
 	if kind == "notify" {
-		w.reduceNotify(&t, rows)
+		if err := w.reduceNotify(ctx, &t, traceID, rows); err != nil {
+			return WireThread{}, false, err
+		}
 	} else {
 		w.reduceAsk(&t, rows, ask, tracked)
 	}
@@ -312,7 +332,7 @@ func (w *Wire) reduce(ctx context.Context, traceID, kind string, withStages bool
 type wireAssignment struct {
 	holder   proto.PeerID
 	at       time.Time
-	delivery string // delivered | deferred | queued | ""
+	delivery string // delivered | deferred | ""
 }
 
 func (w *Wire) reduceAsk(t *WireThread, rows []state.TraceRow, ask *Ask, tracked bool) {
@@ -343,8 +363,8 @@ func (w *Wire) reduceAsk(t *WireThread, rows []state.TraceRow, ask *Ask, tracked
 			switch {
 			case wireDelivered[r.Stage]:
 				cur.delivery = "delivered"
-			case (r.Stage == "deferred" || r.Stage == "queued") && cur.delivery == "":
-				cur.delivery = r.Stage
+			case r.Stage == "websocket_sent" && r.Detail["transport"] == "deferred" && cur.delivery == "":
+				cur.delivery = "deferred" // a busy holder; its Stop hook surfaces the ask
 			}
 		}
 		if r.Stage == "closed" {
@@ -408,10 +428,16 @@ func (w *Wire) reduceAsk(t *WireThread, rows []state.TraceRow, ask *Ask, tracked
 	}
 }
 
-func (w *Wire) reduceNotify(t *WireThread, rows []state.TraceRow) {
+// reduceNotify reads a notify's stages as the messaging routes record them:
+// a delivery receipt, a failure, pending (queued for an offline recipient),
+// remote_<outcome> across machines, or websocket_sent without a receipt.
+// For a pending notify the delivery queue says whether it still waits; once
+// it has left the queue (drained or expired) no stage says which, so it
+// reads unverified.
+func (w *Wire) reduceNotify(ctx context.Context, t *WireThread, id string, rows []state.TraceRow) error {
 	var sender, recipient proto.PeerID
-	var queuedAt time.Time
-	delivered, failed := false, false
+	var pendingAt time.Time
+	delivered, failed, unverified, remote := false, false, false, ""
 	for _, r := range rows {
 		at := parseWireTS(r.TS)
 		if t.CreatedAt.IsZero() {
@@ -427,10 +453,14 @@ func (w *Wire) reduceNotify(t *WireThread, rows []state.TraceRow) {
 		switch {
 		case wireDelivered[r.Stage]:
 			delivered = true
-		case r.Stage == "queued":
-			queuedAt = at
 		case r.Status == "fail":
 			failed = true
+		case r.Stage == "pending":
+			pendingAt = at
+		case r.Stage == "websocket_sent":
+			unverified = true
+		case strings.HasPrefix(r.Stage, "remote_"):
+			remote = r.Stage
 		}
 	}
 	t.From, t.Holder, t.AssignedAt = w.party(sender), w.party(recipient), t.CreatedAt
@@ -439,14 +469,27 @@ func (w *Wire) reduceNotify(t *WireThread, rows []state.TraceRow) {
 		t.State = "delivered"
 	case failed:
 		t.State = "failed"
-	case !queuedAt.IsZero():
+	case remote != "":
+		t.State = remote // the other machine owns the rest
+	case !pendingAt.IsZero():
+		queued, err := w.ledger.DeliveryQueued(ctx, id, w.now())
+		if err != nil {
+			return err
+		}
+		if !queued {
+			t.State = "unverified"
+			break
+		}
 		t.State, t.Open = "queued", true
-		if w.now().Sub(queuedAt) >= minutes(w.stuck.UndeliveredMinutes) {
+		if w.now().Sub(pendingAt) >= minutes(w.stuck.UndeliveredMinutes) {
 			t.Stuck = append(t.Stuck, "undelivered")
 		}
+	case unverified:
+		t.State = "unverified" // sent on a transport that returns no receipt
 	default:
 		t.State, t.Open = "sent", true
 	}
+	return nil
 }
 
 // askStuck computes an open ask's stuck signals now (never on a timer).

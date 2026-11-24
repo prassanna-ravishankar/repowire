@@ -417,12 +417,23 @@ Where it differs from the draft above:
   precedence ended in `unknown`, which v1 keeps for an ask the tracker lost
   without a `closed` stage). `queued` joins `deferred` as a delivery state.
 - Notify traces record no `message_id`, so a notify's read state is not
-  shown; its states are `sent`, `queued`, `delivered`, `failed`.
+  shown. A queued notify is traced as `pending`; the delivery queue, which
+  now keeps the trace's delivery id, says whether it still waits (`queued`,
+  and `undelivered` past the threshold). Once it left the queue, or when it
+  went out on a transport with no receipt (`websocket_sent`), it reads
+  `unverified`. A cross-machine notify reads `remote_<outcome>`.
+- A busy holder's ask is traced as `websocket_sent` with
+  `transport: deferred`, which reads `deferred`.
 - `protected` is computed on the envelope (the human, a service surface, or
   a party the registry no longer knows). Private peers come with
   `peer_wire_visibility`.
 - The MCP tools always register and answer an error when no wire view is
   attached, so tool registration does not depend on wiring order.
+- `Wire.Resolve` maps a shown thread id (an `h-` alias included) to its
+  correlation or delivery id, for the actions that will take one.
+- Each page reduces up to 1,000 threads, one `StagesFor` each, and an alias
+  lookup scans the ledger. Fine at today's volume; a grouped query can
+  replace it if `wire_query` shows in profiles.
 
 ## Tests (v1)
 

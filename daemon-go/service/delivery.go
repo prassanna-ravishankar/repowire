@@ -454,6 +454,7 @@ func (d *PeerDelivery) queueNotify(
 		attachments = []map[string]any{}
 	}
 	queued, err := d.store.EnqueueDelivery(ctx, state.QueuedDelivery{
+		DeliveryID:        params.DeliveryID, // the trace's id, so the queue answers for it
 		PeerID:            string(target.PeerID),
 		RepowireSessionID: d.sessionIDForPeer(ctx, &target.PeerID),
 		Kind:              state.DeliveryNotify,

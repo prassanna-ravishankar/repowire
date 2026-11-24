@@ -3,6 +3,8 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"testing"
@@ -16,8 +18,13 @@ import (
 var wireNow = time.Date(2026, 12, 1, 12, 0, 0, 0, time.UTC)
 
 type fakeWireLedger struct {
-	rows  map[string][]state.TraceRow
-	turns map[string]int // peer -> assistant turns in any window
+	rows   map[string][]state.TraceRow
+	turns  map[string]int  // peer -> assistant turns in any window
+	queued map[string]bool // delivery ids still in the queue
+}
+
+func (f *fakeWireLedger) DeliveryQueued(_ context.Context, id string, _ time.Time) (bool, error) {
+	return f.queued[id], nil
 }
 
 func (f *fakeWireLedger) add(id, kind, stage, status, peer, from string, at time.Time, detail map[string]any) {
@@ -172,12 +179,7 @@ func TestWireStuckSignalsCountFromTheCurrentAssignment(t *testing.T) {
 	if got := thread(ignored); strings.Join(got.Stuck, ",") != "slow" {
 		t.Fatalf("slow: %+v", got)
 	}
-	// A notify queued past its threshold is undelivered.
-	ledger.add("dlv-1", "notify", "created", "ok", "", "repow-a", time.Now(), nil)
-	ledger.add("dlv-1", "notify", "queued", "ok", "repow-b", "repow-a", time.Now(), nil)
-	if got := thread("dlv-1"); got.State != "queued" || strings.Join(got.Stuck, ",") != "undelivered" {
-		t.Fatalf("notify: %+v", got)
-	}
+
 	if page, _ := w.Threads(ctx, WireFilter{StuckOnly: true, Kind: "ask"}); len(page.Threads) != 2 {
 		t.Fatalf("stuck asks = %d, want 2", len(page.Threads))
 	}
@@ -244,5 +246,72 @@ func TestWireFiltersAndPagesNewestFirst(t *testing.T) {
 	}
 	if _, err := w.Threads(ctx, WireFilter{Cursor: "not-a-cursor"}); err != ErrWireCursor {
 		t.Fatalf("bad cursor: %v", err)
+	}
+}
+
+// Stage sequences as the messaging routes and the ask lifecycle record them
+// (hub/routes_messaging.go, hub/testdata/ask_characterization).
+func TestWireReadsTheStagesTheDaemonWrites(t *testing.T) {
+	ctx := context.Background()
+	ledger := &fakeWireLedger{queued: map[string]bool{}}
+	w, _ := newTestWire(ledger, testPeers())
+	at := time.Now().Add(-20 * time.Minute)
+	w.now = time.Now
+	notify := func(id string, stages ...state.TraceRow) {
+		ledger.add(id, "notify", "created", "", "", "repow-a", at, map[string]any{"to_peer": "beta"})
+		ledger.add(id, "notify", "resolved_peer", "", "repow-b", "repow-a", at, nil)
+		for _, st := range stages {
+			ledger.add(id, "notify", st.Stage, st.Status, "repow-b", "repow-a", at, st.Detail)
+		}
+	}
+	notify("notif-queued", state.TraceRow{Stage: "pending", Detail: map[string]any{"reason": "offline"}})
+	ledger.queued["notif-queued"] = true
+	notify("notif-drained", state.TraceRow{Stage: "pending"})
+	notify("notif-receipt", state.TraceRow{Stage: "thread_input_accepted"})
+	notify("notif-noreceipt", state.TraceRow{Stage: "websocket_sent", Detail: map[string]any{"transport": "ws", "verified": false}})
+	notify("notif-remote", state.TraceRow{Stage: "remote_queued"})
+	notify("notif-failed", state.TraceRow{Stage: "no_connection", Status: "fail"})
+	for id, want := range map[string]string{
+		"notif-queued": "queued undelivered", "notif-drained": "unverified", "notif-receipt": "delivered",
+		"notif-noreceipt": "unverified", "notif-remote": "remote_queued", "notif-failed": "failed",
+	} {
+		got, _, err := w.Thread(ctx, id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if s := strings.TrimSpace(got.State + " " + strings.Join(got.Stuck, ",")); s != want {
+			t.Errorf("%s = %q, want %q", id, s, want)
+		}
+	}
+
+	// A busy holder: the recorded ask stages for a deferred delivery.
+	raw, err := os.ReadFile(filepath.Join("..", "hub", "testdata", "ask_characterization", "defaults__deferred_busy_target.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fixture struct {
+		Traces []struct {
+			Stage, Status, Peer, From string
+			Detail                    map[string]any
+		} `json:"traces"`
+	}
+	if err := json.Unmarshal(raw, &fixture); err != nil || len(fixture.Traces) == 0 {
+		t.Fatalf("fixture: %v", err)
+	}
+	cid, err := w.asks.Register(ctx, RegisterAskParams{FromPeerID: "repow-a", ToPeerID: "repow-b", SkipHistory: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, st := range fixture.Traces {
+		ledger.add(cid, "ask", st.Stage, st.Status, st.Peer, st.From, time.Now(), st.Detail)
+	}
+	if got, _, _ := w.Thread(ctx, cid); got.State != "deferred" {
+		t.Fatalf("busy holder: state %q, want deferred", got.State)
+	}
+
+	// wire_show resolves only ask and notify threads.
+	ledger.add("route-1", "route", "route_decision", "", "", "", at, nil)
+	if _, ok, _ := w.Thread(ctx, "route-1"); ok {
+		t.Fatal("a non-thread trace was shown")
 	}
 }
