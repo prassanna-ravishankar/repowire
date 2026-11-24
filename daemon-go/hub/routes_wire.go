@@ -2,6 +2,7 @@ package hub
 
 import (
 	"context"
+	"crypto/subtle"
 	"errors"
 	"fmt"
 	"net/http"
@@ -31,6 +32,70 @@ func (h *Hub) registerWireRoutes(mux *http.ServeMux) {
 	}
 	mux.HandleFunc("GET /wire/threads", h.requireAuth(h.handleWireThreads))
 	mux.HandleFunc("GET /wire/threads/{thread_id}", h.requireAuth(h.handleWireThread))
+	// Actions (rfcs/wire-actions.md) mutate other peers' asks: operator proof
+	// only, never requireAuth's tokenless or local-dashboard pass.
+	mux.HandleFunc("POST /wire/threads/{thread_id}/reassign", h.requireOperator(h.handleWireAction("reassign")))
+	mux.HandleFunc("POST /wire/threads/{thread_id}/nudge", h.requireOperator(h.handleWireAction("nudge")))
+	mux.HandleFunc("POST /wire/threads/{thread_id}/cancel", h.requireOperator(h.handleWireAction("cancel")))
+}
+
+// requireOperator admits only a request carrying the daemon token. Unlike
+// requireAuth it has no tokenless or same-origin pass, which any local
+// process can satisfy; a daemon without a token refuses. On a machine where
+// agents run as the same user, the token file is the limit of this proof
+// (#581).
+func (h *Hub) requireOperator(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if h.authToken == "" {
+			writeError(w, http.StatusForbidden, "Operator actions need daemon.auth_token set")
+			return
+		}
+		got, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
+		if !ok || subtle.ConstantTimeCompare([]byte(got), []byte(h.authToken)) != 1 {
+			writeError(w, http.StatusUnauthorized, "Operator actions need the daemon token")
+			return
+		}
+		next(w, r)
+	}
+}
+
+// WireActionRequest is the body of the wire action routes.
+type WireActionRequest struct {
+	To     string `json:"to,omitempty"`     // reassign
+	Reason string `json:"reason,omitempty"` // reassign, cancel
+	Note   string `json:"note,omitempty"`   // nudge
+}
+
+func (h *Hub) handleWireAction(action string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var req WireActionRequest
+		if !decodeJSON(w, r, &req) {
+			return
+		}
+		cid, ok, err := h.wire.Resolve(r.Context(), r.PathValue("thread_id"))
+		if err != nil {
+			writeJSONError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		if !ok {
+			writeJSONError(w, http.StatusNotFound, "No thread: "+r.PathValue("thread_id"))
+			return
+		}
+		var result WireActionResult
+		switch action {
+		case "reassign":
+			result, err = h.reassignAsk(r.Context(), cid, req.To, req.Reason)
+		case "cancel":
+			result, err = h.cancelAsk(r.Context(), cid, req.Reason)
+		default:
+			result, err = h.nudgeAsk(r.Context(), cid, req.Note)
+		}
+		if err != nil {
+			writeRouteError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, result)
+	}
 }
 
 func (h *Hub) handleWireThreads(w http.ResponseWriter, r *http.Request) {

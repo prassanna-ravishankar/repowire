@@ -122,26 +122,11 @@ func (h *Hub) delegateAsk(ctx context.Context, cid string, req DelegateRequest) 
 		"note": clipTraceText(hop.Note), "hops": len(moved.Delegations),
 	})
 
-	delivered, err := h.ask.delivery.DeliverAsk(ctx, service.DeliverAskParams{
-		FromPeer:      string(hop.FromPeerID),
-		ToPeer:        string(target.PeerID),
-		Text:          delegatedText(hop, moved),
-		CorrelationID: cid,
-		BypassCircle:  true, // the delegator was authorized against the target above
-		Attachments:   moved.Attachments,
-		Question:      moved.Question,
-	})
+	// The delegator was authorized against the target above.
+	delivered, err := h.deliverHop(ctx, ask, moved, hop, string(hop.FromPeerID), delegatedText(hop, moved))
 	if err != nil {
-		h.traceAsk(ctx, cid, "delegate_failed", "fail", ask, map[string]any{"to_peer_id": string(target.PeerID), "error": err.Error()})
-		if !h.ask.asks.UndoDelegation(ctx, cid, hop) {
-			// Only a path that does not claim (eviction, a demotion closing
-			// the target's asks) can get here: the ask is no longer open.
-			return DelegateResponse{}, routeErr(http.StatusGone, fmt.Sprintf(
-				"Delivery to %s failed (%s) and ask %s was closed meanwhile.", hop.ToName, err, cid))
-		}
-		return DelegateResponse{}, delegateDeliveryErr(cid, hop, err)
+		return DelegateResponse{}, err
 	}
-	recordDeliveryOutcome(ctx, h.deliveryTraces, cid, "ask", string(target.PeerID), string(moved.FromPeerID), delivered.Transport, delivered.HookDelivery)
 	h.ask.reg.AddEvent(ctx, "ask_delegated", map[string]any{
 		"correlation_id": cid,
 		"from":           string(hop.FromName), "from_peer_id": string(hop.FromPeerID),
@@ -156,6 +141,35 @@ func (h *Hub) delegateAsk(ctx context.Context, cid string, req DelegateRequest) 
 		MessageID:     delivered.MessageID,
 		Delegations:   delegationViews(moved.Delegations),
 	}, nil
+}
+
+// deliverHop delivers a hand-off (a delegation or a reassign) to its new
+// holder, under the Claim that made it: sender is who the new holder hears it
+// from. A failed delivery undoes the hop, returning the ask to its previous
+// holder, and fails loudly. before is the ask as claimed, moved as moved.
+func (h *Hub) deliverHop(ctx context.Context, before, moved *service.Ask, hop service.Delegation, sender, text string) (service.AskResult, error) {
+	cid := moved.CorrelationID
+	delivered, err := h.ask.delivery.DeliverAsk(ctx, service.DeliverAskParams{
+		FromPeer:      sender,
+		ToPeer:        string(hop.ToPeerID),
+		Text:          text,
+		CorrelationID: cid,
+		BypassCircle:  true, // the caller authorized the hand-off
+		Attachments:   moved.Attachments,
+		Question:      moved.Question,
+	})
+	if err != nil {
+		h.traceAsk(ctx, cid, "delegate_failed", "fail", before, map[string]any{"to_peer_id": string(hop.ToPeerID), "error": err.Error()})
+		if !h.ask.asks.UndoDelegation(ctx, cid, hop) {
+			// Only a path that does not claim (eviction, a demotion closing
+			// the target's asks) can get here: the ask is no longer open.
+			return service.AskResult{}, routeErr(http.StatusGone, fmt.Sprintf(
+				"Delivery to %s failed (%s) and ask %s was closed meanwhile.", hop.ToName, err, cid))
+		}
+		return service.AskResult{}, delegateDeliveryErr(cid, hop, err)
+	}
+	recordDeliveryOutcome(ctx, h.deliveryTraces, cid, "ask", string(hop.ToPeerID), string(moved.FromPeerID), delivered.Transport, delivered.HookDelivery)
+	return delivered, nil
 }
 
 // delegateTarget resolves the new recipient and authorizes the current one

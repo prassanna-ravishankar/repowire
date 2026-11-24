@@ -947,6 +947,17 @@ func resolveClaimErr(cid string, err error) error {
 // two racing resolutions, or a resolution racing a delegation, exactly one
 // gets here.
 func (h *Hub) deliverAskResolution(ctx context.Context, ask *service.Ask, frameKind, closeReason, message string, attachments []map[string]any) error {
+	threadText := message
+	if frameKind == "declined" {
+		threadText = "Declined: " + message
+	}
+	return h.deliverResolution(ctx, ask, string(ask.ToPeerID), ask.ReplyFrame(frameKind)+" "+message, threadText, closeReason, message, attachments)
+}
+
+// deliverResolution is deliverAskResolution with the sender and the framed
+// text chosen by the caller: the holder for a reply, the operator for a
+// cancel.
+func (h *Hub) deliverResolution(ctx context.Context, ask *service.Ask, sender, framed, threadText, closeReason, message string, attachments []map[string]any) error {
 	if ask.ReplyDelivery == "pull" {
 		if _, closed := h.ask.asks.Resolve(ctx, ask.CorrelationID, closeReason, &message, attachments); !closed {
 			if err := h.heldOpen(ask.CorrelationID); err != nil {
@@ -957,13 +968,8 @@ func (h *Hub) deliverAskResolution(ctx context.Context, ask *service.Ask, frameK
 		return nil
 	}
 
-	framed := ask.ReplyFrame(frameKind) + " " + message
-	threadText := message
-	if frameKind == "declined" {
-		threadText = "Declined: " + message
-	}
 	res, err := h.ask.delivery.Notify(ctx, service.NotifyParams{
-		FromPeer: string(ask.ToPeerID), ToPeer: string(ask.FromPeerID), Text: framed,
+		FromPeer: sender, ToPeer: string(ask.FromPeerID), Text: framed,
 		BypassCircle: true, Attachments: attachments,
 		CorrelationID: ask.CorrelationID, ThreadText: threadText,
 	})

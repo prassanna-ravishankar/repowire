@@ -119,6 +119,14 @@ repowire wire show THREAD_ID [--json]
 
 The operator's view of ask and notify threads across every circle, from `GET /wire/threads`: who asked whom, who holds each ask now, its state and stuck signals. Metadata only, like the orchestrator's [`wire_query`](mcp-tools.md#wire_query) and `wire_show`, which print the same text. `--since` takes a duration (`90m`, `24h`) or days (`7d`). For a thread's message text, the operator still has `repowire trace`.
 
+```bash
+repowire wire reassign THREAD_ID PEER --reason "better fit"   # move an open ask
+repowire wire nudge THREAD_ID [--note "any news?"]           # remind the holder (once per 10 minutes)
+repowire wire cancel THREAD_ID --reason "no longer needed"   # close it; the asker gets the reason
+```
+
+These are the operator's actions ([HTTP API](http-api.md)). They need `daemon.auth_token`: the CLI sends it, and the daemon accepts nothing else for them. A reassign tells the old holder and the asker; a cancel tells the holder and gives the asker the reason as the ask's outcome.
+
 ## `repowire peer`
 
 ```bash
