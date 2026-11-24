@@ -157,6 +157,8 @@ function ChatTab({
   // agent frame), never on a timer.
   useEffect(() => {
     let cancelled = false;
+    // Retention deleted this retired agent with its conversation.
+    if (agent.purged_at) return;
     managedApi.messages(agent.id).then(
       (raw) => {
         if (cancelled) return;
@@ -170,7 +172,7 @@ function ChatTab({
     return () => {
       cancelled = true;
     };
-  }, [agent.id, agent.state, agent.state_at, reload]);
+  }, [agent.id, agent.state, agent.state_at, agent.purged_at, reload]);
 
   const count = (items?.length ?? 0) + outgoing.length;
   useEffect(() => {
@@ -181,7 +183,11 @@ function ChatTab({
     <>
       <div ref={scroller} className="min-h-0 flex-1 overflow-y-auto">
         {error && <InlineError className="m-4" error={error} onRetry={() => setReload((n) => n + 1)} />}
-        {items === null && !error ? (
+        {agent.purged_at ? (
+          <EmptyState icon={<Send className="h-6 w-6" />} title="Conversation deleted">
+            This retired agent&apos;s conversation was deleted on {formatDate(agent.purged_at)} under the retention policy.
+          </EmptyState>
+        ) : items === null && !error ? (
           <SkeletonRows />
         ) : items && items.length === 0 && outgoing.length === 0 ? (
           <EmptyState icon={<Send className="h-6 w-6" />} title="No messages yet">

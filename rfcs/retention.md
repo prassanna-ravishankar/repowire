@@ -95,7 +95,15 @@ The hosted runtime follows the same policy (`hosted/src/retention.ts`).
   - `agents`, `workspaces`: exempt, as identity and live state.
   - `usage_event`, `usage_day`: exempt, as the billing ledger.
 - **Sweep:** owned by the Gateway Durable Object. It runs at most hourly, when a report, a daemon connect or a cross-machine request finds one due, in batches of 500 rows with a per-sweep budget. It never runs on a timer.
-- **Not yet covered:** each agent's own storage (the Pi conversation and per-operation markers) and workspace snapshots (#587).
+- **Each agent's own records** (`HostedAgent`). The per-operation dedupe markers `reported:<op>` and `undelivered:<op>` record when they were set. The agent sweeps them at most hourly, on its own submits, using the owner's policy from the Gateway.
+  - They expire with records, never sooner than the cross-machine window or the ask lifetime, since a resend or read-back of the id can come until then.
+  - With records kept forever, they are kept forever too.
+  - `report:<op>` and `steps:<op>` are live until the report lands, and are removed then.
+- **Retired agents and unused workspaces go whole** (#587). When the Gateway sweeps, it asks a few retired agents, and workspaces no live agent uses, to delete themselves. Each must be past the content age (no later than records), with the same floors as the markers.
+  - An agent goes only with no open run, no open cross-machine record and nothing unreported. It stops its lifecycle and pi in memory, then deletes its whole Durable Object storage: conversation, operation records and markers. It keeps one fence, a configuration marked retired and purged, so the id never runs again: reads of it answer fenced or expired, and creating the id again is refused (410).
+  - A workspace goes only while no container runs and no command ran since the cutoff, and forgets its snapshot. The Gateway claims it first, and no agent can take it up until the deletion ends. There is no Worker API to delete a snapshot, so the last one expires on the platform 30 days after it was taken or last restored.
+  - The Gateway rows stay, marked `purged_at`, as identity. A workspace taken up again starts empty, and `/managed` shows a deleted conversation as deleted.
+- **Not covered: a live agent's old transcript.** pi-durable keeps every entry by design (compaction and reset only hide old entries from the model), and it has no API to delete them. Deleting its rows underneath it would break its invariants, so live-agent trimming waits for an upstream API (drafted, held for Prass).
 
 ## Readers
 

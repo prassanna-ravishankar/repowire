@@ -180,3 +180,29 @@ test('a retry still finds its request after retention has stripped the text', as
   assert.equal((await retry.json()).created, false);
   assert.equal((await call('POST', '/requests', ask(40, { text: 'something else' }))).status, 409);
 });
+
+test('a retired agent id cannot be created again, so none of its operations can run twice', async () => {
+  const { call, agent } = relay();
+  await agent.retire();
+  const again = await call('POST', '/agents', { id: 'a' });
+  assert.equal(again.status, 410);
+});
+
+test('an agent whose workspace is being deleted is admitted nothing until the deletion ends', async () => {
+  const gatewayState = fakeState();
+  const parts = hostedAgent(new Gateway(gatewayState as never, {}), 'daemon');
+  // The agent exists but its directory row does not (a create the purge
+  // refused), and its workspace is mid-deletion.
+  parts.state.storage.kv.put('config', { owner: 'alice', id: 'b', workspace: 'w' });
+  gatewayState.storage.sql.exec(`INSERT INTO workspaces (id, purging_at) VALUES ('w', ?)`, new Date().toISOString());
+  const env = {
+    CONTROL_TOKEN: 'control', HOSTED_TOKEN: 'daemon', HOSTED_OWNER: 'alice',
+    GATEWAYS: { getByName: () => parts.directory }, AGENTS: { getByName: () => parts.agent },
+  };
+  const sent = await worker.fetch(new Request('https://hosted/agents/b/messages', {
+    method: 'POST', body: JSON.stringify({ text: 'hello', operationId: 'op-1' }),
+    headers: { Authorization: 'Bearer daemon' },
+  }), env as never);
+  assert.equal(sent.status, 409);
+  assert.equal(parts.pi.submitted.size, 0);
+});

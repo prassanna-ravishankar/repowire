@@ -61,6 +61,9 @@ export function hostedAgent(directory = new Gateway(fakeState() as never, {}), c
     admission: serial(), watching: new Set(), harness: pi,
     lifecycle: {
       start: async () => {},
+      stopped: [] as string[],
+      async disableAlarms() { this.stopped.push('alarms'); },
+      async dispose() { this.stopped.push('disposed'); },
       jobs: { get: (id: string) => jobs.get(id), push: async (job: { id: string; fn: string; time: number }) => void jobs.set(job.id, job) },
     },
   });

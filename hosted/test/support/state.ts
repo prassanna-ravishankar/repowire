@@ -27,14 +27,17 @@ export function fakeState() {
     },
   };
   // SQLite-backed objects share one store between the async and sync KV APIs.
-  const list = (prefix = '') => [...kv].filter(([key]) => key.startsWith(prefix)).sort(([a], [b]) => a.localeCompare(b));
+  const list = (prefix = '', startAfter?: string, limit?: number) => [...kv]
+    .filter(([key]) => key.startsWith(prefix) && (startAfter === undefined || key > startAfter))
+    .sort(([a], [b]) => a.localeCompare(b))
+    .slice(0, limit);
   const storage = {
     sql,
     kv: {
       get: (key: string) => kv.get(key),
       put: (key: string, value: unknown) => void kv.set(key, value),
       delete: (key: string) => kv.delete(key),
-      list: ({ prefix }: { prefix?: string } = {}) => list(prefix),
+      list: ({ prefix, startAfter, limit }: { prefix?: string; startAfter?: string; limit?: number } = {}) => list(prefix, startAfter, limit),
     },
     transactionSync: <T>(closure: () => T) => closure(),
     get: async (key: string) => kv.get(key),
@@ -43,9 +46,17 @@ export function fakeState() {
       else for (const [k, v] of Object.entries(key)) kv.set(k, v);
     },
     delete: async (key: string) => kv.delete(key),
+    deleteAlarm: async () => {},
+    // Everything this object stores: its key-value pairs and its tables.
+    deleteAll: async () => {
+      kv.clear();
+      for (const { name } of db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'").all() as { name: string }[]) {
+        db.exec(`DROP TABLE "${name}"`);
+      }
+    },
     list: async ({ prefix }: { prefix?: string } = {}) => new Map(list(prefix)),
   };
   // waitUntil keeps background work alive; here it runs and its failure is the test's to see.
   const background: Promise<unknown>[] = [];
-  return { storage, getWebSockets: () => [], acceptWebSocket: () => {}, getTags: () => [], background, waitUntil: (work: Promise<unknown>) => void background.push(work) };
+  return { storage, blockConcurrencyWhile: <T>(fn: () => Promise<T>) => fn(), getWebSockets: () => [], acceptWebSocket: () => {}, getTags: () => [], background, waitUntil: (work: Promise<unknown>) => void background.push(work) };
 }

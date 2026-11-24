@@ -15,6 +15,7 @@ import { Workspace, type ExecOutcome } from './workspace';
 import { DEFAULT_CIRCLE, sharedCircle } from './circles';
 import { followUp } from './mesh';
 import { remoteRoute } from './remote';
+import { markerAge, SWEEP_INTERVAL_MS } from './retention';
 export { Gateway, Registry, Workspace };
 
 interface Env {
@@ -30,7 +31,9 @@ interface Env {
   // The relay, for settlement pushes to a source machine.
   RELAY_URL?: string;
 }
-interface AgentConfig { owner: string; id: string; workspace: string | null; retired?: boolean }
+// A purged agent keeps only this, retired and purged, as its fence: its id
+// never runs again, and its records are gone.
+interface AgentConfig { owner: string; id: string; workspace: string | null; retired?: boolean; purged?: boolean }
 export type OperationState =
   | { status: 'fenced' | 'durable' | 'absent' }
   | { status: 'terminal'; result: { status: string; reason: string | null; text: string | null } };
@@ -39,6 +42,8 @@ export type OperationState =
 interface Unreported { source: string | null; startedAt?: string; usage?: TokenUsage; via?: Via }
 
 const REPORT_JOB = 'report';
+// Markers one sweep looks at, so a sweep on a submit's path stays small.
+const MARKER_BUDGET = 2000;
 
 export class HostedAgent extends DurableObject<Env> {
   private runtimeId = crypto.randomUUID();
@@ -102,7 +107,8 @@ export class HostedAgent extends DurableObject<Env> {
             if (!config?.workspace) throw new Error('This agent has no workspace attached');
             const owner = this.owner(config);
             const workspace = this.env.WORKSPACES.getByName(scopedName(config.owner, config.workspace));
-            await owner.execStarted(config.workspace);
+            // Refused, before anything runs, while the workspace is being deleted.
+            await owner.execStarted(config.workspace, config.id);
             const started = Date.now();
             let outcome: ExecOutcome | undefined;
             try {
@@ -175,6 +181,7 @@ export class HostedAgent extends DurableObject<Env> {
         const entry = source && { kind: 'repowire.message', data: source };
         const receipt = await this.harness.submit(text, { operationId, entry });
         this.watch(operationId);
+        this.ctx.waitUntil(this.housekeep(config).catch((error) => console.error('Hosted agent retention sweep failed', error)));
         return receipt;
       } catch (error) {
         // Withdraw the pending run only when pi does not have the operation;
@@ -194,7 +201,7 @@ export class HostedAgent extends DurableObject<Env> {
   async forget(operationId: string) {
     return this.admission(async () => {
       if (this.kv.get(`report:${operationId}`) || this.kv.get(`reported:${operationId}`)) return false;
-      this.kv.put(`undelivered:${operationId}`, true);
+      this.kv.put(`undelivered:${operationId}`, Date.now());
       return true;
     });
   }
@@ -202,8 +209,12 @@ export class HostedAgent extends DurableObject<Env> {
   // An operation's outcome as its report states it, for a reader that cannot
   // wait for the report to land.
   async outcome(operationId: string) {
+    if ((await this.config())?.purged) {
+      const expired: { status: 'unanswered' | 'done'; reason: string | undefined; text: string | undefined } = { status: 'unanswered', reason: 'expired', text: undefined };
+      return expired;
+    }
     const result = await this.harness.wait(operationId);
-    return { ...result, reason: this.reason(operationId, result), text: result.text?.slice(0, REPORT_TEXT_LIMIT) };
+    return { status: result.status, reason: this.reason(operationId, result), text: result.text?.slice(0, REPORT_TEXT_LIMIT) };
   }
 
   // An operation's state as pi records it (rfcs/managed-in-the-mesh.md), in
@@ -220,13 +231,15 @@ export class HostedAgent extends DurableObject<Env> {
       if (found.status !== 'absent') return found;
       const config = await this.config();
       if (config && this.kv.get(`report:${operationId}`)) await this.withdraw(config, operationId);
-      this.kv.put(`undelivered:${operationId}`, true);
+      this.kv.put(`undelivered:${operationId}`, Date.now());
       return { status: 'fenced' };
     });
   }
 
   private async classify(operationId: string): Promise<OperationState> {
     if (this.kv.get(`undelivered:${operationId}`)) return { status: 'fenced' };
+    // A purged agent's records are gone, and it never runs again.
+    if ((await this.config())?.purged) return { status: 'fenced' };
     if ((await this.harness.pending()).some((op) => op.operationId === operationId)) return { status: 'durable' };
     // Not pending: pi answers at once, with its stored result or not_found.
     const result = await this.harness.wait(operationId);
@@ -237,6 +250,69 @@ export class HostedAgent extends DurableObject<Env> {
   private reason(operationId: string, result: PiOperationResult) {
     const limited = result.status === 'unanswered' && (this.kv.get<number>(`steps:${operationId}`) ?? 0) > LIMITS.stepsPerRun;
     return limited ? stepLimitReason(LIMITS.stepsPerRun) : result.reason;
+  }
+
+  // ---- retention (rfcs/retention.md, "Hosted") ------------------------------
+  // This agent's own records: the per-operation dedupe markers `reported:<op>`
+  // and `undelivered:<op>` (each holds the time it was set). They guard an
+  // operation id against a second run while anything may still resend or
+  // read it: the daemon's open delivery, the relay's request record, a remote
+  // record within the cross-machine window. So they expire with the owner's
+  // records, never sooner than that window or the ask lifetime, and never
+  // when records are kept forever. `report:<op>` and `steps:<op>` are live
+  // until the report lands, and are removed then. The conversation belongs to
+  // pi-durable, which keeps every entry; it goes only with the whole agent
+  // (purge), and live trimming waits on an upstream API.
+  async housekeep(config: AgentConfig, nowMs = Date.now()) {
+    const last = this.kv.get<number>('retention:swept_at') ?? 0;
+    if (nowMs - last < SWEEP_INTERVAL_MS) return null;
+    this.kv.put('retention:swept_at', nowMs);
+    const policy = await this.owner(config).retentionPolicy();
+    const age = markerAge(policy);
+    if (age === 0) return {};
+    const cutoff = nowMs - age * 1000;
+    let removed = 0;
+    let budget = MARKER_BUDGET;
+    // Each prefix is paged from where the last sweep stopped, so every marker
+    // gets its turn however many there are.
+    for (const prefix of ['reported:', 'undelivered:']) {
+      if (budget <= 0) break;
+      const cursorKey = `retention:cursor:${prefix}`;
+      const after = this.kv.get<string>(cursorKey);
+      const page = [...this.kv.list<number | boolean>({ prefix, ...(after ? { startAfter: after } : {}), limit: budget })];
+      for (const [key, at] of page) {
+        // A marker from before timestamps: its age starts now.
+        if (typeof at !== 'number') this.kv.put(key, nowMs);
+        else if (at < cutoff) { this.kv.delete(key); removed++; }
+      }
+      budget -= page.length;
+      if (page.length && budget <= 0) this.kv.put(cursorKey, page.at(-1)![0]);
+      else this.kv.delete(cursorKey);
+    }
+    return { 'agent.markers': removed };
+  }
+
+  // Deletes a retired agent whole: its conversation, its operation records and
+  // markers, and its configuration. Only once nothing is in flight or waiting
+  // to be reported, so no result is lost. The owner's Gateway asks for it
+  // (a retired agent has no requests of its own) and keeps the agent's row as
+  // its identity tombstone.
+  async purge(): Promise<{ purged: boolean; reason?: string }> {
+    return this.admission(async () => {
+      const config = await this.config();
+      if (!config || config.purged) return { purged: true };
+      if (!config.retired) return { purged: false, reason: 'live' };
+      if ((await this.harness.pending()).length || [...this.kv.list({ prefix: 'report:' })].length) return { purged: false, reason: 'pending' };
+      // Stop everything in memory first, so nothing touches or rearms the
+      // storage being deleted. A retired agent restarts none of it: submit
+      // refuses before starting the lifecycle, and reads answer from the
+      // fence below.
+      await this.lifecycle.disableAlarms();
+      await this.lifecycle.dispose();
+      await this.ctx.storage.deleteAll();
+      await this.ctx.storage.put('config', { owner: config.owner, id: config.id, workspace: config.workspace, retired: true, purged: true });
+      return { purged: true };
+    });
   }
 
   async abort(operationId?: string) {
@@ -345,7 +421,7 @@ export class HostedAgent extends DurableObject<Env> {
     this.ctx.storage.transactionSync(() => {
       this.kv.delete(key);
       this.kv.delete(`steps:${operationId}`);
-      this.kv.put(`reported:${operationId}`, true);
+      this.kv.put(`reported:${operationId}`, Date.now());
     });
   }
 
@@ -400,6 +476,8 @@ async function createAgent(env: Env, caller: Caller, request: Request, input: Re
   const homeMachine = daemon ? request.headers.get('X-Repowire-Machine')?.slice(0, 200) || null : null;
   const known = await directory.agent(id);
   if (known && (known.created_by === 'daemon') !== daemon) throw new HttpError(409, `Agent ${id} belongs to ${daemon ? 'managed' : 'a daemon'}`);
+  // A retired id stays retired, purged or not: it never runs again.
+  if (known?.retired_at) throw new HttpError(410, `Agent ${id} is retired; its id cannot be used again`);
   const result = await env.AGENTS.getByName(scopedName(owner, id)).spawn({ owner, id, workspace });
   if (result.agent.workspace !== workspace) throw new HttpError(409, 'Agent already exists with a different workspace');
   await directory.owner(owner);
@@ -417,7 +495,11 @@ async function agentRoute(env: Env, caller: Caller, request: Request, id: string
   const directory = env.GATEWAYS.getByName(owner);
   // Lazy repair: an agent created before the directory existed gets its row
   // the first time it is addressed.
-  if (!await directory.agent(id)) await directory.addAgent({ id, workspace: config.workspace, created_by: 'daemon' });
+  // A conflict (the workspace is being deleted) admits nothing.
+  if (!await directory.agent(id)) {
+    const repaired = await directory.addAgent({ id, workspace: config.workspace, created_by: 'daemon' });
+    if (repaired && 'conflict' in repaired) throw new HttpError(409, String(repaired.conflict));
+  }
   if (!rest) {
     if (request.method === 'GET') {
       const status = await agent.status();

@@ -41,7 +41,7 @@ export function agentSubline(agent: Agent, now: number): string {
     case "failed":
       return [agent.last_reason || "failed", formatAgo(agent.state_at, now)].join(" · ");
     case "retired":
-      return `retired ${formatDate(agent.retired_at ?? agent.state_at)}`;
+      return `retired ${formatDate(agent.retired_at ?? agent.state_at)}${agent.purged_at ? " · conversation deleted" : ""}`;
     case "parked":
       return [agent.last_reason, `since ${formatAgo(agent.state_at, now)}`].filter(Boolean).join(" · ");
     default:

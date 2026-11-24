@@ -686,7 +686,7 @@ expires it.
 - The relay sends it to the account's Gateway on the owner-status channel,
   with the status version.
 - The Gateway sweeps by it, and so does each agent and workspace Durable
-  Object (`rfcs/retention.md`, "Hosted"; #587).
+  Object (`rfcs/retention.md`, "Hosted").
 - Until accounts exist, the Gateway keeps each connected daemon's policy and
   sweeps by the most conservative of them (#600), so no machine can shorten
   retention for another.
@@ -698,9 +698,12 @@ Each step is recovered on request until done:
 1. The account's blockers close admission at once, through the
    owner-status lease and abort worklist above.
 2. Once nothing is running or held, the Worker deletes the owner's agents
-   with their conversations and per-operation records, its workspaces with
-   their snapshots, and its Gateway content (runs, requests and
-   cross-machine records).
+   with their conversations and per-operation records, its workspaces, and
+   its Gateway content (runs, requests and cross-machine records). One
+   residue remains, and the privacy policy must say so: the Worker API
+   cannot delete a container snapshot, so a workspace's last snapshot stays
+   on Cloudflare, unreachable, until it expires 30 days after it was taken
+   or last restored.
 3. Kept as the law requires: the ledger (lots, usage, versions, refund and
    dispute ids) and the dedupe tombstones, as under "Retention of relay
    records" below. They hold no conversation content.

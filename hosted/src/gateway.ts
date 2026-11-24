@@ -4,13 +4,21 @@ import { execCost, modelCost, type TokenUsage } from './prices';
 import { followUp, managedTool, type MeshEnv } from './mesh';
 import { MANAGED, remoteResult } from './protocol';
 import { mostConservative, parsePolicy, SWEEP_INTERVAL_MS, sweep, type RetentionPolicy, type TableRetention } from './retention';
-import type { ExecOutcome } from './workspace';
+import type { ExecOutcome, Workspace } from './workspace';
+import type { HostedAgent } from './index';
+import { scopedName } from './http';
+import { wholeAge } from './retention';
 
 // How long an agent's tool call waits for the daemon before failing.
 const CALL_TIMEOUT_MS = 60_000;
 // Keep an outbox entry well inside the storage value limit.
 export const REPORT_TEXT_LIMIT = 64_000;
 const RECENT_CLIENTS = 20;
+// Agents and workspaces one sweep deletes whole, each a call to its own object.
+const PURGE_BATCH = 4;
+// A purge claim older than this was cut off (an eviction mid-call) and lapses.
+const PURGE_CLAIM_MS = 5 * 60_000;
+const purgeClaimFloor = () => new Date(Date.now() - PURGE_CLAIM_MS).toISOString();
 const MESH_TOOLS = new Set(['notify_peer', 'ask']);
 
 export interface GatewayCall { id: string; agent: string; tool: string; args: Record<string, unknown> }
@@ -110,6 +118,9 @@ const ADDED_COLUMNS = [
   'ALTER TABLE agents ADD COLUMN asks_rev INTEGER NOT NULL DEFAULT 0',
   'ALTER TABLE requests ADD COLUMN digest TEXT',
   'ALTER TABLE requests ADD COLUMN settled_at TEXT',
+  'ALTER TABLE agents ADD COLUMN purged_at TEXT',
+  'ALTER TABLE workspaces ADD COLUMN purged_at TEXT',
+  'ALTER TABLE workspaces ADD COLUMN purging_at TEXT',
 ];
 
 // A run as listed and pushed; its answer is fetched one run at a time.
@@ -193,7 +204,7 @@ export class Gateway extends DurableObject {
   // the tombstone that keeps its id from moving. A workspace row is the live
   // state of its container.
   static readonly directoryRetention: TableRetention = {
-    tables: ['agents', 'workspaces'], exempt: 'identity and live state, kept while the owner exists',
+    tables: ['agents', 'workspaces'], exempt: 'identity and live state, kept while the owner exists; a retired agent and an unused workspace are deleted whole by their own objects (purgeWhole)',
   };
 
   // The owner this object belongs to, recorded by the first caller that names it.
@@ -218,6 +229,11 @@ export class Gateway extends DurableObject {
         return { conflict: `Agent ${init.id} belongs to machine ${existing.home_machine}` };
       }
     }
+    // A workspace being deleted takes no new agent until the deletion ends:
+    // its files are going, whatever the newcomer expects of them.
+    if (init.workspace && this.sql.exec('SELECT 1 FROM workspaces WHERE id = ? AND purging_at > ?', init.workspace, purgeClaimFloor()).toArray().length) {
+      return { conflict: `Workspace ${init.workspace} is being deleted by retention; try again shortly` };
+    }
     const at = now();
     this.sql.exec(
       `INSERT INTO agents (id, workspace, display_name, home_machine, circle, created_at, created_by, state, state_at)
@@ -225,7 +241,8 @@ export class Gateway extends DurableObject {
        ON CONFLICT (id) DO UPDATE SET display_name = COALESCE(excluded.display_name, agents.display_name),
          home_machine = COALESCE(agents.home_machine, excluded.home_machine)`,
       init.id, init.workspace, init.display_name ?? null, home, init.circle ?? 'managed', at, init.created_by, at);
-    if (init.workspace) this.sql.exec('INSERT OR IGNORE INTO workspaces (id) VALUES (?)', init.workspace);
+    // A purged workspace taken up again starts empty.
+    if (init.workspace) this.sql.exec('INSERT INTO workspaces (id) VALUES (?) ON CONFLICT (id) DO UPDATE SET purged_at = NULL', init.workspace);
     return this.publish(init.id);
   }
 
@@ -323,7 +340,7 @@ export class Gateway extends DurableObject {
       id: row.id as string, agents: users.get(row.id as string) ?? [], exec_count: Number(row.exec_count),
       container_ms: Number(row.container_ms), last_exec_at: row.last_exec_at, snapshot_at: row.snapshot_at,
       // A failed checkpoint outranks activity: the files cannot be restored.
-      state: row.dirty ? 'needs_repair' : row.running ? 'running' : 'idle',
+      state: row.purged_at ? 'purged' : row.dirty ? 'needs_repair' : row.running ? 'running' : 'idle',
     }));
   }
 
@@ -626,7 +643,18 @@ export class Gateway extends DurableObject {
     this.ctx.waitUntil(send().catch((error) => console.warn('Remote settlement push failed; the source reads it back', row.id, error)));
   }
 
-  execStarted(workspace: string) {
+  // A command is about to run in workspace for agent. Refused while the
+  // workspace is being deleted, and an agent the directory has not seen yet
+  // (one from before it) is added first, under the same check. Once counted
+  // as running, the workspace cannot be claimed for deletion.
+  execStarted(workspace: string, agent?: string) {
+    if (agent && !this.agent(agent)) {
+      const added = this.addAgent({ id: agent, workspace, created_by: 'daemon' });
+      if (added && 'conflict' in added) throw new Error(String(added.conflict));
+    }
+    if (this.sql.exec('SELECT 1 FROM workspaces WHERE id = ? AND purging_at > ?', workspace, purgeClaimFloor()).toArray().length) {
+      throw new Error(`Workspace ${workspace} is being deleted by retention; try again shortly`);
+    }
     this.sql.exec('UPDATE workspaces SET running = running + 1 WHERE id = ?', workspace);
     this.publishWorkspace(workspace);
   }
@@ -783,9 +811,66 @@ export class Gateway extends DurableObject {
     // Stamped first: a sweep that throws waits for the next interval rather
     // than retrying on every request.
     this.ctx.storage.kv.put('retention:swept_at', nowMs);
-    const counts = this.ctx.storage.transactionSync(() => sweep(this.sql, Gateway.retention, this.retentionPolicy(), nowMs));
+    const policy = this.retentionPolicy();
+    const counts = this.ctx.storage.transactionSync(() => sweep(this.sql, Gateway.retention, policy, nowMs));
     if (Object.keys(counts).length) console.log('retention_swept', JSON.stringify(counts));
+    this.ctx.waitUntil(this.purgeWhole(policy, nowMs).catch((error) => console.error('Hosted purge failed', error)));
     return counts;
+  }
+
+  // Retired agents, and workspaces no live agent uses, past the whole-object
+  // age (src/retention.ts) are deleted by their own Durable Objects, a few per
+  // sweep. An agent goes only once it has no open run and no open
+  // cross-machine record. The rows stay, marked purged_at, as identity: an
+  // agent id never moves owner, and a workspace taken up again starts empty.
+  // A workspace's last snapshot cannot be deleted through the Worker API; it
+  // expires on the platform 30 days after it was taken or last restored.
+  async purgeWhole(policy = this.retentionPolicy(), nowMs = Date.now()) {
+    const age = wholeAge(policy);
+    const owner = await this.owner();
+    if (age === 0 || !owner) return { agents: 0, workspaces: 0 };
+    const cutoff = new Date(nowMs - age * 1000).toISOString();
+    const env = this.env as { AGENTS: DurableObjectNamespace<HostedAgent>; WORKSPACES: DurableObjectNamespace<Workspace> };
+    let agents = 0;
+    let workspaces = 0;
+    const retired = this.sql.exec(
+      `SELECT id FROM agents a WHERE retired_at IS NOT NULL AND purged_at IS NULL AND retired_at < ?
+         AND NOT EXISTS (SELECT 1 FROM runs r WHERE r.agent = a.id AND r.settled_at IS NULL)
+         AND NOT EXISTS (SELECT 1 FROM remote_inbound i WHERE i.to_agent = a.id AND i.state != 'settled')
+         AND NOT EXISTS (SELECT 1 FROM remote_outbound o WHERE o.from_agent = a.id AND (o.state != 'settled' OR o.delivered = 0))
+       ORDER BY retired_at LIMIT ?`, cutoff, PURGE_BATCH).toArray();
+    for (const row of retired) {
+      const id = row.id as string;
+      if ((await env.AGENTS.getByName(scopedName(owner, id)).purge()).purged) {
+        this.sql.exec('UPDATE agents SET purged_at = ? WHERE id = ? AND purged_at IS NULL', now(), id);
+        agents++;
+      }
+    }
+    const unused = this.sql.exec(
+      `SELECT id FROM workspaces w WHERE purged_at IS NULL AND running = 0 AND COALESCE(last_exec_at, '') < ?
+         AND NOT EXISTS (SELECT 1 FROM agents a WHERE a.workspace = w.id AND a.purged_at IS NULL)
+       ORDER BY id LIMIT ?`, cutoff, PURGE_BATCH).toArray();
+    // Each workspace is claimed while still unused, before its call: from then
+    // on no agent can take it up (addAgent refuses) until the claim ends. The
+    // workspace itself also refuses if a command ran there since the cutoff.
+    const stillUnused = `id = ? AND purged_at IS NULL AND NOT EXISTS (SELECT 1 FROM agents a WHERE a.workspace = workspaces.id AND a.purged_at IS NULL)`;
+    for (const row of unused) {
+      const id = row.id as string;
+      const claimed = this.sql.exec(`UPDATE workspaces SET purging_at = ? WHERE ${stillUnused} AND running = 0 AND (purging_at IS NULL OR purging_at <= ?)`,
+        now(), id, purgeClaimFloor()).rowsWritten;
+      if (!claimed) continue;
+      let done = false;
+      try {
+        done = await env.WORKSPACES.getByName(scopedName(owner, id)).purge(nowMs - age * 1000);
+      } finally {
+        this.sql.exec('UPDATE workspaces SET purging_at = NULL WHERE id = ?', id);
+      }
+      // Marked purged only if still unused: a claim that lapsed mid-call may
+      // have let an agent take the workspace up again.
+      if (done && this.sql.exec(`UPDATE workspaces SET purged_at = ? WHERE ${stillUnused}`, now(), id).rowsWritten) workspaces++;
+    }
+    if (agents || workspaces) console.log('retention_purged', JSON.stringify({ agents, workspaces }));
+    return { agents, workspaces };
   }
 
   private daemon() {
@@ -845,7 +930,7 @@ export class Gateway extends DurableObject {
     return {
       id: row.id as string, workspace: row.workspace, display_name: row.display_name, state: row.state, state_at: row.state_at,
       last_op: row.last_op, last_reason: row.last_reason, description: row.description, home_machine: row.home_machine, circle: row.circle, asks_rev: Number(row.asks_rev ?? 0),
-      created_at: row.created_at, created_by: row.created_by, retired_at: row.retired_at,
+      created_at: row.created_at, created_by: row.created_by, retired_at: row.retired_at, purged_at: row.purged_at ?? null,
       runs: Number(this.sql.exec('SELECT COUNT(*) AS n FROM runs WHERE agent = ?', row.id as string).one().n),
       tokens_in: totals.tokens_in, tokens_out: totals.tokens_out, cost_usd: totals.cost_usd,
     };
