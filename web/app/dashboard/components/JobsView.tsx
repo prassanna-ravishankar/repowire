@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react
 import { BriefcaseBusiness, Play, RefreshCw, RotateCcw, XCircle } from "lucide-react";
 import { cn, shortPath, timeAgo } from "../lib/utils";
 import type { JobStatus, JobsResponse, RecurringJobStatus } from "../types";
-import { EmptyState } from "./EmptyState";
+import { EmptyState } from "../../ui";
 
 type JobItem =
   | { type: "work"; id: string; status: JobStatus }
@@ -32,10 +32,10 @@ function itemUpdatedAt(item: JobItem): string | undefined {
 }
 
 function stateTone(state: string): string {
-  if (state === "completed") return "border-secondary/25 bg-secondary/10 text-secondary";
-  if (state === "running" || state === "delivered") return "border-tertiary-fixed-dim/30 bg-tertiary-fixed-dim/10 text-tertiary-fixed-dim";
-  if (state === "failed" || state === "cancelled" || state === "expired" || state === "unavailable") return "border-error/25 bg-error/10 text-error";
-  if (state === "active") return "border-primary/30 bg-primary/10 text-primary-fixed";
+  if (state === "completed") return "border-success/25 bg-success-soft text-success";
+  if (state === "running" || state === "delivered") return "border-warning/30 bg-warning-soft text-warning";
+  if (state === "failed" || state === "cancelled" || state === "expired" || state === "unavailable") return "border-danger/25 bg-danger-soft text-danger";
+  if (state === "active") return "border-accent/30 bg-accent-soft text-accent";
   return "border-border-faint bg-surface-container-low text-outline";
 }
 
@@ -256,16 +256,16 @@ export function JobsView({
       <div className="grid min-h-0 flex-1 bg-surface-dim md:grid-cols-[minmax(300px,420px)_1fr] md:overflow-hidden">
         <div className="min-h-0 border-r border-border-faint md:overflow-y-auto">
           {loading && items.length === 0 ? (
-            <EmptyState icon={<RefreshCw className="h-5 w-5 animate-spin" />} title="loading jobs" detail="reading durable work from daemon" />
+            <EmptyState icon={<RefreshCw className="h-5 w-5 animate-spin" />} title="loading jobs">reading durable work from daemon</EmptyState>
           ) : error ? (
-            <EmptyState icon={<XCircle className="h-5 w-5" />} title="jobs unavailable" detail={error} />
+            <EmptyState icon={<XCircle className="h-5 w-5" />} title="jobs unavailable">{error}</EmptyState>
           ) : items.length === 0 ? (
-            <EmptyState icon={<BriefcaseBusiness className="h-5 w-5" />} title="no jobs yet" detail="create one with repowire jobs create or an MCP job_create tool call" />
+            <EmptyState icon={<BriefcaseBusiness className="h-5 w-5" />} title="no jobs yet">create one with repowire jobs create or an MCP job_create tool call</EmptyState>
           ) : (
             <>
               <JobFilterBar filter={filter} onChange={setFilter} />
               {filteredItems.length === 0 && (
-                <EmptyState icon={<BriefcaseBusiness className="h-5 w-5" />} title="no matching jobs" detail="change the jobs filter to see more tracked work" />
+                <EmptyState icon={<BriefcaseBusiness className="h-5 w-5" />} title="no matching jobs">change the jobs filter to see more tracked work</EmptyState>
               )}
               <JobGroup title="active" items={activeItems} selectedId={selected?.id ?? null} onSelect={selectJob} />
               <JobGroup title="needs attention" items={attentionItems} selectedId={selected?.id ?? null} onSelect={selectJob} />
@@ -288,7 +288,7 @@ export function JobsView({
               onCancel={() => void runAction(displaySelected, "cancel")}
             />
           ) : (
-            <EmptyState icon={<BriefcaseBusiness className="h-5 w-5" />} title="select a job" detail="job detail and actions appear here" />
+            <EmptyState icon={<BriefcaseBusiness className="h-5 w-5" />} title="select a job">job detail and actions appear here</EmptyState>
           )}
         </div>
       </div>
@@ -562,7 +562,7 @@ function ActionButton({
       className={cn(
         "inline-flex h-8 items-center gap-2 rounded border px-3 font-mono text-[10px] font-bold uppercase tracking-[0.12em] transition-colors disabled:opacity-50",
         danger
-          ? "border-error/35 bg-error/10 text-error hover:bg-error/20"
+          ? "border-error/35 bg-error/10 text-error hover:border-error"
           : "border-border text-outline hover:bg-surface-container-high hover:text-on-surface",
       )}
     >

@@ -284,11 +284,11 @@ function DashboardInner() {
               <div className="flex flex-wrap items-center gap-x-3 gap-y-1 font-mono text-[11px] leading-5">
                 <span className="font-bold uppercase tracking-[0.16em]">orchestrator offline</span>
                 {missingOrchestrators.map((status) => (
-                  <span key={status.circle} className="rounded border border-error/35 bg-error/15 px-2 py-0.5">
+                  <span key={status.circle} className="rounded border border-danger/35 bg-surface px-2 py-0.5 text-danger">
                     circle / {status.circle}
                   </span>
                 ))}
-                <span className="text-on-error-container/85">
+                <span>
                   spawn one with <code className="font-bold">repowire orchestrator start</code>
                 </span>
               </div>

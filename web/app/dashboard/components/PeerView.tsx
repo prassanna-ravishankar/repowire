@@ -1115,7 +1115,7 @@ function SessionCommandPanel({
             className={cn(
               "inline-flex items-center gap-1.5 rounded border px-2 py-1 font-mono text-[10px] uppercase tracking-[0.12em] transition-colors disabled:opacity-40",
               canResumeSession
-                ? "border-primary/50 bg-primary/10 text-primary hover:bg-primary/15"
+                ? "border-primary/50 bg-primary/10 text-primary hover:border-primary"
                 : "border-border-faint text-outline",
             )}
           >
@@ -1682,7 +1682,7 @@ function GitStatusBadge({ status }: { status?: { ahead: number; behind: number; 
     : hasRemote
     ? "bg-tertiary"
     : hasLocal
-    ? "bg-accent"
+    ? "bg-info"
     : "bg-secondary";
   const tooltip = `git: ${ahead} ahead, ${behind} behind, ${staged} staged, ${dirty} dirty`;
   return (

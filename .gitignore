@@ -3,7 +3,7 @@
 dist/
 build/
 .repowire/
-ui/
+/ui/
 repowire-design-system/
 
 # Debug artifacts

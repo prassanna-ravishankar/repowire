@@ -1,81 +1,99 @@
 @import "tailwindcss";
 @plugin "@tailwindcss/typography";
 
-/* Dashboard tokens — Repowire Design System (cobalt, light-first).
-   Pattern (per Tailwind v4 docs): concrete theme-flipping colors live in
-   --dash-* CSS vars (light in :root, dark in [data-theme="dark"]), exposed to
-   Tailwind via `@theme inline`. With @theme inline + a single-level var to a
-   real color, alpha modifiers (bg-secondary/10) emit
-   color-mix(in oklab, var(--dash-*) N%, transparent) — which flips with theme.
-   The --dash-* light/dark definitions are in the :root / [data-theme] blocks
-   further down (alongside the RDS semantic tokens).
+/* One design system for the product surfaces (dashboard, managed, admin, the
+   account portal); see docs/contributing/design-system.md.
 
-   IMPORTANT (Tailwind v4 behavior, verified by build inspection): `@theme inline`
-   with a LITERAL color bakes opacity modifiers correctly (bg-x/10 → #hex1a). Any
-   var() reference makes Tailwind DROP the modifier. So we use literal LIGHT hex
-   here (light is the default theme), and the [data-theme="dark"] block re-declares
-   the emitted --color-* custom properties to dark hex — which flips every non-alpha
-   utility. Alpha utilities bake their (light-derived) translucent color and
-   composite acceptably over the dark surfaces; a few are dark-tuned explicitly in
-   the dark override block below.
+   The palette is defined once, as Repowire Design System (RDS) semantic tokens
+   (--page, --surface, --fg, --accent, --success, ...) scoped by [data-theme]
+   further down. Tailwind's colour names point at them through @theme inline,
+   so every utility, alpha modifiers included (bg-accent/10 emits
+   color-mix(in oklab, var(--accent) 10%, transparent)), follows the theme with
+   no second copy of the palette. Text roles meet 4.5:1 on every surface in
+   both themes; app/ui/tokens.test.ts holds that. */
+@theme inline {
+  /* Surfaces, lowest to highest. */
+  --color-page: var(--page);
+  --color-sunken: var(--surface-sunken);
+  --color-surface: var(--surface);
+  --color-raised: var(--surface-raised);
+  --color-overlay: var(--surface-overlay);
 
-   NOTE: NON-inline @theme — utilities reference var(--color-*) for the base color
-   (so the [data-theme="dark"] re-declaration of --color-* flips every non-alpha
-   utility), while opacity modifiers bake a light-derived translucent literal. */
-@theme {
-  --color-surface: #ffffff;
-  --color-surface-dim: #f7f6f3;
-  --color-surface-bright: #ffffff;
-  --color-surface-container-lowest: #f7f6f3;
-  --color-surface-container-low: #ffffff;
-  --color-surface-container: #f7f6f3;
-  --color-surface-container-high: #ffffff;
-  --color-surface-container-highest: #ffffff;
-  --color-surface-variant: #f7f6f3;
-  --color-surface-tint: #2c54dd;
-  --color-background: #fcfbfa;
+  /* Text. fg-faint is decorative (rules, disabled glyphs), never text. */
+  --color-fg: var(--fg);
+  --color-fg-muted: var(--fg-muted);
+  --color-fg-subtle: var(--fg-subtle);
+  --color-fg-faint: var(--fg-faint);
 
-  --color-primary: #2c54dd;
-  --color-primary-container: #eef2ff;
-  --color-primary-fixed: #2c54dd;
-  --color-primary-fixed-dim: #1d40b8;
-  --color-on-primary: #ffffff;
-  --color-on-primary-container: #1a3593;
-  --color-on-primary-fixed: #ffffff;
-  --color-on-primary-fixed-variant: #1a3593;
+  /* The one accent, and status. on-* is the text on a solid fill. */
+  --color-accent: var(--accent);
+  --color-accent-hover: var(--accent-hover);
+  --color-accent-soft: var(--accent-soft);
+  --color-accent-soft-fg: var(--accent-soft-fg);
+  --color-on-accent: var(--on-accent);
+  --color-success: var(--success);
+  --color-success-soft: var(--success-soft);
+  --color-on-success: var(--on-success);
+  --color-warning: var(--warning);
+  --color-warning-soft: var(--warning-soft);
+  --color-on-warning: var(--on-warning);
+  --color-danger: var(--danger);
+  --color-danger-soft: var(--danger-soft);
+  --color-on-danger: var(--on-danger);
+  --color-info: var(--info);
+  --color-info-soft: var(--info-soft);
+  --color-on-info: var(--on-info);
 
-  --color-secondary: #1f8a5b;
-  --color-secondary-container: #ddf1e6;
-  --color-secondary-fixed: #1f8a5b;
-  --color-secondary-fixed-dim: #1f8a5b;
-  --color-on-secondary: #ffffff;
-  --color-on-secondary-container: #1f8a5b;
-  --color-on-secondary-fixed: #ffffff;
-  --color-on-secondary-fixed-variant: #1f8a5b;
+  /* Hairlines. */
+  --color-border: var(--rds-border-strong);
+  --color-border-strong: var(--rds-border-strong);
+  --color-border-faint: var(--rds-border);
 
-  --color-tertiary: #b67214;
-  --color-tertiary-container: #fbeacb;
-  --color-tertiary-fixed: #b67214;
-  --color-tertiary-fixed-dim: #b67214;
-  --color-on-tertiary: #ffffff;
-  --color-on-tertiary-container: #b67214;
-  --color-on-tertiary-fixed: #ffffff;
-  --color-on-tertiary-fixed-variant: #b67214;
-
-  --color-accent: #2a6fdb;
-  --color-error: #c0392b;
-  --color-error-container: #fbdfd9;
-  --color-on-error: #ffffff;
-  --color-on-error-container: #c0392b;
-
-  --color-on-surface: #141413;
-  --color-on-surface-variant: #4e4b46;
-  --color-on-background: #141413;
-  --color-outline: #8e8a82;
-  --color-outline-variant: #b7b3aa;
-  --color-border: rgba(20, 20, 19, 0.14);
-  --color-border-strong: rgba(20, 20, 19, 0.14);
-  --color-border-faint: rgba(20, 20, 19, 0.08);
+  /* Earlier names, kept as aliases so existing screens keep working while
+     they move to the names above. New code uses the names above. */
+  --color-background: var(--page);
+  --color-surface-dim: var(--surface-sunken);
+  --color-surface-bright: var(--surface-raised);
+  --color-surface-variant: var(--surface-sunken);
+  --color-surface-tint: var(--accent);
+  --color-surface-container-lowest: var(--surface-sunken);
+  --color-surface-container-low: var(--surface);
+  --color-surface-container: var(--surface-sunken);
+  --color-surface-container-high: var(--surface-raised);
+  --color-surface-container-highest: var(--surface-overlay);
+  --color-on-surface: var(--fg);
+  --color-on-background: var(--fg);
+  --color-on-surface-variant: var(--fg-muted);
+  --color-outline: var(--fg-subtle);
+  --color-outline-variant: var(--fg-faint);
+  --color-primary: var(--accent);
+  --color-primary-fixed: var(--accent);
+  --color-primary-fixed-dim: var(--accent-hover);
+  --color-primary-container: var(--accent-soft);
+  --color-on-primary: var(--on-accent);
+  --color-on-primary-fixed: var(--on-accent);
+  --color-on-primary-container: var(--accent-soft-fg);
+  --color-on-primary-fixed-variant: var(--accent-soft-fg);
+  --color-secondary: var(--success);
+  --color-secondary-fixed: var(--success);
+  --color-secondary-fixed-dim: var(--success);
+  --color-secondary-container: var(--success-soft);
+  --color-on-secondary: var(--on-success);
+  --color-on-secondary-fixed: var(--on-success);
+  --color-on-secondary-container: var(--success);
+  --color-on-secondary-fixed-variant: var(--success);
+  --color-tertiary: var(--warning);
+  --color-tertiary-fixed: var(--warning);
+  --color-tertiary-fixed-dim: var(--warning);
+  --color-tertiary-container: var(--warning-soft);
+  --color-on-tertiary: var(--on-warning);
+  --color-on-tertiary-fixed: var(--on-warning);
+  --color-on-tertiary-container: var(--warning);
+  --color-on-tertiary-fixed-variant: var(--warning);
+  --color-error: var(--danger);
+  --color-error-container: var(--danger-soft);
+  --color-on-error: var(--on-danger);
+  --color-on-error-container: var(--danger);
 }
 
 /* Fonts + radii use @theme INLINE: the font values reference the next/font
@@ -107,12 +125,10 @@
 }
 
 /* =============================================================================
-   Repowire Design System (RDS) — cobalt, light-first.
-   Additive layer for the marketing site + any light-first surface. Semantic
-   tokens are scoped by [data-theme]; the dashboard never sets data-theme, so it
-   keeps the Copper Mesh tokens above untouched. New raw-token names never
-   collide with the copper palette. See web/app/marketing.css (scoped under
-   .rw-marketing) and docs/contributing/design-system.md.
+   Repowire Design System (RDS): the raw palette (warm neutrals, cobalt,
+   signals), then the semantic tokens every product surface uses, scoped by
+   [data-theme] on <html>. The marketing page keeps its own drafting-sheet
+   palette under .rw-marketing (web/app/marketing.css).
    ============================================================================= */
 :root {
   /* Neutrals — warm (2% red tint), never pure gray */
@@ -124,6 +140,7 @@
   --n-200: #d9d6cf;
   --n-300: #b7b3aa;
   --n-400: #8e8a82;
+  --n-450: #67635c;  /* the lightest neutral that is still text, even on a selected row's accent wash */
   --n-500: #6a665f;
   --n-600: #4e4b46;
   --n-700: #353330;
@@ -143,11 +160,12 @@
   --cobalt-800: #1a2d73;
   --cobalt-900: #182554;
 
-  /* Signal */
-  --green-500: #1f8a5b;  --green-100: #ddf1e6;
-  --amber-500: #b67214;  --amber-100: #fbeacb;
-  --red-500:   #c0392b;  --red-100:   #fbdfd9;
-  --blue-500:  #2a6fdb;  --blue-100:  #dde9fb;
+  /* Signal. The 600s are the text-safe shades: 4.5:1 on every light
+     surface and on their own 10% wash, and under white text. */
+  --green-500: #1f8a5b;  --green-600: #1a7349;  --green-100: #ddf1e6;
+  --amber-500: #b67214;  --amber-600: #925810;  --amber-100: #fbeacb;
+  --red-500:   #c0392b;  --red-600:   #b83528;  --red-100:   #fbdfd9;
+  --blue-500:  #2a6fdb;  --blue-600:  #2563c9;  --blue-100:  #dde9fb;
 
   /* Type families: --rds-font-sans is defined on .rw-marketing (not here),
      because it references --font-inter, which next/font sets on <body> and is
@@ -216,10 +234,11 @@
   --surface:          var(--n-0);
   --surface-sunken:   var(--n-50);
   --surface-raised:   var(--n-0);
+  --surface-overlay:  var(--n-0);
 
   --fg:        var(--n-900);
   --fg-muted:  var(--n-600);
-  --fg-subtle: var(--n-400);
+  --fg-subtle: var(--n-450);
   --fg-faint:  var(--n-300);
 
   --rds-border:        rgba(20, 20, 19, 0.08);
@@ -232,11 +251,12 @@
   --accent-soft:    var(--cobalt-50);
   --accent-soft-fg: var(--cobalt-700);
   --accent-ring:    rgba(44, 84, 221, 0.34);
+  --on-accent:      var(--n-0);
 
-  --success:      var(--green-500);  --success-soft: var(--green-100);
-  --warning:      var(--amber-500);  --warning-soft: var(--amber-100);
-  --danger:       var(--red-500);    --danger-soft:  var(--red-100);
-  --info:         var(--blue-500);   --info-soft:    var(--blue-100);
+  --success:      var(--green-600);  --success-soft: var(--green-100);  --on-success: var(--n-0);
+  --warning:      var(--amber-600);  --warning-soft: var(--amber-100);  --on-warning: var(--n-0);
+  --danger:       var(--red-600);    --danger-soft:  var(--red-100);    --on-danger:  var(--n-0);
+  --info:         var(--blue-600);   --info-soft:    var(--blue-100);   --on-info:    var(--n-0);
 
   --shadow-xs: 0 1px 1px rgba(20, 20, 19, 0.03);
   --shadow-sm: 0 1px 2px rgba(20, 20, 19, 0.04), 0 1px 1px rgba(20, 20, 19, 0.02);
@@ -257,79 +277,36 @@
   --surface:        #161614;
   --surface-sunken: #0a0a09;
   --surface-raised: #1c1c1a;
+  --surface-overlay: #232220;
 
   --fg:        #f3f1ec;
   --fg-muted:  #b5b1a8;
-  --fg-subtle: #807c74;
+  --fg-subtle: #9a968e;
   --fg-faint:  #5b5853;
 
   --rds-border:        rgba(255, 252, 244, 0.08);
   --rds-border-strong: rgba(255, 252, 244, 0.14);
   --rds-border-faint:  rgba(255, 252, 244, 0.04);
 
-  --accent:         var(--cobalt-400);
+  --accent:         #7590ec;  /* between cobalt-400 and -300: 4.5:1 even on its own wash over the overlay surface */
   --accent-hover:   var(--cobalt-300);
   --accent-pressed: var(--cobalt-200);
-  --accent-soft:    rgba(87, 120, 230, 0.16);
+  /* Soft fills are opaque (tints composited over the dark surface), so a
+     badge on a selected row reads the same as anywhere else. */
+  --accent-soft:    #202636;
   --accent-soft-fg: var(--cobalt-200);
   --accent-ring:    rgba(139, 163, 241, 0.44);
+  /* Dark text on the bright dark-theme fills: white on them is under 4.5:1. */
+  --on-accent:      #0e0e0d;
+  --on-success:     #0e0e0d;
+  --on-warning:     #0e0e0d;
+  --on-danger:      #0e0e0d;
+  --on-info:        #0e0e0d;
 
-  --success:      #4eb37e;  --success-soft: rgba(31, 138, 91, 0.18);
-  --warning:      #e0b14a;  --warning-soft: rgba(182, 114, 20, 0.20);
-  --danger:       #e57368;  --danger-soft:  rgba(192, 57, 43, 0.20);
-  --info:         #6ea4f0;  --info-soft:    rgba(42, 111, 219, 0.20);
-
-  /* Dashboard dark theme — re-declare the @theme-emitted --color-* custom
-     properties with warm-dark hex. Every NON-alpha dashboard utility resolves
-     through var(--color-*), so this flips them all. (Alpha utilities baked their
-     light-derived translucent color at build; they composite acceptably over
-     these dark surfaces.) */
-  --color-surface: #161614;
-  --color-surface-dim: #0a0a09;
-  --color-surface-bright: #1c1c1a;
-  --color-surface-container-lowest: #0a0a09;
-  --color-surface-container-low: #161614;
-  --color-surface-container: #0a0a09;
-  --color-surface-container-high: #1c1c1a;
-  --color-surface-container-highest: #232220;
-  --color-surface-variant: #0a0a09;
-  --color-surface-tint: #5778e6;
-  --color-background: #0e0e0d;
-
-  --color-primary: #5778e6;
-  --color-primary-container: #233056;
-  --color-primary-fixed: #5778e6;
-  --color-primary-fixed-dim: #8ba3f1;
-  --color-on-primary-container: #bbcaf9;
-  --color-on-primary-fixed-variant: #bbcaf9;
-
-  --color-secondary: #4eb37e;
-  --color-secondary-container: #18352a;
-  --color-secondary-fixed: #4eb37e;
-  --color-secondary-fixed-dim: #4eb37e;
-  --color-on-secondary-container: #4eb37e;
-  --color-on-secondary-fixed-variant: #4eb37e;
-
-  --color-tertiary: #e0b14a;
-  --color-tertiary-container: #3a2e15;
-  --color-tertiary-fixed: #e0b14a;
-  --color-tertiary-fixed-dim: #e0b14a;
-  --color-on-tertiary-container: #e0b14a;
-  --color-on-tertiary-fixed-variant: #e0b14a;
-
-  --color-accent: #6ea4f0;
-  --color-error: #e57368;
-  --color-error-container: #3a201d;
-  --color-on-error-container: #e57368;
-
-  --color-on-surface: #f3f1ec;
-  --color-on-surface-variant: #b5b1a8;
-  --color-on-background: #f3f1ec;
-  --color-outline: #807c74;
-  --color-outline-variant: #5b5853;
-  --color-border: rgba(255, 252, 244, 0.14);
-  --color-border-strong: rgba(255, 252, 244, 0.14);
-  --color-border-faint: rgba(255, 252, 244, 0.08);
+  --success:      #4eb37e;  --success-soft: #182b21;
+  --warning:      #e0b14a;  --warning-soft: #362814;
+  --danger:       #e57368;  --danger-soft:  #381d19;
+  --info:         #6ea4f0;  --info-soft:    #1a283c;
 
   --shadow-xs: 0 1px 1px rgba(0, 0, 0, 0.30);
   --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.30), 0 1px 1px rgba(0, 0, 0, 0.20);

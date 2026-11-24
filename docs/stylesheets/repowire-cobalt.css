@@ -22,9 +22,9 @@
   --ink-sunken:  #0a0a09;
 
   /* Status */
-  --success: #1f8a5b;
-  --warning: #b67214;
-  --danger:  #c0392b;
+  --success: #1a7349;
+  --warning: #925810;
+  --danger:  #b83528;
 }
 
 /* Light scheme — warm paper, cobalt accent. */
@@ -38,23 +38,23 @@
   --md-default-bg-color:          var(--n-25);
   --md-default-fg-color:          var(--n-900);
   --md-default-fg-color--light:   var(--n-600);
-  --md-default-fg-color--lighter: #8e8a82;
+  --md-default-fg-color--lighter: #67635c;
   --md-code-bg-color:             var(--n-50);
   --md-code-fg-color:             var(--n-900);
 }
 
-/* Dark scheme — warm-dark surfaces, cobalt-400 accent. */
+/* Dark scheme: warm-dark surfaces; links in the dark-theme accent (4.5:1 on every surface). */
 [data-md-color-scheme="slate"] {
   --md-primary-fg-color:        var(--cobalt-500);
   --md-primary-fg-color--light: var(--cobalt-400);
   --md-primary-fg-color--dark:  var(--cobalt-600);
-  --md-accent-fg-color:         var(--cobalt-400);
-  --md-typeset-a-color:         var(--cobalt-400);
+  --md-accent-fg-color:         #7590ec;
+  --md-typeset-a-color:         #7590ec;
 
   --md-default-bg-color:          var(--ink-page);
   --md-default-fg-color:          #f3f1ec;
   --md-default-fg-color--light:   #b5b1a8;
-  --md-default-fg-color--lighter: #807c74;
+  --md-default-fg-color--lighter: #9a968e;
   --md-code-bg-color:             var(--ink-sunken);
   --md-code-fg-color:             #f3f1ec;
 }
