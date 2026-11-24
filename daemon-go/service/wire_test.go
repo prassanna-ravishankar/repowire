@@ -73,7 +73,7 @@ func wirePeer(id, name, circle string, role proto.PeerRole, status proto.PeerSta
 
 func newTestWire(ledger *fakeWireLedger, peers fakeWirePeers) (*Wire, *AskTracker) {
 	asks := NewAskTracker(time.Hour)
-	w := NewWire(asks, ledger, peers, config.Defaults().Wire.Stuck)
+	w := NewWire(asks, ledger, peers, &fakeWireVisibility{}, config.Defaults().Wire.Stuck)
 	w.now = func() time.Time { return wireNow }
 	return w, asks
 }

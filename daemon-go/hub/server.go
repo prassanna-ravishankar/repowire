@@ -270,6 +270,7 @@ func (h *Hub) Routes(mux *http.ServeMux) {
 	}
 	if h.messaging != nil {
 		h.messaging.remote = h
+		h.messaging.wire = h.wire
 		h.messaging.Register(mux, h.requireAuth)
 	}
 	if h.lifecycle != nil {

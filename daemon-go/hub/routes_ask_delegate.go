@@ -116,11 +116,11 @@ func (h *Hub) delegateAsk(ctx context.Context, cid string, req DelegateRequest) 
 	if err != nil {
 		return DelegateResponse{}, delegateErr(cid, ask, err)
 	}
-	h.traceAsk(ctx, cid, "delegated", "", moved, map[string]any{
+	h.traceAsk(ctx, cid, "delegated", "", moved, h.wire.WithProvenance(ctx, map[string]any{
 		"from_peer_id": string(hop.FromPeerID), "from": string(hop.FromName),
 		"to_peer_id": string(hop.ToPeerID), "to": string(hop.ToName),
 		"note": clipTraceText(hop.Note), "hops": len(moved.Delegations),
-	})
+	}, hop.FromPeerID, hop.ToPeerID))
 
 	// The delegator was authorized against the target above.
 	delivered, err := h.deliverHop(ctx, ask, moved, hop, string(hop.FromPeerID), delegatedText(hop, moved))

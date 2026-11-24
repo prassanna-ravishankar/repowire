@@ -37,6 +37,42 @@ func (h *Hub) registerWireRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /wire/threads/{thread_id}/reassign", h.requireOperator(h.handleWireAction("reassign")))
 	mux.HandleFunc("POST /wire/threads/{thread_id}/nudge", h.requireOperator(h.handleWireAction("nudge")))
 	mux.HandleFunc("POST /wire/threads/{thread_id}/cancel", h.requireOperator(h.handleWireAction("cancel")))
+	// A peer sets its own visibility over MCP; the operator may set any
+	// peer's. An orchestrator cannot set another peer's.
+	mux.HandleFunc("POST /peers/{name}/wire-visibility", h.requireOperator(h.handleWireVisibility))
+}
+
+func (h *Hub) handleWireVisibility(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Mode string `json:"mode"`
+	}
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	p, err := h.setWireVisibility(r.Context(), r.PathValue("name"), req.Mode)
+	if err != nil {
+		writeRouteError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"peer": string(p.DisplayName), "peer_id": string(p.PeerID), "wire_visibility": req.Mode})
+}
+
+// setWireVisibility records a peer's wire visibility.
+func (h *Hub) setWireVisibility(ctx context.Context, identifier, mode string) (*proto.Peer, error) {
+	if h.wire == nil || h.ask == nil {
+		return nil, routeErr(http.StatusServiceUnavailable, "the wire view is not available on this daemon")
+	}
+	p, err := h.ask.reg.GetPeerByName(identifier, nil)
+	if err != nil {
+		return nil, routeErr(http.StatusConflict, err.Error())
+	}
+	if p == nil {
+		return nil, routeErr(http.StatusNotFound, "Unknown peer: "+identifier)
+	}
+	if err := h.wire.SetVisibility(ctx, p.PeerID, mode); err != nil {
+		return nil, routeErr(http.StatusUnprocessableEntity, err.Error())
+	}
+	return p, nil
 }
 
 // requireOperator admits only a request carrying the daemon token. Unlike
@@ -183,6 +219,10 @@ type mcpWireQueryArgs struct {
 	Cursor    string `json:"cursor,omitempty" jsonschema:"resume after the previous page"`
 }
 
+type mcpWireVisibilityArgs struct {
+	Mode string `json:"mode" jsonschema:"visible (default) or private. An orchestrator sees only the envelope of a private peer's threads (who, state, age), never their bodies, and cannot act on them"`
+}
+
 type mcpWireShowArgs struct {
 	ThreadID string `json:"thread_id" jsonschema:"a thread id from wire_query"`
 	Cursor   int    `json:"cursor,omitempty" jsonschema:"resume the timeline after this stage seq"`
@@ -223,6 +263,16 @@ func registerWireTools(srv *mcp.Server, h *Hub) {
 			return "", fmt.Errorf("no thread %s", service.WireCell(a.ThreadID))
 		}
 		return t.Text(a.Cursor), nil
+	})
+	addMCPTool(srv, "set_wire_visibility", "Choose whether orchestrators may act on your ask threads: visible (default) or private. Private threads still show their envelope in the wire view.", func(ctx context.Context, caller string, a mcpWireVisibilityArgs) (string, error) {
+		self, err := h.mcpCallerPeer(caller, "set_wire_visibility")
+		if err != nil {
+			return "", err
+		}
+		if _, err := h.setWireVisibility(ctx, string(self.PeerID), a.Mode); err != nil {
+			return "", err
+		}
+		return "wire visibility: " + a.Mode, nil
 	})
 }
 

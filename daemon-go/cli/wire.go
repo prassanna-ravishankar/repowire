@@ -68,8 +68,18 @@ func wireCommand(c *client, argv []string) int {
 		return 0
 	case "reassign", "nudge", "cancel":
 		return wireAction(c, argv[0], a)
+	case "visibility":
+		if len(a.pos) != 2 {
+			return usage("wire visibility PEER visible|private")
+		}
+		result, err := c.request(http.MethodPost, "/peers/"+url.PathEscape(a.pos[0])+"/wire-visibility", map[string]any{"mode": a.pos[1]})
+		if err != nil {
+			return fatal(err)
+		}
+		printJSON(result)
+		return 0
 	}
-	return usage("wire ls|show|reassign|nudge|cancel")
+	return usage("wire ls|show|reassign|nudge|cancel|visibility")
 }
 
 // wireAction runs an operator action on a thread (rfcs/wire-actions.md).

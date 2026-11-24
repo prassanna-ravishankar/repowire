@@ -30,7 +30,7 @@ func TestWireViewAuthorizationAndEnvelope(t *testing.T) {
 	}
 	defer store.Close()
 	h.store = store
-	h.WithWire(service.NewWire(service.NewAskTracker(0), store, reg, config.Defaults().Wire.Stuck))
+	h.WithWire(service.NewWire(service.NewAskTracker(0), store, reg, store, config.Defaults().Wire.Stuck))
 	mux := http.NewServeMux()
 	h.Routes(mux)
 	srv := httptest.NewServer(mux)

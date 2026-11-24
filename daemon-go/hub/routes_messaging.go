@@ -61,6 +61,7 @@ type MessagingRoutes struct {
 	reg      lazyRepairer
 	traces   deliveryTracer
 	remote   remoteMessenger
+	wire     *service.Wire // records each notify's parties; nil records none
 }
 
 // remoteMessenger carries name@machine notifies and the cross-machine part of
@@ -235,7 +236,8 @@ func (mr *MessagingRoutes) notifyTraced(ctx context.Context, params service.Noti
 	if result.FromPeerID != nil {
 		fromPeerID = string(*result.FromPeerID)
 	}
-	mr.trace(ctx, deliveryID, "notify", "resolved_peer", "", deliveryID, toPeerID, fromPeerID, nil)
+	mr.trace(ctx, deliveryID, "notify", "resolved_peer", "", deliveryID, toPeerID, fromPeerID,
+		mr.wire.WithProvenance(ctx, nil, proto.PeerID(fromPeerID), result.ToPeerID))
 	if result.Queued() {
 		mr.trace(ctx, deliveryID, "notify", "pending", "", deliveryID, toPeerID, fromPeerID, map[string]any{"reason": result.Reason})
 	}
