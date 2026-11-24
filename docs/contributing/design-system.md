@@ -6,7 +6,7 @@ The system has two halves:
 - **Tokens:** `web/app/globals.css`, one semantic layer in both themes.
 - **Components:** `web/app/ui/`.
 
-A surface imports from `app/ui` and uses the token-backed Tailwind names; it does not restyle its own buttons or dialogs. The `/design` page renders every token and component in the current theme, with contrast measured live. Use it for screenshot review. It ships in the public web export: it is not linked and asks search engines not to index it, but anyone with the URL can open it, so keep it free of anything private.
+A surface imports from `app/ui` and uses the token-backed Tailwind names; it does not restyle its own buttons or dialogs. The `/design` page renders every token and component in the current theme, with contrast measured live. Use it for screenshot review. It is part of the static web export, so the local daemon serves it (`http://localhost:8377/design`), from the first release that includes it. The hosted relay serves only `/dashboard` from the export, plus its assets, so `relay.repowire.io/design` is a 404. The page is not linked and asks search engines not to index it. Keep it free of anything private all the same, since it ships in every release.
 
 ## Voice
 
