@@ -232,11 +232,12 @@ repowire container report [--since 7d] [--db PATH] [--json]
 This command summarises the exit-watch soak (`rfcs/agent-container.md`, step 2) for the given window (default 7 days; `all`, `36h` or an RFC-3339 time also work). Every tmux offline signal for a spawned peer (`pane_died`, `session_closed`) is checked against the agent's own process. The report shows:
 
 - **confirmed:** the agent had exited.
-- **refuted:** the agent was still running, which makes the signal a spurious offline.
+- **refuted:** the agent was still running and did not exit within 5 seconds, which makes the signal a spurious offline.
+- **dying:** the agent was still running but exited within 5 seconds (it briefly outlived its pane), so the signal was not spurious.
 - **unknown:** there was no identity to compare.
 - **unwatched:** no watch was armed for the peer, which is a coverage gap.
 - **exits observed:** the agent exits the watch saw, including how many it saw before tmux offlined the peer.
-- **each refuted signal:** listed with its peer, pane and pid.
+- **each refuted or dying signal:** listed with its peer, pane, pid and how long after the signal the agent exited.
 
 It reads `state.db` read-only, so it is safe to run beside the daemon.
 

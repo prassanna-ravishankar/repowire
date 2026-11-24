@@ -22,14 +22,21 @@ type ExitReport struct {
 	Exits   int `json:"exits_observed"`
 	LedTmux int `json:"exits_before_tmux"`
 	// Refuted lists the signals that offlined a peer whose agent was still
-	// running: each one a spurious offline the watch would have avoided.
+	// running. One whose agent exit the watch saw within DyingWindow is an
+	// agent that was already dying (it outlived its pane's SIGHUP briefly),
+	// not a spurious offline; the rest are what step 3 would avoid.
 	Refuted []RefutedSignal `json:"refuted,omitempty"`
 }
+
+// DyingWindow is how soon after a refuted signal the agent's observed exit
+// makes the signal a dying agent rather than a spurious offline.
+const DyingWindow = 5 * time.Second
 
 // SignalTally splits one signal's checks by what the watch said.
 type SignalTally struct {
 	Confirmed int `json:"confirmed"` // the agent had exited
-	Refuted   int `json:"refuted"`   // the agent was still running
+	Refuted   int `json:"refuted"`   // the agent was still running and outlived DyingWindow: a spurious offline
+	Dying     int `json:"dying"`     // the agent was still running but exited within DyingWindow
 	Unknown   int `json:"unknown"`   // no identity to compare
 	Unwatched int `json:"unwatched"` // no watch was armed for the peer (coverage gap)
 }
@@ -41,11 +48,36 @@ type RefutedSignal struct {
 	PeerID string    `json:"peer_id"`
 	PaneID string    `json:"pane_id,omitempty"`
 	PID    int       `json:"pid"`
+	// ExitAfter is how long after the signal the watch saw the agent exit,
+	// when it did; within DyingWindow the signal counts as dying, not refuted.
+	ExitAfter *time.Duration `json:"exit_after,omitempty"`
 }
 
-// SummarizeExits reads the exit-watch events since since (zero: all).
+// SummarizeExits reads the exit-watch events since since (zero: all). rows
+// are in time order (state.EventsOfTypes returns them so).
 func SummarizeExits(rows []state.EventRow, since time.Time) ExitReport {
 	r := ExitReport{Since: since, Signals: map[string]*SignalTally{}}
+	type exit struct {
+		at  time.Time
+		pid int
+	}
+	exits := map[string][]exit{} // per peer, the observed exits
+	for _, row := range rows {
+		if row.Type == EventAgentExitObserved {
+			peerID, _ := row.Payload["peer_id"].(string)
+			pid, _ := row.Payload["pid"].(float64)
+			exits[peerID] = append(exits[peerID], exit{row.At, int(pid)})
+		}
+	}
+	exitAfter := func(peerID string, pid int, at time.Time) *time.Duration {
+		for _, e := range exits[peerID] {
+			if e.pid == pid && !e.at.Before(at) {
+				d := e.at.Sub(at)
+				return &d
+			}
+		}
+		return nil
+	}
 	for _, row := range rows {
 		if !since.IsZero() && row.At.Before(since) {
 			continue
@@ -73,11 +105,16 @@ func SummarizeExits(rows []state.EventRow, since time.Time) ExitReport {
 			case "false":
 				t.Confirmed++
 			case "true":
-				t.Refuted++
 				pane, _ := row.Payload["pane_id"].(string)
 				pid, _ := row.Payload["pid"].(float64)
 				peerID, _ := row.Payload["peer_id"].(string)
-				r.Refuted = append(r.Refuted, RefutedSignal{At: row.At, Signal: signal, PeerID: peerID, PaneID: pane, PID: int(pid)})
+				after := exitAfter(peerID, int(pid), row.At)
+				if after != nil && *after <= DyingWindow {
+					t.Dying++
+				} else {
+					t.Refuted++
+				}
+				r.Refuted = append(r.Refuted, RefutedSignal{At: row.At, Signal: signal, PeerID: peerID, PaneID: pane, PID: int(pid), ExitAfter: after})
 			default:
 				t.Unknown++
 			}
@@ -104,9 +141,16 @@ func (r ExitReport) Write(w io.Writer) {
 	sort.Strings(names)
 	for _, name := range names {
 		t := r.Signals[name]
-		fmt.Fprintf(w, "  %-22s confirmed %d, refuted %d, unknown %d (unwatched %d)\n", name, t.Confirmed, t.Refuted, t.Unknown, t.Unwatched)
+		fmt.Fprintf(w, "  %-22s confirmed %d, refuted %d, dying %d, unknown %d (unwatched %d)\n", name, t.Confirmed, t.Refuted, t.Dying, t.Unknown, t.Unwatched)
 	}
 	for _, s := range r.Refuted {
-		fmt.Fprintf(w, "  refuted  %s  %s  %s pane %s pid %d\n", s.At.UTC().Format(time.RFC3339), s.Signal, s.PeerID, s.PaneID, s.PID)
+		kind, exit := "refuted", "no exit observed"
+		if s.ExitAfter != nil {
+			exit = "exited " + s.ExitAfter.Round(time.Millisecond).String() + " later"
+			if *s.ExitAfter <= DyingWindow {
+				kind = "dying  "
+			}
+		}
+		fmt.Fprintf(w, "  %s  %s  %s  %s pane %s pid %d (%s)\n", kind, s.At.UTC().Format(time.RFC3339), s.Signal, s.PeerID, s.PaneID, s.PID, exit)
 	}
 }
