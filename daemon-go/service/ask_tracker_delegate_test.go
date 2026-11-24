@@ -293,17 +293,19 @@ func TestRuntimeCompletionOnlyFromTheHolder(t *testing.T) {
 	}
 	d.completeAsHolder(cid, "repow-b", 0, complete("beta"))
 	noneRan()
-	// The right holder with an older generation is a stale completion.
-	d.completeAsHolder(cid, "repow-c", 0, complete("gamma"))
-	noneRan()
+	// The hand-off to gamma failed once (generation 1) and was retried
+	// (generation 2): the first attempt's late completion is stale, even
+	// though it comes from the current holder.
 	d.completeAsHolder(cid, "repow-c", 1, complete("gamma"))
+	noneRan()
+	d.completeAsHolder(cid, "repow-c", 2, complete("gamma"))
 	waitRan("gamma")
 
 	// Nothing runs on a closed ask, even work that was waiting for it.
 	if _, err := tr.Claim(cid); err != nil {
 		t.Fatal(err)
 	}
-	d.completeAsHolder(cid, "repow-c", 1, complete("gamma")) // the current generation: only the close stops it
+	d.completeAsHolder(cid, "repow-c", 2, complete("gamma")) // the current generation: only the close stops it
 	tr.Close(ctx, cid, "ack")
 	tr.Release(cid)
 	noneRan()
@@ -496,13 +498,23 @@ func TestDelegationGenerationsAndNoWayBack(t *testing.T) {
 	}
 	tr.Release(cid)
 
-	if _, _, err := delegateClaimed(t, tr, cid, DelegateParams{By: "repow-b", To: "repow-c"}); err != nil || gen() != 1 {
+	// Retrying the failed hand-off issues a fresh number: 1 is never reused.
+	if _, _, err := delegateClaimed(t, tr, cid, DelegateParams{By: "repow-b", To: "repow-c"}); err != nil || gen() != 2 {
 		t.Fatalf("delegate to c: gen %d err %v", gen(), err)
 	}
 	if _, _, err := delegateClaimed(t, tr, cid, DelegateParams{By: "repow-c", To: "repow-b"}); !errors.Is(err, ErrFormerHolder) {
 		t.Fatalf("back to b: %v", err)
 	}
-	if _, _, err := delegateClaimed(t, tr, cid, DelegateParams{By: "repow-c", To: "repow-d"}); err != nil || gen() != 2 {
+	_, toD, err := delegateClaimed(t, tr, cid, DelegateParams{By: "repow-c", To: "repow-d"})
+	if err != nil || gen() != 3 {
 		t.Fatalf("delegate to d: gen %d err %v", gen(), err)
 	}
+	// Undoing a later hop restores the previous holder's number, not one less.
+	if _, err := tr.Claim(cid); err != nil {
+		t.Fatal(err)
+	}
+	if !tr.UndoDelegation(ctx, cid, toD) || gen() != 2 {
+		t.Fatalf("undo to c left generation %d, want 2", gen())
+	}
+	tr.Release(cid)
 }

@@ -125,12 +125,14 @@ type Ask struct {
 	// Delegations is the chain of hand-offs, oldest first; ToPeerID is the
 	// last hop's recipient. Replaced, never mutated, so snapshots stay valid.
 	Delegations []Delegation
-	// Generation counts the ask's assignments: 0 for the first recipient,
-	// one more for each hand-off that stands. A runtime completion carries
-	// the generation it was issued under, and an older one is dropped, so
-	// after B to C and back to B, B's first, stale completion cannot close
-	// the ask.
+	// Generation identifies the current assignment: 0 for the first
+	// recipient, a fresh number for each hand-off. A runtime completion
+	// carries the generation it was issued under, and any other one is
+	// dropped. Numbers are never reused (issued only goes up, and undoing a
+	// hop restores the previous holder's number), so a completion from a
+	// hand-off that failed and was retried to the same peer cannot match.
 	Generation int
+	issued     int // the highest generation this ask has issued
 
 	// done is closed once, when this ask instance reaches its terminal state,
 	// waking every waiter; they then read what was recorded.
@@ -546,9 +548,10 @@ func (t *AskTracker) Delegate(ctx context.Context, cid string, p DelegateParams)
 	hop := Delegation{
 		FromPeerID: ask.ToPeerID, FromName: ask.ToPeerName,
 		ToPeerID: p.To, ToName: p.ToName, Note: p.Note, At: time.Now().UTC(),
-		Generation:    ask.Generation + 1,
+		Generation:    ask.issued + 1,
 		fromSessionID: ask.ToRepowireSessionID,
 	}
+	ask.issued = hop.Generation
 	ask.Generation = hop.Generation
 	ask.Delegations = append(append([]Delegation(nil), ask.Delegations...), hop)
 	ask.ToPeerID, ask.ToPeerName, ask.ToRepowireSessionID = p.To, p.ToName, p.ToSessionID
@@ -572,7 +575,10 @@ func (t *AskTracker) UndoDelegation(ctx context.Context, cid string, hop Delegat
 	}
 	ask.Delegations = append([]Delegation(nil), ask.Delegations[:len(ask.Delegations)-1]...)
 	ask.ToPeerID, ask.ToPeerName, ask.ToRepowireSessionID = hop.FromPeerID, hop.FromName, hop.fromSessionID
-	ask.Generation = hop.Generation - 1
+	ask.Generation = 0 // the previous holder's assignment; issued stays, so hop's number is never reused
+	if n := len(ask.Delegations); n > 0 {
+		ask.Generation = ask.Delegations[n-1].Generation
+	}
 	return true
 }
 
