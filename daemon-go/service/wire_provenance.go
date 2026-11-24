@@ -85,7 +85,10 @@ func (w *Wire) Private(ctx context.Context, id proto.PeerID) bool {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	if err := w.loadVisibilityLocked(ctx); err != nil {
-		log.Printf("wire: load visibility: %v", err)
+		if !w.visErrLogged {
+			log.Printf("wire: load visibility (every peer counts as private until it loads): %v", err)
+			w.visErrLogged = true
+		}
 		return true
 	}
 	return w.private[id]

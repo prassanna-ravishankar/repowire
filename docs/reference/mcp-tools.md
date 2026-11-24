@@ -330,7 +330,8 @@ Choose whether orchestrators may act on your threads. `visible` is the
 default. `private` protects every thread you take part in, earlier ones
 included: an orchestrator still sees its envelope in
 [`wire_query`](#wire_query) (who, state, age), never its text, and cannot act
-on it. Kept per `peer_id` across daemon restarts. Only you, or the operator
+on it. Kept per `peer_id` across daemon restarts; a session that comes
+back under a new `peer_id` sets it again. Only you, or the operator
 (`repowire wire visibility`), can change it.
 
 ## Inspection

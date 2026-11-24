@@ -54,8 +54,9 @@ type Wire struct {
 	stuck  config.WireStuckConfig
 	now    func() time.Time
 
-	mu      sync.Mutex
-	private map[proto.PeerID]bool // loaded on first use; guarded by mu
+	mu           sync.Mutex
+	private      map[proto.PeerID]bool // loaded on first use; guarded by mu
+	visErrLogged bool                  // a failed load was logged; guarded by mu
 }
 
 // NewWire returns the wire view over the daemon's existing records. vis may
