@@ -1,6 +1,10 @@
 package hub
 
 import (
+	"bytes"
+	"mime/multipart"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"testing"
@@ -50,5 +54,49 @@ func TestAttachmentsExpireWithContent(t *testing.T) {
 		if (err == nil) != want {
 			t.Errorf("%s exists=%v, want %v", name, err == nil, want)
 		}
+	}
+}
+
+// A directory full of expired files does not refuse an upload: the upload
+// expires them itself instead of waiting for the hourly sweep.
+func TestUploadExpiresStaleFilesBeforeRefusingAtTheCap(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	dir := AttachmentsDir()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	stale := filepath.Join(dir, "stale.bin")
+	if err := os.WriteFile(stale, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Truncate(stale, maxAttachmentDirSize); err != nil { // sparse: no real disk
+		t.Fatal(err)
+	}
+	old := time.Now().Add(-8 * 24 * time.Hour)
+	if err := os.Chtimes(stale, old, old); err != nil {
+		t.Fatal(err)
+	}
+	upload := func(h *Hub) int {
+		var body bytes.Buffer
+		form := multipart.NewWriter(&body)
+		part, _ := form.CreateFormFile("file", "note.txt")
+		_, _ = part.Write([]byte("hello"))
+		_ = form.Close()
+		req := httptest.NewRequest(http.MethodPost, "/attachments", &body)
+		req.Header.Set("Content-Type", form.FormDataContentType())
+		rec := httptest.NewRecorder()
+		h.uploadAttachment(rec, req)
+		return rec.Code
+	}
+
+	if code := upload(&Hub{}); code != http.StatusInsufficientStorage {
+		t.Fatalf("keep-forever policy, full dir: status %d, want 507", code)
+	}
+	h := (&Hub{}).WithRetention(state.RetentionPolicy{Content: 7 * 24 * time.Hour})
+	if code := upload(h); code != http.StatusOK {
+		t.Fatalf("full of expired files: status %d, want 200", code)
+	}
+	if _, err := os.Stat(stale); err == nil {
+		t.Fatal("the expired file is still there")
 	}
 }

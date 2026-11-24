@@ -89,7 +89,12 @@ func (h *Hub) uploadAttachment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// The store's sweep expires files hourly; an upload that would hit the
+	// cap clears expired files itself rather than wait for it.
 	used := attachmentDirSize(dir)
+	if used+max(header.Size, 0) > maxAttachmentDirSize && expireAttachments(dir, h.attachmentRetention.ContentCutoff(time.Now())) > 0 {
+		used = attachmentDirSize(dir)
+	}
 	if used >= maxAttachmentDirSize {
 		writeError(w, http.StatusInsufficientStorage,
 			fmt.Sprintf("Attachments directory full (%dMB used, %dMB cap). Files expire after retention.content_days.",
@@ -191,6 +196,13 @@ func (h *Hub) getAttachment(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	writeError(w, http.StatusNotFound, "Attachment not found")
+}
+
+// WithRetention gives the attachment routes the retention policy, so an
+// upload that would hit the directory cap can expire files first.
+func (h *Hub) WithRetention(p state.RetentionPolicy) *Hub {
+	h.attachmentRetention = p
+	return h
 }
 
 // ExpireAttachments is the attachment files' retention pass, plugged into

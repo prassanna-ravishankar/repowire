@@ -363,6 +363,7 @@ func runDaemon() {
 	// registry; nothing younger than an open ask expires.
 	content, records := cfg.Retention.Durations()
 	retention := state.RetentionPolicy{Content: content, Records: records, AskLife: asks.TTL()}
+	h.WithRetention(retention)
 	if err := store.StartRetention(retention, state.RetentionPlugs{Passes: []func(context.Context, state.RetentionPolicy, time.Time) map[string]int{hub.ExpireAttachments}, Emit: reg.AddEvent}); err != nil {
 		log.Printf("retention: %v", err)
 	}

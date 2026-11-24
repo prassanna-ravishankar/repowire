@@ -290,7 +290,9 @@ func (s *Store) maybeSweep() {
 				break
 			}
 			for name, n := range pass(r.ctx, r.policy, now) {
-				counts[name] += n
+				if n > 0 {
+					counts[name] += n
+				}
 			}
 		}
 		if len(counts) == 0 || r.ctx.Err() != nil {

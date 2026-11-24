@@ -151,6 +151,28 @@ func TestRetentionPlugsAndASingleLifecycle(t *testing.T) {
 	}
 }
 
+// A sweep that changed nothing journals nothing, even when a pass reports
+// zero.
+func TestASweepThatChangesNothingIsNotJournaled(t *testing.T) {
+	s := newSweepStore(t)
+	emitted := 0
+	r := &retention{policy: defaultPolicy, now: func() time.Time { return sweepNow }, plugs: RetentionPlugs{
+		Passes: []func(context.Context, RetentionPolicy, time.Time) map[string]int{
+			func(context.Context, RetentionPolicy, time.Time) map[string]int {
+				return map[string]int{"attachments.delete": 0}
+			},
+		},
+		Emit: func(context.Context, string, map[string]any) string { emitted++; return "" },
+	}}
+	if err := s.startRetention(r); err != nil {
+		t.Fatal(err)
+	}
+	waitSweep(t, r)
+	if emitted != 0 {
+		t.Fatalf("an empty sweep was journaled %d times", emitted)
+	}
+}
+
 // Close cancels a sweep in flight and returns only after it ends, so the db
 // never closes under it (#572); no sweep starts afterwards.
 func TestCloseWaitsForARunningSweep(t *testing.T) {
