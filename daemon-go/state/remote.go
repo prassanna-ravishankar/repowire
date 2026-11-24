@@ -364,3 +364,18 @@ func anySlice(values []string) []any {
 	}
 	return out
 }
+
+// remoteRetention: cross-machine records live for the fixed protocol window
+// (RemoteWindow) whatever the policy. The store epoch is identity.
+var (
+	remoteRetention = tableRetention{
+		tables: []string{"remote_inbound", "remote_fences", "remote_outbound"},
+		rules: func(c retentionCutoffs) (records, content []sweepRule) {
+			for _, table := range []string{"remote_inbound", "remote_fences", "remote_outbound"} {
+				records = append(records, sweepRule{name: table + ".delete", table: table, where: "created_at < ?", args: []any{c.remote}})
+			}
+			return records, nil
+		},
+	}
+	daemonMetaRetention = tableRetention{tables: []string{"daemon_meta"}, exempt: "the store epoch identifies this daemon to other machines"}
+)

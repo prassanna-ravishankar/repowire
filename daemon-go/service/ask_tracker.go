@@ -184,6 +184,9 @@ func (t *AskTracker) SetOnRegister(fn func(cid string, from, to proto.PeerID)) {
 	t.onRegister = fn
 }
 
+// TTL is how long an ask may stay open.
+func (t *AskTracker) TTL() time.Duration { return t.ttl }
+
 // NewAskTracker returns an empty tracker. A non-positive ttl falls back to 24h.
 func NewAskTracker(ttl time.Duration) *AskTracker {
 	if ttl <= 0 {

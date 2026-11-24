@@ -401,3 +401,28 @@ func scanInboxItem(row rowScanner) (*InboxItem, error) {
 	}
 	return &item, nil
 }
+
+// inboxRetention: an item is a record, with its push outcomes and surface
+// refs; its text is content. An unreplied ask's item backs the reply to
+// that ask, so it is kept while the ask may still be open (AskLife).
+var inboxRetention = tableRetention{
+	tables: []string{"inbox_items", "inbox_pushes", "inbox_refs"},
+	rules: func(c retentionCutoffs) (records, content []sweepRule) {
+		openAsk, openArgs := "", []any(nil)
+		if c.asksSince != "" {
+			openAsk, openArgs = " AND NOT (kind = 'ask' AND replied_at IS NULL AND created_at >= ?)", []any{c.asksSince}
+		}
+		if c.records != "" {
+			records = append(records,
+				sweepRule{name: "inbox_items.delete", table: "inbox_items", where: "created_at < ?" + openAsk, args: append([]any{c.records}, openArgs...)},
+				sweepRule{name: "inbox_pushes.delete", table: "inbox_pushes", where: "item_id NOT IN (SELECT id FROM inbox_items)"},
+				sweepRule{name: "inbox_refs.delete", table: "inbox_refs", where: "item_id NOT IN (SELECT id FROM inbox_items)"})
+		}
+		if c.content != "" {
+			content = append(content, sweepRule{name: "inbox_items.strip", table: "inbox_items",
+				where: "created_at < ? AND (text != '' OR attachments_json != '[]' OR question_json IS NOT NULL)" + openAsk,
+				set:   "text = '', attachments_json = '[]', question_json = NULL", args: append([]any{c.content}, openArgs...)})
+		}
+		return records, content
+	},
+}

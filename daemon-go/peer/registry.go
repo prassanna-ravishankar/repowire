@@ -173,7 +173,6 @@ type Registry struct {
 	redeliverMu     sync.Mutex
 	redeliverActive map[proto.PeerID]struct{}
 
-	repairPasses      []func(context.Context) // wiring-time only; read in LazyRepair
 	retiredTTL        time.Duration
 	reapTTL           time.Duration
 	heartbeatInterval time.Duration
@@ -1441,20 +1440,7 @@ func (r *Registry) LazyRepair(ctx context.Context) {
 	r.emitAndEvictExpiredStashes(ctx)
 	r.persistMappings(ctx)
 	r.pruneRetired(ctx)
-	for _, pass := range r.repairPasses {
-		pass(ctx)
-	}
 }
-
-// AddRepairPass runs pass at the end of every lazy repair. Call it while
-// wiring, before requests arrive. A pass must be cheap when it has nothing
-// to do; slow work belongs on Track.
-func (r *Registry) AddRepairPass(pass func(context.Context)) {
-	r.repairPasses = append(r.repairPasses, pass)
-}
-
-// Track runs f on a goroutine Close waits for.
-func (r *Registry) Track(f func()) { r.spawnTracked(f) }
 
 // demoteDisconnected marks Online/Busy transport-owned peers OFFLINE when they
 // have no live WebSocket. Two sub-passes mirror Python:

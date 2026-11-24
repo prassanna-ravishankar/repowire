@@ -408,3 +408,5 @@ func sbCoalesceStr(next, fallback string) string {
 	}
 	return fallback
 }
+
+var sessionBindingRetention = tableRetention{tables: []string{"session_bindings"}, exempt: "resume state for durable sessions"}

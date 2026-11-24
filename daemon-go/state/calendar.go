@@ -307,3 +307,5 @@ func (s *Store) NextCalendarDue(ctx context.Context) (*time.Time, error) {
 func calendarCloneMap(m map[string]any) map[string]any {
 	return maps.Clone(m)
 }
+
+var calendarRetention = tableRetention{tables: []string{"calendar_entries"}, exempt: "configuration, not history"}

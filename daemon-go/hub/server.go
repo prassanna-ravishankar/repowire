@@ -52,6 +52,9 @@ type Hub struct {
 	// inbox is the human peer's inbox, wired via WithInbox. nil → no human
 	// peer: /inbox routes 503 and phone bridges are ordinary service peers.
 	inbox *service.Inbox
+	// attachmentRetention expires uploaded files (WithRetention); the zero
+	// policy keeps them.
+	attachmentRetention state.RetentionPolicy
 	// messages is the agent peers' message record behind /messages, wired
 	// via WithMessages. nil → those routes 503.
 	messages *service.Messages

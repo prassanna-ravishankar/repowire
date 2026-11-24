@@ -18,8 +18,11 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
+
+	"github.com/repowire/repowire/daemon-go/state"
 )
 
 const (
@@ -83,6 +86,9 @@ func (h *Hub) uploadAttachment(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to create attachments dir: "+err.Error())
 		return
 	}
+
+	// Expired files go first so they can't fill the cap and deny an upload.
+	h.expireAttachments(dir)
 
 	used := attachmentDirSize(dir)
 	if used >= maxAttachmentDirSize {
@@ -170,6 +176,7 @@ func (h *Hub) getAttachment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	dir := AttachmentsDir()
+	h.expireAttachments(dir)
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		writeError(w, http.StatusNotFound, "Not found")
@@ -186,4 +193,30 @@ func (h *Hub) getAttachment(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	writeError(w, http.StatusNotFound, "Attachment not found")
+}
+
+// WithRetention expires attachment files with other content: an upload or a
+// read first removes files older than the policy's content cutoff.
+func (h *Hub) WithRetention(p state.RetentionPolicy) *Hub {
+	h.attachmentRetention = p
+	return h
+}
+
+// expireAttachments removes regular files in dir modified before the content
+// cutoff. Best-effort; the zero policy keeps everything.
+func (h *Hub) expireAttachments(dir string) {
+	cutoff := h.attachmentRetention.ContentCutoff(time.Now())
+	if cutoff.IsZero() {
+		return
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+	for _, e := range entries {
+		info, err := e.Info()
+		if err == nil && info.Mode().IsRegular() && info.ModTime().Before(cutoff) {
+			_ = os.Remove(filepath.Join(dir, e.Name()))
+		}
+	}
 }

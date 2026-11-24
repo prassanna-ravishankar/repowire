@@ -23,9 +23,8 @@ retention:
   records_days: 180   # the rows that say who did what, when, and how it ended
 ```
 
-`0` keeps a class forever; otherwise 7 to 36500 days, and at least the ask
-lifetime (`daemon.prune_max_age_hours`, 24 hours by default), so an open
-ask's inbox item and refs, which carry the human's reply, outlive it. Any other value warns and keeps the default.
+`0` keeps a class forever; a negative, non-numeric or over-36500 value
+warns and keeps the default.
 When `records_days` is shorter, content goes with its record.
 
 | Store | At `content_days` | At `records_days` |
@@ -34,6 +33,7 @@ When `records_days` is shorter, content goes with its record.
 | `delivery_traces` | remove `text`, `reply`, `note`, `request.text` from `detail_json` | delete row |
 | `events` | `chat_turn`, `chat_turn_delta`: delete row. Message events: remove `text`, `message`, `note`, `question`, `attachments` | delete row |
 | `inbox_items` | blank `text`, `attachments_json`, `question_json` | delete row, its pushes and refs |
+| (an unreplied ask's item) | kept while the ask may be open (`daemon.prune_max_age_hours`) | same |
 | `tracked_work` | n/a (a job keeps its result) | delete terminal jobs |
 | `operations` | n/a | delete completed operations |
 | `runtime_identity_certificates` | n/a | delete rows expired before the cutoff, except each peer's newest (a runtime renews from it) |
@@ -51,14 +51,27 @@ Exempt, because they bound live state rather than history: open jobs,
 schedules, identity and resume tables, queued deliveries, the in-memory ask
 tracker, retirement records, the dashboard's 500-event window.
 
-## Sweeper
+## Ownership
 
-`state.Store.Sweep(ctx, policy, now)` runs the rules above, records first,
-in batches of 500 rows per statement, and returns per-rule counts.
-`service.Retention.MaybeSweep` runs it off the request path, at most hourly
-and one at a time, from `Registry.LazyRepair` and once at daemon start. A
-sweep that changed anything journals one `retention_swept` event with the
-counts. The three earlier ad-hoc sweeps are removed.
+Each piece lives with what it expires, so its lifecycle has one owner.
+
+- **Rules:** each table declares a `tableRetention` (its rules per class,
+  or why it is exempt) in its own `state/<domain>.go` file.
+  `TestEveryTableDeclaresRetention` reads `sqlite_master` and fails for a
+  table without exactly one declaration, so a new table cannot silently go
+  unswept.
+- **Sweep lifecycle:** the store. `Store.StartRetention(policy)` sweeps at
+  once; later sweeps start after an event write, at most hourly, one at a
+  time, off the writer's path. `Store.Close` cancels a sweep in flight and
+  waits for it before closing the database. Sweeps run every table's
+  records rules, then every content rule, in batches of 500 rows, and
+  journal one `retention_swept` event with per-rule counts.
+- **Attachment files:** the attachment routes, which already own the
+  directory: an upload or a read first removes files past the content
+  cutoff.
+- **Open asks:** the inbox's own rule keeps an unreplied ask's item (and
+  its pushes and refs) while the ask may be open, so the policy needs no
+  floor.
 
 ## Readers
 

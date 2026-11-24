@@ -351,11 +351,6 @@ func runDaemon() {
 	// without the registry learning the tracker's shape. It also builds the
 	// QueryTracker + MessageRouter the delivery/session groups need.
 	h := hub.NewHubWithTransport(reg, transport, *authToken)
-	// Retention (rfcs/retention.md): one policy over every store, swept from
-	// lazy repair at most hourly; starting the daemon counts as a request.
-	retention := service.NewRetention(store, cfg.Retention, hub.AttachmentsDir()).WithJournal(reg.AddEvent).WithSpawn(reg.Track)
-	reg.AddRepairPass(retention.MaybeSweep)
-	retention.MaybeSweep(ctx)
 	selfMachine, _ := os.Hostname()
 
 	// (6) Application services. AskTracker is the in-memory open-ask store;
@@ -363,6 +358,12 @@ func runDaemon() {
 	// lifecycle + the durable queued-delivery fallback (store satisfies the
 	// queue seam). The router (WS-only) is the one the hub minted in step 5.
 	asks := service.NewAskTracker(time.Duration(cfg.Daemon.PruneMaxAgeHours * float64(time.Hour)))
+	// Retention (rfcs/retention.md): the store sweeps its own tables and the
+	// hub expires attachment files; an open ask's inbox item outlives the ask.
+	content, records := cfg.Retention.Durations()
+	retention := state.RetentionPolicy{Content: content, Records: records, AskLife: asks.TTL()}
+	store.StartRetention(retention)
+	h.WithRetention(retention)
 	messages := service.NewMessages(store)
 	delivery := service.NewPeerDelivery(reg, h.Router(), transport, asks, store).WithQueueConfig(cfg.Daemon.DeliveryQueueTTLSeconds, cfg.Daemon.DeliveryQueueMaxPerPeer).WithOperationStore(store).WithOrchestratorRecall(cfg.Daemon.OrchestratorRecall).WithMessages(messages)
 	if recovered := service.ReconcileACPInflight(ctx, store, cfg.Daemon.DeliveryQueueTTLSeconds, cfg.Daemon.DeliveryQueueMaxPerPeer); recovered > 0 {

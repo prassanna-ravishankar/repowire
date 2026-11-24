@@ -3,39 +3,47 @@ package state
 import (
 	"context"
 	"fmt"
-	"sort"
+	"log"
 	"strings"
+	"sync"
 	"time"
+
+	"github.com/repowire/repowire/daemon-go/peer"
 )
 
 // Retention (rfcs/retention.md): one policy for everything the daemon keeps.
 // Content is text a peer or the human wrote; it is stripped in place, or its
 // row deleted when the row is nothing but content. Records are the rows that
-// say who did what and when; they are deleted. Live state (open jobs,
-// unexpired certificates, identity and schedule tables) is never touched.
+// say who did what and when; they are deleted. Live state (open jobs, open
+// asks, a runtime's newest certificate, identity and schedule tables) is
+// never touched.
+//
+// Each table declares its retention beside its own queries (a
+// tableRetention in its domain file), and the store runs the sweep: once
+// when StartRetention is called and then, at most hourly, after an event
+// write that finds one due. TestEveryTableDeclaresRetention fails on a table
+// without a declaration.
 
 // RetentionPolicy says how long each class is kept. Zero keeps forever.
+// AskLife is how long an ask may stay open; the inbox keeps an unreplied
+// ask's item that long whatever the policy (zero protects nothing).
 type RetentionPolicy struct {
 	Content time.Duration
 	Records time.Duration
+	AskLife time.Duration
 }
 
 // sweepBatch bounds each statement so a first sweep over a large journal
 // never holds the writer for long.
 const sweepBatch = 500
 
+// retentionInterval is the least time between two sweeps.
+const retentionInterval = time.Hour
+
 // RemoteWindow is the fixed life of a cross-machine record: it is protocol
 // state (a live ask is retried and answered from its row until then), so the
 // policy does not move it.
 const RemoteWindow = 7 * 24 * time.Hour
-
-// Message events whose payload carries authored text, and the keys holding it.
-var (
-	contentEventTypes = []string{"notification", "broadcast", "ask", "query", "response", "ask_delegated"}
-	transcriptTypes   = []string{"chat_turn", "chat_turn_delta"}
-	eventContentKeys  = []string{"$.text", "$.message", "$.note", "$.question", "$.attachments"}
-	traceContentKeys  = []string{"$.text", "$.reply", "$.note", "$.request.text"}
-)
 
 type sweepRule struct {
 	name string
@@ -44,6 +52,32 @@ type sweepRule struct {
 	// batch loop ends.
 	table, where, set string
 	args              []any
+}
+
+// retentionCutoffs is a policy as of one sweep, in stored-timestamp form.
+// An empty records or content cutoff means that class is kept forever.
+type retentionCutoffs struct {
+	records, content string
+	asksSince        string // an ask created at or after this may be open; "" protects none
+	remote           int64  // unix seconds: the cross-machine window
+}
+
+// tableRetention is a domain's declaration for the tables it owns: the
+// rules it runs per class, or why the tables are exempt. Records rules of
+// every table run before any content rule, so content rules only see rows
+// that survive.
+type tableRetention struct {
+	tables []string
+	rules  func(c retentionCutoffs) (records, content []sweepRule)
+	exempt string
+}
+
+// tableRetentions gathers every domain's declaration.
+var tableRetentions = []tableRetention{
+	deliveryTraceRetention, eventRetention, inboxRetention, workRetention, operationRetention,
+	certificateRetention, peerMessageRetention, remoteRetention,
+	peerMessageDeliveryRetention, daemonMetaRetention, scheduleRetention, calendarRetention,
+	sessionBindingRetention, queuedDeliveryRetention, identityRetention, migrationRetention, legacyImportRetention,
 }
 
 // ContentCutoff is the instant before which content goes: the records
@@ -58,6 +92,20 @@ func (p RetentionPolicy) ContentCutoff(now time.Time) time.Time {
 		return time.Time{}
 	}
 	return now.Add(-d)
+}
+
+func (p RetentionPolicy) cutoffs(now time.Time) retentionCutoffs {
+	c := retentionCutoffs{remote: now.Add(-RemoteWindow).Unix()}
+	if p.Records > 0 {
+		c.records = sweepStamp(now.Add(-p.Records))
+	}
+	if cutoff := p.ContentCutoff(now); !cutoff.IsZero() {
+		c.content = sweepStamp(cutoff)
+	}
+	if p.AskLife > 0 {
+		c.asksSince = sweepStamp(now.Add(-p.AskLife))
+	}
+	return c
 }
 
 // sweepStamp is the cutoff as stored timestamps compare against it. Every
@@ -85,70 +133,32 @@ func inList(values []string) string {
 	return "('" + strings.Join(values, "', '") + "')"
 }
 
-// retentionRules lists the rules in the order a sweep runs them: records
-// first, so content rules only see rows that survive.
+// retentionRules lists the rules in the order a sweep runs them: every
+// table's records rules, then every table's content rules.
 func retentionRules(p RetentionPolicy, now time.Time) []sweepRule {
-	var rules []sweepRule
-	if p.Records > 0 {
-		r := sweepStamp(now.Add(-p.Records))
-		rules = append(rules,
-			sweepRule{name: "delivery_traces.delete", table: "delivery_traces", where: "ts < ?", args: []any{r}},
-			sweepRule{name: "events.delete", table: "events", where: "timestamp < ?", args: []any{r}},
-			sweepRule{name: "inbox_items.delete", table: "inbox_items", where: "created_at < ?", args: []any{r}},
-			sweepRule{name: "tracked_work.delete", table: "tracked_work",
-				where: "state IN " + inList(terminalStateList()) + " AND COALESCE(completed_at, updated_at) < ?", args: []any{r}},
-			sweepRule{name: "operations.delete", table: "operations",
-				where: "completed_at IS NOT NULL AND completed_at < ?", args: []any{r}},
-			// A runtime renews from its newest certificate even after it
-			// expired, so each peer keeps its newest one.
-			sweepRule{name: "runtime_identity_certificates.delete", table: "runtime_identity_certificates",
-				where: "expires_at < ? AND EXISTS (SELECT 1 FROM runtime_identity_certificates newer " +
-					"WHERE newer.peer_id = runtime_identity_certificates.peer_id AND newer.issued_at > runtime_identity_certificates.issued_at)", args: []any{r}},
-			// An item's push outcomes and surface refs go with it.
-			sweepRule{name: "inbox_pushes.delete", table: "inbox_pushes", where: "item_id NOT IN (SELECT id FROM inbox_items)"},
-			sweepRule{name: "inbox_refs.delete", table: "inbox_refs", where: "item_id NOT IN (SELECT id FROM inbox_items)"},
-		)
+	c := p.cutoffs(now)
+	var records, content []sweepRule
+	for _, t := range tableRetentions {
+		if t.rules == nil {
+			continue
+		}
+		r, k := t.rules(c)
+		records, content = append(records, r...), append(content, k...)
 	}
-	if cutoff := p.ContentCutoff(now); !cutoff.IsZero() {
-		c := []any{sweepStamp(cutoff)}
-		rules = append(rules,
-			sweepRule{name: "peer_messages.delete", table: "peer_messages", where: "created_at < ?", args: c},
-			sweepRule{name: "delivery_traces.strip", table: "delivery_traces",
-				where: "ts < ? AND " + jsonPresent("detail_json", traceContentKeys),
-				set:   jsonStrip("detail_json", traceContentKeys), args: c},
-			sweepRule{name: "events.delete_transcripts", table: "events",
-				where: "type IN " + inList(transcriptTypes) + " AND timestamp < ?", args: c},
-			sweepRule{name: "events.strip", table: "events",
-				where: "type IN " + inList(contentEventTypes) + " AND timestamp < ? AND " + jsonPresent("payload_json", eventContentKeys),
-				set:   jsonStrip("payload_json", eventContentKeys), args: c},
-			sweepRule{name: "inbox_items.strip", table: "inbox_items",
-				where: "created_at < ? AND (text != '' OR attachments_json != '[]' OR question_json IS NOT NULL)",
-				set:   "text = '', attachments_json = '[]', question_json = NULL", args: c},
-		)
-	}
-	remote := now.Add(-RemoteWindow).Unix()
-	for _, table := range []string{"remote_inbound", "remote_fences", "remote_outbound"} {
-		rules = append(rules, sweepRule{name: table + ".delete", table: table, where: "created_at < ?", args: []any{remote}})
-	}
-	return rules
-}
-
-func terminalStateList() []string {
-	out := make([]string, 0, len(terminalWorkStates))
-	for state := range terminalWorkStates {
-		out = append(out, state)
-	}
-	sort.Strings(out)
-	return out
+	return append(records, content...)
 }
 
 // Sweep applies policy as of now and returns the rows each rule changed,
 // keyed by rule name such as "events.strip". A failing rule does not stop
-// the others; the error returned is the first one.
+// the others; the error returned is the first one. A cancelled ctx stops
+// the sweep between batches.
 func (s *Store) Sweep(ctx context.Context, p RetentionPolicy, now time.Time) (map[string]int, error) {
 	counts := map[string]int{}
 	var first error
 	for _, rule := range retentionRules(p, now) {
+		if err := ctx.Err(); err != nil {
+			return counts, err
+		}
 		n, err := s.applyRule(ctx, rule)
 		if err != nil && first == nil {
 			first = fmt.Errorf("retention %s: %w", rule.name, err)
@@ -181,4 +191,89 @@ func (s *Store) applyRule(ctx context.Context, rule sweepRule) (int, error) {
 			return total, nil
 		}
 	}
+}
+
+// retention is the store's sweep lifecycle: started by StartRetention,
+// stopped by Close.
+type retention struct {
+	policy RetentionPolicy
+	now    func() time.Time
+	ctx    context.Context
+	cancel context.CancelFunc
+	wg     sync.WaitGroup
+
+	mu      sync.Mutex
+	running bool
+	stopped bool
+	due     time.Time // no sweep before this
+
+	beforeSweep func(ctx context.Context) // test seam: runs as a sweep starts
+}
+
+// StartRetention applies policy from now on: a sweep starts at once, and
+// later ones start after an event write once an hour has passed. Sweeps run
+// off the caller's path, one at a time; Close stops one in flight and waits
+// for it. Call it once, while wiring.
+func (s *Store) StartRetention(policy RetentionPolicy) {
+	s.startRetention(&retention{policy: policy, now: time.Now})
+}
+
+func (s *Store) startRetention(r *retention) {
+	r.ctx, r.cancel = context.WithCancel(context.Background())
+	s.retention.Store(r)
+	s.maybeSweep()
+}
+
+// maybeSweep starts a due sweep. Cheap otherwise: every event write calls it.
+func (s *Store) maybeSweep() {
+	r := s.retention.Load()
+	if r == nil {
+		return
+	}
+	r.mu.Lock()
+	now := r.now()
+	if r.stopped || r.running || now.Before(r.due) {
+		r.mu.Unlock()
+		return
+	}
+	r.running, r.due = true, now.Add(retentionInterval)
+	r.wg.Add(1)
+	r.mu.Unlock()
+
+	go func() {
+		defer r.wg.Done()
+		defer func() {
+			r.mu.Lock()
+			r.running = false
+			r.mu.Unlock()
+		}()
+		if r.beforeSweep != nil {
+			r.beforeSweep(r.ctx)
+		}
+		counts, err := s.Sweep(r.ctx, r.policy, now)
+		if err != nil && r.ctx.Err() == nil {
+			log.Printf("retention: %v", err)
+		}
+		if len(counts) == 0 || r.ctx.Err() != nil {
+			return
+		}
+		log.Printf("retention: swept %v", counts)
+		if err := s.AppendEvent(r.ctx, peer.Event{Type: "retention_swept", Payload: map[string]any{"counts": counts}}); err != nil {
+			log.Printf("retention: journal: %v", err)
+		}
+	}()
+}
+
+// stopRetention cancels a sweep in flight and waits for it; no sweep starts
+// afterwards.
+func (s *Store) stopRetention() {
+	r := s.retention.Load()
+	if r == nil {
+		return
+	}
+	r.mu.Lock()
+	r.stopped = true
+	r.mu.Unlock()
+	r.cancel()
+	r.wg.Wait()
 }
