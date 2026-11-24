@@ -39,10 +39,12 @@ Two actors:
   This is as strong as an HTTP credential can be on a machine where agents
   run as the same user: an agent that can read `~/.repowire/config.yaml`
   holds the token. So the protected-thread and circle rules bind agents on
-  the MCP path, and the operator routes are only as private as that file. A
-  human-in-the-loop confirmation (for example on Telegram, which a local
-  agent cannot answer) is the later step for actions that must be beyond an
-  agent's reach.
+  the MCP path, and the operator routes are only as private as that file
+  (#581). The real human proof, for actions that must be beyond an agent's
+  reach, is a confirmation through the human channel: the human inbox
+  already owns proof that a human answered, and a Telegram reply cannot be
+  produced by a local agent. That is the socket such actions plug into
+  later.
 - **Orchestrator** (MCP, proven identity, `role=orchestrator`, checked per
   call) is refused on protected threads, and every party the ask ever had
   (asker, each holder, each delegator) and the destination must be in the
