@@ -847,4 +847,22 @@ func TestInboxIgnoresAnOlderSettle(t *testing.T) {
 	if len(reasons) != 1 || reasons[0] != "returned" {
 		t.Fatalf("published %v, want only the newer returned", reasons)
 	}
+	f.reg.mu.Unlock()
+
+	// After a close, an older move that arrives late is ignored too.
+	closed := *ask
+	closed.Closed, closed.CloseReason = true, "cancelled"
+	f.inbox.AskSettled(AskSettled{Ask: &closed, Reason: "cancelled", Seq: 4})
+	f.inbox.AskSettled(AskSettled{Ask: ask, Reason: "returned", MovedFrom: f.beta.PeerID, Seq: 3})
+	f.settle()
+	f.reg.mu.Lock()
+	var after []any
+	for _, e := range f.reg.events {
+		if e.typ == "inbox_updated" {
+			after = append(after, e.payload["answerable"])
+		}
+	}
+	if len(after) != 2 || after[1] != false {
+		t.Fatalf("answerable published after the close = %v, want [true false]", after)
+	}
 }

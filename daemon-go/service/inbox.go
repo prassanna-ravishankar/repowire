@@ -128,7 +128,7 @@ type Inbox struct {
 	settleMu sync.Mutex
 	settles  []AskSettled
 	draining bool
-	applied  map[string]uint64 // per ask, the newest Seq published; dropped once it closes
+	applied  map[string]appliedSettle // per ask, the newest Seq published
 }
 
 // NewInbox wires the inbox. asks may be nil (no thread validation: items never
@@ -328,6 +328,18 @@ func (i *Inbox) AskSettled(ev AskSettled) {
 	}
 }
 
+// appliedSettle is the newest event published for an ask. A closed ask's
+// entry stays briefly as a tombstone, so an older move or return that reaches
+// the inbox after the close cannot publish the ask as answerable again.
+type appliedSettle struct {
+	seq      uint64
+	closedAt time.Time
+}
+
+// settleTombstone is how long a closed ask's entry outlives the close: far
+// longer than two unlocking goroutines can be apart.
+const settleTombstone = time.Minute
+
 func (i *Inbox) drainSettles() {
 	human, _ := i.Human()
 	for {
@@ -340,15 +352,22 @@ func (i *Inbox) drainSettles() {
 		ev := i.settles[0]
 		i.settles = i.settles[1:]
 		cid := ev.Ask.CorrelationID
-		stale := ev.Seq <= i.applied[cid]
+		now := time.Now()
+		for id, a := range i.applied {
+			if !a.closedAt.IsZero() && now.Sub(a.closedAt) > settleTombstone {
+				delete(i.applied, id)
+			}
+		}
+		stale := ev.Seq <= i.applied[cid].seq
 		if !stale {
 			if i.applied == nil {
-				i.applied = map[string]uint64{}
+				i.applied = map[string]appliedSettle{}
 			}
-			i.applied[cid] = ev.Seq
+			a := appliedSettle{seq: ev.Seq}
 			if ev.Ask.Closed {
-				delete(i.applied, cid) // nothing follows a close
+				a.closedAt = now
 			}
+			i.applied[cid] = a
 		}
 		i.settleMu.Unlock()
 		if stale {

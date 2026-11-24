@@ -178,8 +178,12 @@ func (h *Hub) replyToInboxItem(ctx context.Context, item *state.InboxItem, req I
 			})
 		}
 		if ask, ok := h.ask.asks.Get(item.CorrelationID); ok && !ask.Closed {
+			// The human answers as the human, so the resolution's own check
+			// under the claim refuses it if the ask moved meanwhile; the check
+			// above only words the common case.
+			from := string(human)
 			if ask.Question != nil {
-				answer := AnswerRequest{CorrelationID: item.CorrelationID, OptionID: req.OptionID}
+				answer := AnswerRequest{CorrelationID: item.CorrelationID, OptionID: req.OptionID, FromPeer: &from}
 				if req.Text != "" {
 					answer.Text = &req.Text
 				} else if req.OptionID == nil {
@@ -190,7 +194,7 @@ func (h *Hub) replyToInboxItem(ctx context.Context, item *state.InboxItem, req I
 				}
 				result["action"] = "answered"
 			} else {
-				ack := AckRequest{CorrelationID: item.CorrelationID}
+				ack := AckRequest{CorrelationID: item.CorrelationID, FromPeer: &from}
 				if req.Text != "" {
 					ack.Message = &req.Text
 				}
