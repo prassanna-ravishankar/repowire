@@ -17,13 +17,14 @@ the last months (#362, #371, #376, #391, #392, #408, #532, #544, #552)
 reconstruct "is this peer's agent still the process in this pane" from tmux
 formats and the process table.
 
-Proposal: a `Container` socket in the daemon that owns an agent's process
-lifecycle (launch, kill, exit, attach, adopt after a daemon restart). tmux
-becomes one implementation, the attachable one, and stays the default. A
-headless implementation plugs in for backends with a native headless
-protocol. The first slice changes no behaviour: it extracts the socket
-around today's tmux code and moves exit detection from tmux hooks to the
-agent's own process.
+Proposal: a `Container` socket in the daemon that owns a spawned agent's
+execution: reserve a place, launch, bind the runtime when it registers,
+stop, watch for its end, attach, and re-adopt after a daemon restart. tmux
+becomes one plug, the attachable one, and stays the default. ACP and Codex
+App Server threads become plugs for executions nobody needs to watch. The
+first slice changes no behaviour: it extracts the socket around today's
+tmux code. Exit watching then runs as an observation before it is allowed
+to drive offline state.
 
 ## 1. What tmux does today
 
