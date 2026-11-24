@@ -3,7 +3,6 @@ package config
 import (
 	"encoding/json"
 	"fmt"
-	"math"
 	"os"
 	"path/filepath"
 	"slices"
@@ -41,9 +40,14 @@ type Config struct {
 	strategyUnusable bool
 }
 
-// maxRetentionDays bounds a retention setting to what a time.Duration holds
-// with room to spare (100 years; a Duration tops out near 292).
-const maxRetentionDays = 36500
+// A retention setting is 0 (keep forever) or minRetentionDays to
+// maxRetentionDays. The floor outlives live state the swept rows back (an
+// open ask's inbox item lives as long as the ask, 24 hours by default); the
+// ceiling is what a time.Duration holds with room to spare (100 years).
+const (
+	minRetentionDays = 7
+	maxRetentionDays = 36500
+)
 
 // RetentionConfig is how long the daemon keeps what it stores
 // (rfcs/retention.md). Content is text a peer or the human wrote; records are
@@ -627,9 +631,9 @@ func normalize(cfg *Config) {
 		fallback float64
 		key      string
 	}{{&cfg.Retention.ContentDays, defaults.ContentDays, "content_days"}, {&cfg.Retention.RecordsDays, defaults.RecordsDays, "records_days"}} {
-		if v := *days.value; v < 0 || v > maxRetentionDays || math.IsNaN(v) {
+		if v := *days.value; v != 0 && !(v >= minRetentionDays && v <= maxRetentionDays) {
 			*days.value = days.fallback
-			cfg.Warnings = append(cfg.Warnings, fmt.Sprintf("config: retention.%s is ignored: it must be 0 (keep forever) or a number of days up to %d", days.key, maxRetentionDays))
+			cfg.Warnings = append(cfg.Warnings, fmt.Sprintf("config: retention.%s is ignored: it must be 0 (keep forever) or %d to %d days", days.key, minRetentionDays, maxRetentionDays))
 		}
 	}
 	if len(cfg.Experiments.RemoteToolApproval.GatedTools) == 0 {

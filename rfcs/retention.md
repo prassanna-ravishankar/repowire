@@ -23,7 +23,9 @@ retention:
   records_days: 180   # the rows that say who did what, when, and how it ended
 ```
 
-`0` keeps a class forever. A bad value warns and keeps the default.
+`0` keeps a class forever; otherwise 7 to 36500 days. The 7-day floor
+outlives an open ask (24 hours by default), whose inbox item and refs carry
+the human's reply. Any other value warns and keeps the default.
 When `records_days` is shorter, content goes with its record.
 
 | Store | At `content_days` | At `records_days` |
@@ -34,7 +36,7 @@ When `records_days` is shorter, content goes with its record.
 | `inbox_items` | blank `text`, `attachments_json`, `question_json` | delete row, its pushes and refs |
 | `tracked_work` | n/a (a job keeps its result) | delete terminal jobs |
 | `operations` | n/a | delete completed operations |
-| `runtime_identity_certificates` | n/a | delete rows expired before the cutoff |
+| `runtime_identity_certificates` | n/a | delete rows expired before the cutoff, except each peer's newest (a runtime renews from it) |
 | attachments directory | delete file | n/a |
 
 Stripped JSON rows gain `"content_expired": true`, so `repowire why` says

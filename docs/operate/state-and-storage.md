@@ -27,7 +27,7 @@ One policy, `retention` in [configuration](../reference/configuration.md#retenti
 | Class | Default | What | At expiry |
 | --- | --- | --- | --- |
 | content | 7 days | text a peer or the human wrote: `peer_messages` bodies, ask text and replies in `delivery_traces`, message text in `events` (`notification`, `broadcast`, `ask`, `query`, `response`, `ask_delegated`), `chat_turn` transcripts, inbox item text, attachment files | removed in place (JSON gains `"content_expired": true`); rows and files that are only content are deleted |
-| records | 180 days | `delivery_traces` and `events` rows, inbox items with their pushes and refs, terminal jobs, completed operations, expired runtime certificates | deleted |
+| records | 180 days | `delivery_traces` and `events` rows, inbox items with their pushes and refs, terminal jobs, completed operations, expired runtime certificates (each peer keeps its newest) | deleted |
 
 Not covered, because they bound live state rather than history: open jobs, schedules and calendar entries, peer mappings, session bindings, retirement records (72 hours), queued deliveries (`daemon.delivery_queue_ttl_seconds`), the in-memory ask tracker (`daemon.prune_max_age_hours`), the 500-event dashboard window, and cross-machine records (7 days, above). Log files are written by the service manager and rotate separately.
 

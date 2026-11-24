@@ -159,7 +159,8 @@ func TestSweepDeletesRecordsAndSparesLiveState(t *testing.T) {
 	s.mustExec(t, `INSERT INTO operations(operation_id, kind, state, created_at, updated_at, completed_at) VALUES
 		('op-old', 'restart', 'completed', ?, ?, ?), ('op-open', 'restart', 'running', ?, ?, NULL)`, old, old, old, old, old)
 	s.mustExec(t, `INSERT INTO runtime_identity_certificates(nonce, peer_id, display_name, backend, project_path, issued_at, expires_at) VALUES
-		('c-old', 'p', 'n', 'claude-code', '/x', ?, ?), ('c-new', 'p', 'n', 'claude-code', '/x', ?, ?)`, old, old, fresh, fresh)
+		('c-old', 'p', 'n', 'claude-code', '/x', ?, ?), ('c-new', 'p', 'n', 'claude-code', '/x', ?, ?),
+		('c-only', 'q', 'n', 'codex', '/x', ?, ?)`, old, old, fresh, fresh, ago(400*day), ago(400*day))
 
 	sweep(t, s, defaultPolicy)
 	remaining := func(table, key string) map[string]bool {
@@ -189,7 +190,7 @@ func TestSweepDeletesRecordsAndSparesLiveState(t *testing.T) {
 		{"inbox_refs", "item_id", []string{"inb-new"}},
 		{"tracked_work", "work_id", []string{"job-running-old", "job-done-new"}},
 		{"operations", "operation_id", []string{"op-open"}},
-		{"runtime_identity_certificates", "nonce", []string{"c-new"}},
+		{"runtime_identity_certificates", "nonce", []string{"c-new", "c-only"}}, // a peer's newest survives
 	} {
 		got := remaining(c.table, c.key)
 		if len(got) != len(c.want) {

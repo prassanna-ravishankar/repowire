@@ -99,8 +99,11 @@ func retentionRules(p RetentionPolicy, now time.Time) []sweepRule {
 				where: "state IN " + inList(terminalStateList()) + " AND COALESCE(completed_at, updated_at) < ?", args: []any{r}},
 			sweepRule{name: "operations.delete", table: "operations",
 				where: "completed_at IS NOT NULL AND completed_at < ?", args: []any{r}},
+			// A runtime renews from its newest certificate even after it
+			// expired, so each peer keeps its newest one.
 			sweepRule{name: "runtime_identity_certificates.delete", table: "runtime_identity_certificates",
-				where: "expires_at < ?", args: []any{r}},
+				where: "expires_at < ? AND EXISTS (SELECT 1 FROM runtime_identity_certificates newer " +
+					"WHERE newer.peer_id = runtime_identity_certificates.peer_id AND newer.issued_at > runtime_identity_certificates.issued_at)", args: []any{r}},
 			// An item's push outcomes and surface refs go with it.
 			sweepRule{name: "inbox_pushes.delete", table: "inbox_pushes", where: "item_id NOT IN (SELECT id FROM inbox_items)"},
 			sweepRule{name: "inbox_refs.delete", table: "inbox_refs", where: "item_id NOT IN (SELECT id FROM inbox_items)"},

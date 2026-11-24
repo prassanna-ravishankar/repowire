@@ -402,8 +402,8 @@ func TestRetentionDefaultsOverridesAndBadValues(t *testing.T) {
 	if cfg := loadYAML(t, "retention:\n  content_days: 30\n  records_days: 0\n"); cfg.Retention != (RetentionConfig{ContentDays: 30, RecordsDays: 0}) {
 		t.Fatalf("file values = %+v", cfg.Retention)
 	}
-	t.Setenv("REPOWIRE_RETENTION__CONTENT_DAYS", "2")
-	if cfg := loadYAML(t, "retention:\n  content_days: 30\n"); cfg.Retention.ContentDays != 2 {
+	t.Setenv("REPOWIRE_RETENTION__CONTENT_DAYS", "14")
+	if cfg := loadYAML(t, "retention:\n  content_days: 30\n"); cfg.Retention.ContentDays != 14 {
 		t.Fatalf("env override = %+v", cfg.Retention)
 	}
 	t.Setenv("REPOWIRE_RETENTION__CONTENT_DAYS", "")
@@ -423,7 +423,7 @@ func TestRetentionDefaultsOverridesAndBadValues(t *testing.T) {
 
 func TestRetentionRejectsUnrepresentableDays(t *testing.T) {
 	t.Setenv("REPOWIRE_RETENTION__RECORDS_DAYS", "")
-	for _, value := range []string{".nan", ".inf", "1e12"} {
+	for _, value := range []string{".nan", ".inf", "1e12", "0.5", "6"} {
 		t.Setenv("REPOWIRE_RETENTION__CONTENT_DAYS", "")
 		cfg, err := tryLoadYAML(t, "retention:\n  content_days: "+value+"\n")
 		if err != nil {
