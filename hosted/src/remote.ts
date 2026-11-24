@@ -10,7 +10,6 @@ import { escape, HttpError, scopedName, within } from './http';
 import type { HostedAgent, OperationState } from './index';
 
 const CREATE_HORIZON_S = 6 * 24 * 3600;
-const RETENTION_S = 7 * 24 * 3600;
 const FUTURE_SKEW_S = 5 * 60;
 const WAIT_CAP_S = 20;
 const RECOVER_BATCH = 8;
@@ -54,9 +53,10 @@ export async function remoteRoute(env: RemoteEnv, owner: string, fromMachine: st
   if (late()) return refuse(504, 'the request deadline passed before it was handled; nothing was done');
   const directory = env.GATEWAYS.getByName(owner);
   const now = Math.floor(Date.now() / 1000);
-  // Housekeeping never holds this request: pruning is one statement, and
-  // recovery of other stuck requests runs in the background.
-  await directory.pruneRemote(now - RETENTION_S);
+  // Housekeeping never holds this request for long: a due sweep is bounded
+  // (src/retention.ts), and recovery of other stuck requests runs in the
+  // background.
+  await directory.housekeep();
   background(recoverDispatching(env, owner));
   // A managed agent's own in-process request is not a trigger: its send must
   // record the target row before any reconcile could read the id.

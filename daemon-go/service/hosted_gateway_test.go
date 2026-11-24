@@ -12,6 +12,7 @@ import (
 	"github.com/coder/websocket/wsjson"
 
 	"github.com/repowire/repowire/daemon-go/proto"
+	"github.com/repowire/repowire/daemon-go/state"
 )
 
 type echoTools struct{}
@@ -81,5 +82,31 @@ func TestHostedGatewayRunsCallsAndReconnects(t *testing.T) {
 		second.Close(websocket.StatusNormalClosure, "")
 	case <-time.After(5 * time.Second):
 		t.Fatal("gateway did not reconnect")
+	}
+}
+
+// The daemon names its retention policy on every gateway connect, in
+// seconds, so the owner's Gateway sweeps by the same policy as the daemon.
+func TestHostedGatewayNamesTheRetentionPolicy(t *testing.T) {
+	got := make(chan string, 1)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case got <- r.Header.Get("X-Repowire-Retention"):
+		default:
+		}
+		http.Error(w, "enough", http.StatusServiceUnavailable)
+	}))
+	defer srv.Close()
+	hosted := NewHosted(&fakeHostedRegistry{}, newFakeHostedRuntime(), nil, "test").
+		WithRetention(state.RetentionPolicy{Content: 7 * 24 * time.Hour, Records: 0, AskLife: 24 * time.Hour})
+	defer hosted.Close()
+	hosted.Connect(srv.URL, "secret", "9.9.9", echoTools{})
+	select {
+	case header := <-got:
+		if header != `{"ask_life_s":86400,"content_s":604800,"records_s":0}` {
+			t.Fatalf("X-Repowire-Retention = %q", header)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the gateway never dialled")
 	}
 }

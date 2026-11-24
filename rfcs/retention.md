@@ -82,6 +82,21 @@ Each piece lives with what it expires, so its lifecycle has one owner.
   this without a rule of their own, so config needs no floor; a shorter
   setting warns in `config check` and acts as the ask lifetime.
 
+## Hosted
+
+The hosted runtime follows the same policy (`hosted/src/retention.ts`).
+
+- **Defaults:** one copy in `daemon-go/proto/retention.json`. The daemon's config embeds it, and the Worker imports it.
+- **Policy:** the daemon names its policy (seconds) in `X-Repowire-Retention` on every gateway connect. The owner's Gateway keeps each daemon's policy, keyed by daemon id, and sweeps by the most conservative of them in each class: the longest age, with 0 (forever) winning, and the longest ask lifetime. No machine can shorten retention for another, and with no policy yet the defaults apply. This is interim. The data belongs to the namespace, so once accounts exist, the policy is the account's, set at the relay and sent to the Gateway from there (`managed-accounts.md`).
+- **Rules:** each Gateway table declares its retention as a static field beside its queries. A test fails for a table without exactly one declaration.
+  - `runs`: the answer is content; the settled row is a record.
+  - `requests`: the text is content and the row is a record, both timed from when the request ended: its run settled, or it was settled as not delivered. A request with no settled run is kept, since its reader still reconciles it. The text is stripped only when a stored digest still matches a retry against its receipt.
+  - `remote_*`: the fixed window.
+  - `agents`, `workspaces`: exempt, as identity and live state.
+  - `usage_event`, `usage_day`: exempt, as the billing ledger.
+- **Sweep:** owned by the Gateway Durable Object. It runs at most hourly, when a report, a daemon connect or a cross-machine request finds one due, in batches of 500 rows with a per-sweep budget. It never runs on a timer.
+- **Not yet covered:** each agent's own storage (the Pi conversation and per-operation markers) and workspace snapshots (#587).
+
 ## Readers
 
 - Routing's ask history reads peer ids, not text: stripping leaves it

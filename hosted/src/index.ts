@@ -511,10 +511,13 @@ async function submitRequest(env: Env, owner: string, input: Record<string, unkn
   const requester = requesterOf(input.requester);
   if (typeof input.text !== 'string' || !input.text.trim() || input.text.length > 16000) throw new HttpError(400, 'text must contain 1–16000 characters');
   const directory = env.GATEWAYS.getByName(owner);
+  const digest = await sha256(input.text);
   // A known id answers with its receipt before today's budget or retirement
   // is checked again: it was already accepted, or is still being settled.
+  // Its text may have expired (src/retention.ts); its digest has not.
   const receipt = (known: RelayRequest) => {
-    if (known.agent !== agentId || known.kind !== kind || known.requester !== requester || known.text !== input.text) {
+    const sameText = known.digest ? known.digest === digest : known.text === input.text;
+    if (known.agent !== agentId || known.kind !== kind || known.requester !== requester || !sameText) {
       throw new HttpError(409, 'Request id already used for a different request');
     }
     return json({ request_id: id, state: known.state, created: false }, 202);
@@ -528,7 +531,7 @@ async function submitRequest(env: Env, owner: string, input: Record<string, unkn
   if (config.retired) throw new HttpError(410, 'Agent is retired');
   const refusal = await directory.admit(agentId);
   if (refusal) throw new HttpError(402, refusal);
-  const opened = await directory.openRequest({ id, agent: agentId, kind, requester, text: input.text });
+  const opened = await directory.openRequest({ id, agent: agentId, kind, requester, text: input.text, digest });
   if (!opened.created) return receipt(opened.request);
   const framed = `<peer-message from="@${escape(requester)}" type="${kind}" correlation-id="${id}">\n${escape(input.text)}\n</peer-message>`;
   let accepted;
@@ -547,6 +550,11 @@ async function submitRequest(env: Env, owner: string, input: Record<string, unkn
   if ('undelivered' in accepted) throw new HttpError(409, `Request ${id} was settled as not delivered before the agent received it`);
   await directory.acceptRequest(id);
   return json({ request_id: id, state: 'accepted', created: true }, 202);
+}
+
+async function sha256(text: string) {
+  const bytes = new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text)));
+  return [...bytes].map((byte) => byte.toString(16).padStart(2, '0')).join('');
 }
 
 const RECONCILE_MS = 1000;
