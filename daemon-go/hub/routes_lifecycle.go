@@ -90,6 +90,29 @@ type LifecycleHandler struct {
 	// otherwise re-prove a reused pane) — main need not wire it.
 	forgetSpawnedPane     func(paneID string)
 	clearPaneRuntimeState func(paneID string)
+
+	// exitWatch records whether a peer's agent was still running when a tmux
+	// signal offlined it (rfcs/agent-container.md, step 2). Optional.
+	exitWatch interface {
+		CheckSignal(ctx context.Context, signal string, p *proto.Peer)
+	}
+}
+
+// WithExitWatch checks every tmux offline signal against the agents' exit
+// watches. It only records; the signals still decide.
+func (h *LifecycleHandler) WithExitWatch(w interface {
+	CheckSignal(ctx context.Context, signal string, p *proto.Peer)
+}) *LifecycleHandler {
+	h.exitWatch = w
+	return h
+}
+
+// checkSignal records the exit-watch verdict for a peer a tmux signal is
+// about to offline, off the signal's path.
+func (h *LifecycleHandler) checkSignal(signal string, p *proto.Peer) {
+	if h.exitWatch != nil && p != nil {
+		go h.exitWatch.CheckSignal(context.Background(), signal, p)
+	}
 }
 
 // WithPlacementUpdater keeps durable pane ownership in sync with tmux rename
@@ -145,6 +168,7 @@ func (h *LifecycleHandler) HandlePaneDied(ctx context.Context, paneID string) {
 		return
 	}
 
+	h.checkSignal("pane_died", p)
 	// NON-terminal: pane death does not retire the identity (an orphan ws-hook
 	// reconnecting is legitimate here). MarkOffline(terminal=false) drives the
 	// transport-disconnect FSM event; OnOffline cascades query cancellation.
@@ -229,6 +253,7 @@ func (h *LifecycleHandler) HandleSessionClosed(ctx context.Context, sessionName 
 	}
 
 	for _, p := range doomed {
+		h.checkSignal("session_closed", p)
 		// NON-terminal: a closed tmux session can be re-created; the identity is
 		// not retired here.
 		if _, err := h.reg.MarkOffline(ctx, p.PeerID, false); err != nil {

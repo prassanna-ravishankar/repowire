@@ -189,6 +189,10 @@ type Registry struct {
 	// cascade query cancellation (the hub owns the QueryTracker). The registry
 	// stays query-agnostic. Called with the registry lock released.
 	OnOffline func(proto.PeerID)
+	// OnRegistered observes every successful registration (new or reconnect)
+	// with a snapshot of the peer, after the registry lock is released. The
+	// agent container binds its exit watch here (rfcs/agent-container.md).
+	OnRegistered func(proto.Peer)
 
 	// OnTerminalOffline observes conclusive executor death after transport
 	// teardown and query cancellation. The daemon wires this to durable-job
@@ -268,6 +272,16 @@ func (r *Registry) ConfigureDurations(heartbeatInterval, reapTTL time.Duration) 
 // AllocateAndRegister allocates (or reclaims) a peer identity and registers it
 // ONLINE. Returns the canonical PeerID and the assigned DisplayName.
 func (r *Registry) AllocateAndRegister(ctx context.Context, params AllocateParams) (proto.PeerID, proto.DisplayName, error) {
+	id, name, err := r.allocateAndRegister(ctx, params)
+	if err == nil && r.OnRegistered != nil {
+		if p, ok := r.GetPeer(id); ok && p != nil {
+			r.OnRegistered(*p)
+		}
+	}
+	return id, name, err
+}
+
+func (r *Registry) allocateAndRegister(ctx context.Context, params AllocateParams) (proto.PeerID, proto.DisplayName, error) {
 	if params.ClaimedPeerID != nil && proto.IsRemotePeerID(*params.ClaimedPeerID) {
 		return "", "", ErrReservedPeerID
 	}
