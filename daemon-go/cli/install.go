@@ -816,6 +816,9 @@ func runRuntimeInstall(name string, argv []string) int {
 			return fatal(err)
 		}
 		fmt.Println(name, "transport installed")
+		if name == "codex" {
+			fmt.Println(codexTransportNote(codexAutoStartsAppServer()))
+		}
 		return 0
 	case "uninstall":
 		if err := uninstallRuntime(name); err != nil {
@@ -837,6 +840,17 @@ func runRuntimeInstall(name string, argv []string) int {
 	default:
 		return usage(name + " <install|uninstall|status>")
 	}
+}
+
+// codexTransportNote says which Codex transport install chose and, for the
+// App Server, which launches it cannot reach.
+func codexTransportNote(appServer bool) string {
+	if !appServer {
+		return "codex: hooks transport (this Codex has no shared App Server); every Codex session registers through its hooks"
+	}
+	return "codex: App Server transport; the repowire-codex bridge delivers to sessions on Codex's shared App Server. " +
+		"Sessions launched with --no-daemon, --profile/-p, --search, --oss, --strict-config, --approve-for-me, or a -c override other than a boolean features.* toggle " +
+		"run a private server and cannot receive messages; put those settings in ~/.codex/config.toml instead"
 }
 
 func runtimeIntegrated(name string) bool {

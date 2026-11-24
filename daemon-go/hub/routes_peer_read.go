@@ -153,6 +153,9 @@ func (h *Hub) getPeerDoctor(w http.ResponseWriter, r *http.Request) {
 	if local && (peer.Status == proto.StatusOnline || peer.Status == proto.StatusBusy) && !h.transport.IsConnected(peer.PeerID) {
 		contradictions = append(contradictions, contradiction("ONLINE_BUT_NO_WS", "error", fmt.Sprintf("peer is %s but has no live WebSocket connection", peer.Status)))
 	}
+	if local && !h.transport.IsConnected(peer.PeerID) && h.codexOffAppServer(peer) {
+		contradictions = append(contradictions, contradiction("CODEX_NOT_ON_APP_SERVER", "error", codexNotOnAppServerDetail))
+	}
 	if local && peer.PaneID != nil && *peer.PaneID != "" {
 		exists := false
 		if h.spawn != nil && h.spawn.svc != nil {
@@ -208,6 +211,21 @@ func (h *Hub) getPeerDoctor(w http.ResponseWriter, r *http.Request) {
 	report["contradictions"] = contradictions
 	writeJSON(w, http.StatusOK, report)
 }
+
+const codexNotOnAppServerDetail = "this Codex session is not on Codex's shared App Server, so the codex bridge cannot deliver to it. " +
+	"Codex runs a private embedded server when launched with --no-daemon, --profile/-p, --search, --oss, --strict-config, " +
+	"--dangerously-bypass-hook-trust, --approve-for-me, CODEX_EXEC_SERVER_URL or workload identity, or a -c override other than a boolean features.* toggle. " +
+	"Move those settings into ~/.codex/config.toml and relaunch the session."
+
+// codexOffAppServer: a Codex peer the bridge did not register, while Codex
+// delivers only through the bridge (no hooks transport), has no inbound path.
+func (h *Hub) codexOffAppServer(p *proto.Peer) bool {
+	if p.Backend != proto.AgentCodex || p.Provenance.Source == proto.SourceCodexAppServer || h.spawn == nil || h.spawn.svc == nil {
+		return false
+	}
+	return !h.spawn.svc.CodexOnHooks(nil)
+}
+
 func contradiction(code, severity, detail string) map[string]string {
 	return map[string]string{"code": code, "severity": severity, "detail": detail}
 }
