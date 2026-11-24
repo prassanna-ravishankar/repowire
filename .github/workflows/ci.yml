@@ -47,6 +47,24 @@ jobs:
       - run: npm test -- --run
       - run: npm run build
 
+  hosted:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: hosted
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: hosted/package-lock.json
+      - run: npm ci
+      - run: npx wrangler types
+      - run: npm run check
+      - run: npm test
+      - run: npx wrangler deploy --dry-run
+
   image:
     runs-on: ubuntu-latest
     steps:
