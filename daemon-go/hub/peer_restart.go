@@ -146,7 +146,7 @@ type RestartResult struct {
 // restartPlan is everything prepare learned; the goroutine owns it afterwards.
 type restartPlan struct {
 	peer          *proto.Peer
-	proof         destructiveProof
+	proof         service.DestructiveProof
 	exitMode      string // sigterm | kill_pane | none
 	pid           int
 	base          string
@@ -494,16 +494,16 @@ func (h *Hub) planRestart(ctx context.Context, p *proto.Peer, req RestartPeerReq
 	}
 
 	// Destructive authority is not guessed: a live runtime needs pane proof.
-	plan.proof = h.destructivePaneProof(p)
+	plan.proof = h.spawn.svc.DestructivePaneProof(h.spawn.proc, p)
 	var oldPane *service.TmuxPaneEvidence
-	if plan.proof.paneID != "" {
-		oldPane = svc.Container().Probe(plan.proof.paneID)
+	if plan.proof.PaneID != "" {
+		oldPane = svc.Container().Probe(plan.proof.PaneID)
 	}
 	if p.AgentPID != nil {
 		plan.pid = *p.AgentPID
 	}
 	proc := h.spawn.proc
-	if plan.pid <= 0 && plan.proof.ok && oldPane != nil {
+	if plan.pid <= 0 && plan.proof.OK && oldPane != nil {
 		// No recorded agent pid (codex app-server peers report none): the
 		// pane's root process is the runtime when its program is the backend's.
 		if root := atoiOrZero(oldPane.PanePID); root > 0 {
@@ -512,15 +512,15 @@ func (h *Hub) planRestart(ctx context.Context, p *proto.Peer, req RestartPeerReq
 			}
 		}
 	}
-	pidVerified := plan.proof.ok && oldPane != nil && plan.pid > 0 && proc.Alive(plan.pid) &&
+	pidVerified := plan.proof.OK && oldPane != nil && plan.pid > 0 && proc.Alive(plan.pid) &&
 		proc.InTree(plan.pid, atoiOrZero(oldPane.PanePID))
-	paneGone := plan.proof.errCode == "missing_pane" || plan.proof.errCode == "pane_not_live"
+	paneGone := plan.proof.ErrCode == "missing_pane" || plan.proof.ErrCode == "pane_not_live"
 	switch {
 	case pidVerified:
 		plan.exitMode = "sigterm"
-	case plan.proof.ok && oldPane != nil:
+	case plan.proof.OK && oldPane != nil:
 		plan.exitMode, plan.pid = "kill_pane", 0
-	case oldPane == nil && (plan.proof.ok || paneGone):
+	case oldPane == nil && (plan.proof.OK || paneGone):
 		// Nothing visible to stop: only safe when the runtime is provably gone,
 		// else a tmux probe blip would launch a second runtime on the same id.
 		if p.Status != proto.StatusOffline || (plan.pid > 0 && proc.Alive(plan.pid)) {
@@ -636,7 +636,7 @@ func (h *Hub) planRestart(ctx context.Context, p *proto.Peer, req RestartPeerReq
 
 	plan.spawn = service.SpawnConfig{
 		Path: cwd, Circle: p.Circle, Backend: p.Backend, Role: p.Role, PeerID: &p.PeerID,
-		TargetPane: plan.proof.paneID, SameWindow: oldPane != nil, Message: req.Message, Profile: derefString(profile),
+		TargetPane: plan.proof.PaneID, SameWindow: oldPane != nil, Message: req.Message, Profile: derefString(profile),
 	}
 	if oldPane == nil {
 		plan.spawn.TargetPane = ""
@@ -772,7 +772,7 @@ func (h *Hub) runRestart(ctx context.Context, run *restartRun, plan *restartPlan
 		return
 	}
 	if plan.exitMode != "none" {
-		h.spawn.restarts.supersede(plan.peer.PeerID, supersededRuntime{paneID: plan.proof.paneID, pid: derefInt(plan.peer.AgentPID), restartID: restartID})
+		h.spawn.restarts.supersede(plan.peer.PeerID, supersededRuntime{paneID: plan.proof.PaneID, pid: derefInt(plan.peer.AgentPID), restartID: restartID})
 	}
 	switch plan.exitMode {
 	case "sigterm":
@@ -783,10 +783,10 @@ func (h *Hub) runRestart(ctx context.Context, run *restartRun, plan *restartPlan
 			return
 		}
 	case "kill_pane":
-		if !svc.Container().Stop(plan.proof.paneID) {
+		if !svc.Container().Stop(plan.proof.PaneID) {
 			unfence()
 			abandonReservation()
-			fail(restartStageExit, "kill_pane_failed", "tmux kill-pane failed for the verified pane "+plan.proof.paneID, false)
+			fail(restartStageExit, "kill_pane_failed", "tmux kill-pane failed for the verified pane "+plan.proof.PaneID, false)
 			return
 		}
 	}
@@ -798,7 +798,7 @@ func (h *Hub) runRestart(ctx context.Context, run *restartRun, plan *restartPlan
 			if plan.pid > 0 {
 				return !h.spawn.proc.Alive(plan.pid)
 			}
-			return svc.Container().Probe(plan.proof.paneID) == nil
+			return svc.Container().Probe(plan.proof.PaneID) == nil
 		}
 		started := time.Now()
 		err := pollUntil(ctx, restartExitTimeout, gone)
@@ -819,10 +819,10 @@ func (h *Hub) runRestart(ctx context.Context, run *restartRun, plan *restartPlan
 			fail(restartStageWait, reason, fmt.Sprintf("%s was signalled but had not exited when the wait ended (bound %s); it may still exit. Nothing was relaunched: once it is gone, run would_run.manual", exitTarget(plan), restartExitTimeout), false)
 			return
 		}
-		if plan.proof.paneID != "" {
-			svc.Container().Stop(plan.proof.paneID) // the runtime is gone; clear its leftover shell
-			svc.Ownership().Forget(plan.proof.paneID)
-			clienthooks.ClearPaneRuntimeState(plan.proof.paneID)
+		if plan.proof.PaneID != "" {
+			svc.Container().Stop(plan.proof.PaneID) // the runtime is gone; clear its leftover shell
+			svc.Ownership().Forget(plan.proof.PaneID)
+			clienthooks.ClearPaneRuntimeState(plan.proof.PaneID)
 		}
 		if cancelled {
 			h.goneOffline(cleanup, run, plan)
@@ -1098,7 +1098,7 @@ func exitTarget(plan *restartPlan) string {
 	if plan.pid > 0 {
 		return fmt.Sprintf("pid %d", plan.pid)
 	}
-	return "pane " + plan.proof.paneID
+	return "pane " + plan.proof.PaneID
 }
 
 // transportPane reports which pane holds id's live socket; with no transport

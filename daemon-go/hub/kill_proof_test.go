@@ -121,12 +121,12 @@ func TestDestructivePaneProofRejectsStalePaneMetadata(t *testing.T) {
 	h.WithSpawn(f.svc, f.reg, service.NewAskTracker(0), "test-host", proto.CircleBoundarySession)
 
 	writeSpawnTestPaneMeta(t, f.pane, map[string]any{"peer_id": string(f.peer.PeerID), "agent_pid": deadPID(t)})
-	if proof := h.destructivePaneProof(f.peer); proof.ok {
-		t.Fatalf("stale pane metadata proved ownership (mode %q)", proof.mode)
+	if proof := h.spawn.svc.DestructivePaneProof(h.spawn.proc, f.peer); proof.OK {
+		t.Fatalf("stale pane metadata proved ownership (mode %q)", proof.Mode)
 	}
 	writeSpawnTestPaneMeta(t, f.pane, map[string]any{"peer_id": string(f.peer.PeerID), "agent_pid": f.occupant})
-	if proof := h.destructivePaneProof(f.peer); !proof.ok || proof.mode != "verified_pane_metadata" {
-		t.Fatalf("live pane metadata: ok=%v mode=%q err=%q", proof.ok, proof.mode, proof.errCode)
+	if proof := h.spawn.svc.DestructivePaneProof(h.spawn.proc, f.peer); !proof.OK || proof.Mode != "verified_pane_metadata" {
+		t.Fatalf("live pane metadata: ok=%v mode=%q err=%q", proof.OK, proof.Mode, proof.ErrCode)
 	}
 }
 
@@ -140,7 +140,7 @@ func TestDestructivePaneProofVetoesPaneWithoutThePeersAgent(t *testing.T) {
 	f.peer.AgentPID = &elsewhere
 	h := &Hub{}
 	h.WithSpawn(f.svc, f.reg, service.NewAskTracker(0), "test-host", proto.CircleBoundarySession)
-	if proof := h.destructivePaneProof(f.peer); proof.ok || proof.errCode != "agent_not_in_pane" {
+	if proof := h.spawn.svc.DestructivePaneProof(h.spawn.proc, f.peer); proof.OK || proof.ErrCode != "agent_not_in_pane" {
 		t.Fatalf("proof = %+v, want agent_not_in_pane", proof)
 	}
 }
@@ -230,7 +230,7 @@ func TestDestructivePaneProofVetoesARecycledMetadataPID(t *testing.T) {
 	h := &Hub{}
 	h.WithSpawn(f.svc, f.reg, service.NewAskTracker(0), "test-host", proto.CircleBoundarySession)
 	writeSpawnTestPaneMeta(t, f.pane, map[string]any{"peer_id": string(f.peer.PeerID), "agent_pid": f.occupant, "agent_started": "Mon Jan  1 00:00:00 2001"})
-	if proof := h.destructivePaneProof(f.peer); proof.ok || proof.errCode != "agent_not_in_pane" {
+	if proof := h.spawn.svc.DestructivePaneProof(h.spawn.proc, f.peer); proof.OK || proof.ErrCode != "agent_not_in_pane" {
 		t.Fatalf("proof = %+v, want agent_not_in_pane for a recycled metadata pid", proof)
 	}
 }

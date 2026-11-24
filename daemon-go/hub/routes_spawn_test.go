@@ -542,13 +542,13 @@ func TestDestructivePaneProof_VerifiedByPaneMetadata(t *testing.T) {
 	p := &proto.Peer{PeerID: id, PaneID: &pane}
 
 	writeSpawnTestPaneMeta(t, pane, map[string]any{"peer_id": string(id), "agent_pid": occupant})
-	if proof := h.destructivePaneProof(p); !proof.ok || proof.mode != "verified_pane_metadata" {
+	if proof := h.spawn.svc.DestructivePaneProof(h.spawn.proc, p); !proof.OK || proof.Mode != "verified_pane_metadata" {
 		t.Fatalf("matching pane metadata must prove ownership: ok=%v mode=%q err=%q",
-			proof.ok, proof.mode, proof.errCode)
+			proof.OK, proof.Mode, proof.ErrCode)
 	}
 
 	writeSpawnTestPaneMeta(t, pane, map[string]any{"peer_id": "repow-ops-someoneelse"})
-	if proof := h.destructivePaneProof(p); proof.ok {
+	if proof := h.spawn.svc.DestructivePaneProof(h.spawn.proc, p); proof.OK {
 		t.Fatalf("mismatched pane metadata must NOT prove ownership")
 	}
 }
