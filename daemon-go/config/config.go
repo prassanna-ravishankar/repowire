@@ -637,6 +637,15 @@ func normalize(cfg *Config) {
 			*days.value = days.fallback
 			cfg.Warnings = append(cfg.Warnings, fmt.Sprintf("config: retention.%s is ignored: it must be 0 (keep forever) or a number of days up to %d", days.key, maxRetentionDays))
 		}
+		// The sweep never expires anything younger than an ask may stay open
+		// (state.RetentionPolicy.Effective); say so rather than raise it silently.
+		askHours := cfg.Daemon.PruneMaxAgeHours
+		if !(askHours > 0) {
+			askHours = 24 // the ask tracker's own default
+		}
+		if v := *days.value; v > 0 && v*24 < askHours {
+			cfg.Warnings = append(cfg.Warnings, fmt.Sprintf("config: retention.%s (%g days) is shorter than the ask lifetime (daemon.prune_max_age_hours, %g hours): it acts as %g days so open asks keep their data", days.key, v, askHours, askHours/24))
+		}
 	}
 	if len(cfg.Experiments.RemoteToolApproval.GatedTools) == 0 {
 		cfg.Experiments.RemoteToolApproval.GatedTools = []string{"Bash", "Edit", "Write", "MultiEdit", "NotebookEdit"}

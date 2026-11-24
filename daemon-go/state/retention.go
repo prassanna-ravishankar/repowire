@@ -2,6 +2,7 @@ package state
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"strings"
@@ -21,8 +22,10 @@ import (
 // Each table declares its retention beside its own queries (a
 // tableRetention in its domain file), and the store runs the sweep: once
 // when StartRetention is called and then, at most hourly, after an event
-// write that finds one due. TestEveryTableDeclaresRetention fails on a table
-// without a declaration.
+// write that finds one due. What the store does not hold (attachment files)
+// plugs into the same sweep as a pass, and the sweep's journal entry goes
+// out through the daemon's event path (RetentionPlugs).
+// TestEveryTableDeclaresRetention fails on a table without a declaration.
 
 // RetentionPolicy says how long each class is kept. Zero keeps forever.
 // AskLife is how long an ask may stay open: nothing younger expires, whatever
@@ -80,32 +83,37 @@ var tableRetentions = []tableRetention{
 	sessionBindingRetention, queuedDeliveryRetention, identityRetention, migrationRetention, legacyImportRetention,
 }
 
-// atLeastAskLife raises a non-zero age to AskLife.
-func (p RetentionPolicy) atLeastAskLife(d time.Duration) time.Duration {
-	if d > 0 && d < p.AskLife {
-		return p.AskLife
+// Effective is the policy as a sweep applies it: a non-zero age shorter
+// than AskLife is raised to AskLife.
+func (p RetentionPolicy) Effective() RetentionPolicy {
+	for _, d := range []*time.Duration{&p.Content, &p.Records} {
+		if *d > 0 && *d < p.AskLife {
+			*d = p.AskLife
+		}
 	}
-	return d
+	return p
 }
 
 // ContentCutoff is the instant before which content goes: the records
 // cutoff when records are kept for less time, zero when both are kept
 // forever.
 func (p RetentionPolicy) ContentCutoff(now time.Time) time.Time {
+	p = p.Effective()
 	d := p.Content
 	if p.Records > 0 && (d == 0 || p.Records < d) {
 		d = p.Records
 	}
-	if d = p.atLeastAskLife(d); d == 0 {
+	if d == 0 {
 		return time.Time{}
 	}
 	return now.Add(-d)
 }
 
 func (p RetentionPolicy) cutoffs(now time.Time) retentionCutoffs {
+	p = p.Effective()
 	c := retentionCutoffs{remote: now.Add(-RemoteWindow).Unix()}
-	if records := p.atLeastAskLife(p.Records); records > 0 {
-		c.records = sweepStamp(now.Add(-records))
+	if p.Records > 0 {
+		c.records = sweepStamp(now.Add(-p.Records))
 	}
 	if cutoff := p.ContentCutoff(now); !cutoff.IsZero() {
 		c.content = sweepStamp(cutoff)
@@ -198,10 +206,24 @@ func (s *Store) applyRule(ctx context.Context, rule sweepRule) (int, error) {
 	}
 }
 
+// RetentionPlugs connect the store's sweep to the rest of the daemon.
+type RetentionPlugs struct {
+	// Passes expire what the store does not hold (attachment files). Each
+	// runs after the tables and returns its counts by rule name.
+	Passes []func(ctx context.Context, p RetentionPolicy, now time.Time) map[string]int
+	// Emit journals retention_swept through the daemon's event path, so live
+	// subscribers see it; nil appends it to the store.
+	Emit func(ctx context.Context, typ string, payload map[string]any) string
+}
+
+// ErrRetentionStarted refuses a second StartRetention.
+var ErrRetentionStarted = errors.New("retention already started")
+
 // retention is the store's sweep lifecycle: started by StartRetention,
 // stopped by Close.
 type retention struct {
 	policy RetentionPolicy
+	plugs  RetentionPlugs
 	now    func() time.Time
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -218,15 +240,19 @@ type retention struct {
 // StartRetention applies policy from now on: a sweep starts at once, and
 // later ones start after an event write once an hour has passed. Sweeps run
 // off the caller's path, one at a time; Close stops one in flight and waits
-// for it. Call it once, while wiring.
-func (s *Store) StartRetention(policy RetentionPolicy) {
-	s.startRetention(&retention{policy: policy, now: time.Now})
+// for it. A store has one retention lifecycle: a second call is refused.
+func (s *Store) StartRetention(policy RetentionPolicy, plugs RetentionPlugs) error {
+	return s.startRetention(&retention{policy: policy, plugs: plugs, now: time.Now})
 }
 
-func (s *Store) startRetention(r *retention) {
+func (s *Store) startRetention(r *retention) error {
 	r.ctx, r.cancel = context.WithCancel(context.Background())
-	s.retention.Store(r)
+	if !s.retention.CompareAndSwap(nil, r) {
+		r.cancel()
+		return ErrRetentionStarted
+	}
 	s.maybeSweep()
+	return nil
 }
 
 // maybeSweep starts a due sweep. Cheap otherwise: every event write calls it.
@@ -259,11 +285,22 @@ func (s *Store) maybeSweep() {
 		if err != nil && r.ctx.Err() == nil {
 			log.Printf("retention: %v", err)
 		}
+		for _, pass := range r.plugs.Passes {
+			if r.ctx.Err() != nil {
+				break
+			}
+			for name, n := range pass(r.ctx, r.policy, now) {
+				counts[name] += n
+			}
+		}
 		if len(counts) == 0 || r.ctx.Err() != nil {
 			return
 		}
 		log.Printf("retention: swept %v", counts)
-		if err := s.AppendEvent(r.ctx, peer.Event{Type: "retention_swept", Payload: map[string]any{"counts": counts}}); err != nil {
+		payload := map[string]any{"counts": counts}
+		if r.plugs.Emit != nil {
+			r.plugs.Emit(r.ctx, "retention_swept", payload)
+		} else if err := s.AppendEvent(r.ctx, peer.Event{Type: "retention_swept", Payload: payload}); err != nil {
 			log.Printf("retention: journal: %v", err)
 		}
 	}()

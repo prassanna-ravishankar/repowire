@@ -59,20 +59,23 @@ Each piece lives with what it expires, so its lifecycle has one owner.
   `TestEveryTableDeclaresRetention` reads `sqlite_master` and fails for a
   table without exactly one declaration, so a new table cannot silently go
   unswept.
-- **Sweep lifecycle:** the store. `Store.StartRetention(policy)` sweeps at
-  once; later sweeps start after an event write, at most hourly, one at a
-  time, off the writer's path. `Store.Close` cancels a sweep in flight and
-  waits for it before closing the database. Sweeps run every table's
-  records rules, then every content rule, in batches of 500 rows, and
-  journal one `retention_swept` event with per-rule counts.
-- **Attachment files:** the attachment routes, which already own the
-  directory: an upload or a read first removes files past the content
-  cutoff.
+- **Sweep lifecycle:** the store. `Store.StartRetention(policy, plugs)`
+  sweeps at once; later sweeps start after an event write, at most hourly,
+  one at a time, off the writer's path. A second start is refused.
+  `Store.Close` cancels a sweep in flight and waits for it before closing
+  the database. Sweeps run every table's records rules, then every content
+  rule, in batches of 500 rows.
+- **Plugs:** what the store does not hold plugs into the same sweep
+  (`RetentionPlugs`). The attachment routes, which own the directory,
+  provide `hub.ExpireAttachments` as a pass; the registry provides `Emit`,
+  so `retention_swept` reaches the journal and live subscribers like any
+  other event.
 - **Open asks:** the policy. An open ask still reads its peer message,
   inbox item, refs, attachments and trace, so `RetentionPolicy` never lets
   either class expire anything younger than the ask lifetime
   (`daemon.prune_max_age_hours`). Every table and the attachment files get
-  this without a rule of their own, so config needs no floor.
+  this without a rule of their own, so config needs no floor; a shorter
+  setting warns in `config check` and acts as the ask lifetime.
 
 ## Readers
 

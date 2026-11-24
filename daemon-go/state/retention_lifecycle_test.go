@@ -102,6 +102,55 @@ func TestStoreSweepsAtStartThenAtMostHourlyOnWrites(t *testing.T) {
 	}
 }
 
+// Attachment files plug in as a pass, the journal entry goes out through the
+// daemon's event path, and a store has one retention lifecycle.
+func TestRetentionPlugsAndASingleLifecycle(t *testing.T) {
+	s := newSweepStore(t)
+	seedEvent(t, s, "e-old", "chat_turn", ago(8*day), `{"text":"x"}`)
+	var mu sync.Mutex
+	var emitted []map[string]any
+	toAny := func(m map[string]int) map[string]any {
+		out := map[string]any{}
+		for k, v := range m {
+			out[k] = v
+		}
+		return out
+	}
+	r := &retention{policy: defaultPolicy, now: func() time.Time { return sweepNow }, plugs: RetentionPlugs{
+		Passes: []func(context.Context, RetentionPolicy, time.Time) map[string]int{
+			func(_ context.Context, p RetentionPolicy, now time.Time) map[string]int {
+				if !p.ContentCutoff(now).Equal(sweepNow.Add(-7 * day)) {
+					t.Errorf("pass got cutoff %v", p.ContentCutoff(now))
+				}
+				return map[string]int{"attachments.delete": 2}
+			},
+		},
+		Emit: func(_ context.Context, typ string, payload map[string]any) string {
+			mu.Lock()
+			defer mu.Unlock()
+			if typ == "retention_swept" {
+				emitted = append(emitted, toAny(payload["counts"].(map[string]int)))
+			}
+			return ""
+		},
+	}}
+	if err := s.startRetention(r); err != nil {
+		t.Fatal(err)
+	}
+	waitSweep(t, r)
+	mu.Lock()
+	if len(emitted) != 1 || emitted[0]["attachments.delete"] != 2 || emitted[0]["events.delete_transcripts"] != 1 {
+		t.Fatalf("emitted %v", emitted)
+	}
+	mu.Unlock()
+	if n := s.count(t, `SELECT COUNT(*) FROM events WHERE type = 'retention_swept'`); n != 0 {
+		t.Fatalf("with Emit plugged, the store also journaled %d", n)
+	}
+	if err := s.StartRetention(defaultPolicy, RetentionPlugs{}); err != ErrRetentionStarted {
+		t.Fatalf("second start: %v", err)
+	}
+}
+
 // Close cancels a sweep in flight and returns only after it ends, so the db
 // never closes under it (#572); no sweep starts afterwards.
 func TestCloseWaitsForARunningSweep(t *testing.T) {

@@ -9,10 +9,11 @@ package hub
 //
 // Files live under ~/.repowire/attachments. Limits (matching Python): 10MB per
 // file (413), 200MB total directory cap (507), and expiry with other content
-// under the retention policy, swept on every upload and read
-// (expireAttachments).
+// under the retention policy (ExpireAttachments, a pass of the store's
+// sweep).
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"net/http"
@@ -87,9 +88,6 @@ func (h *Hub) uploadAttachment(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to create attachments dir: "+err.Error())
 		return
 	}
-
-	// Expired files go first so they can't fill the cap and deny an upload.
-	h.expireAttachments(dir)
 
 	used := attachmentDirSize(dir)
 	if used >= maxAttachmentDirSize {
@@ -177,7 +175,6 @@ func (h *Hub) getAttachment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	dir := AttachmentsDir()
-	h.expireAttachments(dir)
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		writeError(w, http.StatusNotFound, "Not found")
@@ -196,29 +193,30 @@ func (h *Hub) getAttachment(w http.ResponseWriter, r *http.Request) {
 	writeError(w, http.StatusNotFound, "Attachment not found")
 }
 
-// WithRetention expires attachment files with other content: an upload or a
-// read first removes files older than the policy's content cutoff.
-func (h *Hub) WithRetention(p state.RetentionPolicy) *Hub {
-	h.attachmentRetention = p
-	return h
+// ExpireAttachments is the attachment files' retention pass, plugged into
+// the store's sweep (state.RetentionPlugs): it removes files modified before
+// the policy's content cutoff, which is never younger than an ask may stay
+// open. Best-effort.
+func ExpireAttachments(_ context.Context, p state.RetentionPolicy, now time.Time) map[string]int {
+	return map[string]int{"attachments.delete": expireAttachments(AttachmentsDir(), p.ContentCutoff(now))}
 }
 
-// expireAttachments removes regular files in dir modified before the content
-// cutoff (never younger than an ask may stay open). Best-effort; the zero
-// policy keeps everything.
-func (h *Hub) expireAttachments(dir string) {
-	cutoff := h.attachmentRetention.ContentCutoff(time.Now())
+// expireAttachments removes regular files in dir modified before cutoff; a
+// zero cutoff keeps everything.
+func expireAttachments(dir string, cutoff time.Time) int {
 	if cutoff.IsZero() {
-		return
+		return 0
 	}
 	entries, err := os.ReadDir(dir)
 	if err != nil {
-		return
+		return 0
 	}
+	n := 0
 	for _, e := range entries {
 		info, err := e.Info()
-		if err == nil && info.Mode().IsRegular() && info.ModTime().Before(cutoff) {
-			_ = os.Remove(filepath.Join(dir, e.Name()))
+		if err == nil && info.Mode().IsRegular() && info.ModTime().Before(cutoff) && os.Remove(filepath.Join(dir, e.Name())) == nil {
+			n++
 		}
 	}
+	return n
 }
