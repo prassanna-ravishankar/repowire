@@ -165,6 +165,9 @@ type AskTracker struct {
 	lastEviction time.Time
 	quiescing    map[proto.PeerID]struct{}
 	onRegister   func(cid string, from, to proto.PeerID)
+	onSettled    func(AskSettled)
+	settledQ     []AskSettled // reported by unlock, after t.mu is released
+	settleSeq    uint64
 	closeGuard   func(ask *Ask, reason string) error
 }
 
@@ -176,7 +179,7 @@ type AskTracker struct {
 // must not call back into the tracker.
 func (t *AskTracker) SetCloseGuard(fn func(ask *Ask, reason string) error) {
 	t.mu.Lock()
-	defer t.mu.Unlock()
+	defer t.unlock()
 	t.closeGuard = fn
 }
 
@@ -199,7 +202,7 @@ func (t *AskTracker) guardLocked(ask *Ask, reason string) bool {
 // it must be quick and must not call back into the tracker.
 func (t *AskTracker) SetOnRegister(fn func(cid string, from, to proto.PeerID)) {
 	t.mu.Lock()
-	defer t.mu.Unlock()
+	defer t.unlock()
 	t.onRegister = fn
 }
 
@@ -261,7 +264,7 @@ type RegisterAskParams struct {
 // Refuses with ErrQuiesced if either endpoint is mid-switch.
 func (t *AskTracker) Register(ctx context.Context, p RegisterAskParams) (string, error) {
 	t.mu.Lock()
-	defer t.mu.Unlock()
+	defer t.unlock()
 	if _, ok := t.quiescing[p.ToPeerID]; ok {
 		return "", ErrQuiesced
 	}
@@ -310,7 +313,7 @@ func (t *AskTracker) Register(ctx context.Context, p RegisterAskParams) (string,
 // Get returns a snapshot copy of the ask, or (nil,false) if unknown.
 func (t *AskTracker) Get(cid string) (*Ask, bool) {
 	t.mu.Lock()
-	defer t.mu.Unlock()
+	defer t.unlock()
 	ask, ok := t.asks[cid]
 	if !ok {
 		return nil, false
@@ -321,7 +324,7 @@ func (t *AskTracker) Get(cid string) (*Ask, bool) {
 // OpenAsks returns snapshot copies of every open ask.
 func (t *AskTracker) OpenAsks() []*Ask {
 	t.mu.Lock()
-	defer t.mu.Unlock()
+	defer t.unlock()
 	out := make([]*Ask, 0, len(t.asks))
 	for _, ask := range t.asks {
 		if !ask.Closed {
@@ -334,7 +337,7 @@ func (t *AskTracker) OpenAsks() []*Ask {
 // ListByParent returns snapshot copies of all child asks of an ask-many parent.
 func (t *AskTracker) ListByParent(parentID string) []*Ask {
 	t.mu.Lock()
-	defer t.mu.Unlock()
+	defer t.unlock()
 	var out []*Ask
 	for _, ask := range t.asks {
 		if ask.ParentID != nil && *ask.ParentID == parentID {
@@ -355,13 +358,56 @@ func (t *AskTracker) closeLocked(ask *Ask, reason string) {
 	if ask.done != nil {
 		close(ask.done)
 	}
+	t.settle(AskSettled{Ask: ask.clone(), Reason: reason})
+}
+
+// AskSettled reports a change in who may answer an ask: it closed (Reason is
+// the close reason), a hand-off moved it on (Reason "moved", MovedFrom the
+// holder it left), or a failed hand-off was undone (Reason "returned").
+type AskSettled struct {
+	Ask       *Ask
+	Reason    string
+	MovedFrom proto.PeerID
+	// Seq orders events as the tracker made them. Two goroutines can hand
+	// theirs to the socket in either order; a plug keeps the highest Seq it
+	// saw per ask and ignores older ones.
+	Seq uint64
+}
+
+// settle queues ev for unlock to report. Caller holds t.mu.
+func (t *AskTracker) settle(ev AskSettled) {
+	t.settleSeq++
+	ev.Seq = t.settleSeq
+	t.settledQ = append(t.settledQ, ev)
+}
+
+// SetOnSettled installs the socket the tracker reports every AskSettled on,
+// in order, after its lock is released (the inbox plugs in, so a human's item
+// stops looking answerable once its ask closed or moved). fn must return
+// quickly; it may call back into the tracker.
+func (t *AskTracker) SetOnSettled(fn func(AskSettled)) {
+	t.mu.Lock()
+	defer t.unlock()
+	t.onSettled = fn
+}
+
+// unlock releases t.mu, then reports what changed while it was held.
+func (t *AskTracker) unlock() {
+	queued, fn := t.settledQ, t.onSettled
+	t.settledQ = nil
+	t.mu.Unlock()
+	if fn != nil {
+		for _, ev := range queued {
+			fn(ev)
+		}
+	}
 }
 
 // recordedAnswer is what a waiter on a closed ask learns: its answer, or a
 // cancellation naming why it closed without one.
 func (t *AskTracker) recordedAnswer(ask *Ask) Answer {
 	t.mu.Lock()
-	defer t.mu.Unlock()
+	defer t.unlock()
 	if ask.Answer != nil {
 		return *ask.Answer
 	}
@@ -374,7 +420,7 @@ func (t *AskTracker) recordedAnswer(ask *Ask) Answer {
 // any blocking answer waiter.
 func (t *AskTracker) Close(ctx context.Context, cid, reason string) (*Ask, bool) {
 	t.mu.Lock()
-	defer t.mu.Unlock()
+	defer t.unlock()
 	ask, ok := t.asks[cid]
 	if !ok || ask.Closed || !t.guardLocked(ask, reason) {
 		return nil, false
@@ -389,7 +435,7 @@ func (t *AskTracker) Close(ctx context.Context, cid, reason string) (*Ask, bool)
 // leaves no trace on the ask.
 func (t *AskTracker) Resolve(ctx context.Context, cid, reason string, reply *string, attachments []map[string]any) (*Ask, bool) {
 	t.mu.Lock()
-	defer t.mu.Unlock()
+	defer t.unlock()
 	ask, ok := t.asks[cid]
 	if !ok || ask.Closed {
 		return nil, false
@@ -428,7 +474,7 @@ func (t *AskTracker) Resolve(ctx context.Context, cid, reason string, reply *str
 // once.
 func (t *AskTracker) Claim(cid string) (*Ask, error) {
 	t.mu.Lock()
-	defer t.mu.Unlock()
+	defer t.unlock()
 	ask, ok := t.asks[cid]
 	switch {
 	case !ok:
@@ -454,7 +500,7 @@ func (t *AskTracker) Release(cid string) {
 		delete(t.asks, cid)
 		next = nil
 	}
-	t.mu.Unlock()
+	t.unlock()
 	for _, work := range next {
 		go t.runClaimedOn(cid, work.ask, work.fn)
 	}
@@ -475,7 +521,7 @@ type deferredWork struct {
 func (t *AskTracker) RunClaimed(cid string, fn func(*Ask)) {
 	t.mu.Lock()
 	ask := t.asks[cid]
-	t.mu.Unlock()
+	t.unlock()
 	if ask != nil {
 		t.runClaimedOn(cid, ask, fn)
 	}
@@ -487,17 +533,17 @@ func (t *AskTracker) RunClaimed(cid string, fn func(*Ask)) {
 func (t *AskTracker) runClaimedOn(cid string, ask *Ask, fn func(*Ask)) {
 	t.mu.Lock()
 	if t.asks[cid] != ask || ask.Closed {
-		t.mu.Unlock()
+		t.unlock()
 		return
 	}
 	if t.claimedLocked(cid) {
 		t.deferred[cid] = append(t.deferred[cid], deferredWork{ask: ask, fn: fn})
-		t.mu.Unlock()
+		t.unlock()
 		return
 	}
 	t.resolving[cid] = struct{}{}
 	snapshot := ask.clone()
-	t.mu.Unlock()
+	t.unlock()
 	defer t.Release(cid)
 	fn(snapshot)
 }
@@ -547,7 +593,7 @@ func (t *AskTracker) Reassign(ctx context.Context, cid string, p ReassignParams)
 // handOff is the one mutation behind Delegate and Reassign.
 func (t *AskTracker) handOff(cid string, p DelegateParams, by, reason string) (*Ask, Delegation, error) {
 	t.mu.Lock()
-	defer t.mu.Unlock()
+	defer t.unlock()
 	ask, ok := t.asks[cid]
 	switch {
 	case !ok:
@@ -583,6 +629,7 @@ func (t *AskTracker) handOff(cid string, p DelegateParams, by, reason string) (*
 	ask.Generation = hop.Generation
 	ask.Delegations = append(append([]Delegation(nil), ask.Delegations...), hop)
 	ask.ToPeerID, ask.ToPeerName, ask.ToRepowireSessionID = p.To, p.ToName, p.ToSessionID
+	t.settle(AskSettled{Ask: ask.clone(), Reason: "moved", MovedFrom: hop.FromPeerID})
 	return ask.clone(), hop, nil
 }
 
@@ -592,7 +639,7 @@ func (t *AskTracker) handOff(cid string, p DelegateParams, by, reason string) (*
 // its last one.
 func (t *AskTracker) UndoDelegation(ctx context.Context, cid string, hop Delegation) bool {
 	t.mu.Lock()
-	defer t.mu.Unlock()
+	defer t.unlock()
 	ask, ok := t.asks[cid]
 	if !ok || ask.Closed || len(ask.Delegations) == 0 || !t.claimedLocked(cid) {
 		return false
@@ -607,6 +654,7 @@ func (t *AskTracker) UndoDelegation(ctx context.Context, cid string, hop Delegat
 	if n := len(ask.Delegations); n > 0 {
 		ask.Generation = ask.Delegations[n-1].Generation
 	}
+	t.settle(AskSettled{Ask: ask.clone(), Reason: "returned", MovedFrom: hop.ToPeerID})
 	return true
 }
 
@@ -693,7 +741,7 @@ func (t *AskTracker) AnswerClaimed(ctx context.Context, cid string, ans Answer) 
 
 func (t *AskTracker) answer(cid string, ans Answer, claimed bool) (*Ask, error) {
 	t.mu.Lock()
-	defer t.mu.Unlock()
+	defer t.unlock()
 	ask, ok := t.asks[cid]
 	if !ok {
 		return nil, ErrAskNotFound
@@ -728,7 +776,7 @@ func (t *AskTracker) answer(cid string, ans Answer, claimed bool) (*Ask, error) 
 // if already captured.
 func (t *AskTracker) CaptureReply(ctx context.Context, cid, replyText string, attachments []map[string]any) {
 	t.mu.Lock()
-	defer t.mu.Unlock()
+	defer t.unlock()
 	ask, ok := t.asks[cid]
 	if !ok || ask.ReplyText != nil {
 		return
@@ -754,27 +802,27 @@ func (t *AskTracker) WaitForAnswer(ctx context.Context, cid string, timeout time
 	t.mu.Lock()
 	ask, ok := t.asks[cid]
 	if !ok {
-		t.mu.Unlock()
+		t.unlock()
 		return Answer{}, ErrAskNotFound
 	}
 	if ask.Answer != nil {
 		a := *ask.Answer
-		t.mu.Unlock()
+		t.unlock()
 		return a, nil
 	}
 	if ask.Closed {
 		reason := ask.CloseReason
-		t.mu.Unlock()
+		t.unlock()
 		return Answer{Outcome: "cancelled", Message: &reason}, nil
 	}
 	// Fail loud NOW if the default is invalid for this question, rather than
 	// silently returning an unrecorded answer at timeout: the timeout path must
 	// always go through Answer().
 	if err := validateAnswer(ask.Question, resolvedDefault); err != nil {
-		t.mu.Unlock()
+		t.unlock()
 		return Answer{}, fmt.Errorf("invalid default_answer: %w", err)
 	}
-	t.mu.Unlock()
+	t.unlock()
 
 	var timer <-chan time.Time
 	if timeout > 0 {
@@ -808,18 +856,18 @@ func (t *AskTracker) WaitForResolution(ctx context.Context, cid string, timeout 
 	t.mu.Lock()
 	ask, ok := t.asks[cid]
 	if !ok {
-		t.mu.Unlock()
+		t.unlock()
 		return nil, ErrAskNotFound
 	}
 	if ask.Closed {
 		snap := ask.clone()
-		t.mu.Unlock()
+		t.unlock()
 		return snap, nil
 	}
 	if pull {
 		ask.ReplyDelivery = "pull"
 	}
-	t.mu.Unlock()
+	t.unlock()
 
 	var timer <-chan time.Time
 	if timeout > 0 {
@@ -837,7 +885,7 @@ func (t *AskTracker) WaitForResolution(ctx context.Context, cid string, timeout 
 	// Resolved: the snapshot of this instance, even if it has since been
 	// evicted from the map.
 	t.mu.Lock()
-	defer t.mu.Unlock()
+	defer t.unlock()
 	return ask.clone(), nil
 }
 
@@ -846,7 +894,7 @@ func (t *AskTracker) WaitForResolution(ctx context.Context, cid string, timeout 
 // question when allowAnsweredQuestion). Captures the identity tuple for rebind.
 func (t *AskTracker) SetPendingReply(ctx context.Context, cid, framedReply string, identity *AskerIdentity, allowAnsweredQuestion bool) bool {
 	t.mu.Lock()
-	defer t.mu.Unlock()
+	defer t.unlock()
 	ask, ok := t.asks[cid]
 	if !ok {
 		return false
@@ -876,7 +924,7 @@ func (t *AskTracker) SetPendingReply(ctx context.Context, cid, framedReply strin
 // pass-1/generic rebind) rewrites FromPeerID when non-nil.
 func (t *AskTracker) MarkPendingReplyDelivered(ctx context.Context, cid string, newFrom *proto.PeerID, reason string) bool {
 	t.mu.Lock()
-	defer t.mu.Unlock()
+	defer t.unlock()
 	ask, ok := t.asks[cid]
 	if !ok || ask.PendingReply == nil {
 		return false
@@ -894,7 +942,7 @@ func (t *AskTracker) MarkPendingReplyDelivered(ctx context.Context, cid string, 
 // applied; false if missing or already closed (no mutation).
 func (t *AskTracker) RebindAndClose(ctx context.Context, cid string, newFrom proto.PeerID, reason string) bool {
 	t.mu.Lock()
-	defer t.mu.Unlock()
+	defer t.unlock()
 	ask, ok := t.asks[cid]
 	if !ok || ask.Closed {
 		return false
@@ -909,7 +957,7 @@ func (t *AskTracker) RebindAndClose(ctx context.Context, cid string, newFrom pro
 // Ask doesn't retain reply text it can never use again.
 func (t *AskTracker) ClearPendingReply(ctx context.Context, cid string) {
 	t.mu.Lock()
-	defer t.mu.Unlock()
+	defer t.unlock()
 	if ask, ok := t.asks[cid]; ok {
 		ask.PendingReply = nil
 	}
@@ -920,7 +968,7 @@ func (t *AskTracker) ClearPendingReply(ctx context.Context, cid string) {
 // a failed redelivery leaves the reply in place for the next reconnect.
 func (t *AskTracker) TakePendingRepliesForAsker(id proto.PeerID) []*Ask {
 	t.mu.Lock()
-	defer t.mu.Unlock()
+	defer t.unlock()
 	var out []*Ask
 	for _, ask := range t.asks {
 		if ask.FromPeerID == id && ask.PendingReply != nil {
@@ -935,7 +983,7 @@ func (t *AskTracker) TakePendingRepliesForAsker(id proto.PeerID) []*Ask {
 // FromPeerID is NOT in livePeerIDs. No liveness/uniqueness gating here.
 func (t *AskTracker) TakeOrphanPendingRepliesMatching(id AskerIdentity, livePeerIDs map[proto.PeerID]struct{}) []*Ask {
 	t.mu.Lock()
-	defer t.mu.Unlock()
+	defer t.unlock()
 	var out []*Ask
 	for _, ask := range t.asks {
 		if ask.PendingReply == nil {
@@ -965,7 +1013,7 @@ func (t *AskTracker) TakeOrphanPendingRepliesMatching(id AskerIdentity, livePeer
 // from this before forget/evict.
 func (t *AskTracker) SnapshotPendingRepliesForPeer(id proto.PeerID) []*Ask {
 	t.mu.Lock()
-	defer t.mu.Unlock()
+	defer t.unlock()
 	var out []*Ask
 	for _, ask := range t.asks {
 		if ask.PendingReply != nil && (ask.ToPeerID == id || ask.FromPeerID == id) {
@@ -981,7 +1029,7 @@ func (t *AskTracker) SnapshotPendingRepliesForPeer(id proto.PeerID) []*Ask {
 func (t *AskTracker) SnapshotExpiredPendingReplies() []*Ask {
 	cutoff := time.Now().UTC().Add(-t.ttl)
 	t.mu.Lock()
-	defer t.mu.Unlock()
+	defer t.unlock()
 	var out []*Ask
 	for _, ask := range t.asks {
 		if ask.CreatedAt.Before(cutoff) && ask.PendingReply != nil {
@@ -1003,7 +1051,7 @@ func (t *AskTracker) PendingForPeer(ctx context.Context, id proto.PeerID, maxRes
 	}
 	t.maybeEvictExpired(ctx)
 	t.mu.Lock()
-	defer t.mu.Unlock()
+	defer t.unlock()
 	matches := func(ask *Ask) bool {
 		switch direction {
 		case "inbound":
@@ -1038,11 +1086,11 @@ func (t *AskTracker) maybeEvictExpired(ctx context.Context) {
 	now := time.Now()
 	t.mu.Lock()
 	if !t.lastEviction.IsZero() && now.Sub(t.lastEviction) < evictionInterval {
-		t.mu.Unlock()
+		t.unlock()
 		return
 	}
 	t.lastEviction = now
-	t.mu.Unlock()
+	t.unlock()
 	t.EvictExpired(ctx, false)
 }
 
@@ -1052,7 +1100,7 @@ func (t *AskTracker) maybeEvictExpired(ctx context.Context) {
 // forgotten) so history and traces keep the cid.
 func (t *AskTracker) CloseInboundForPeer(id proto.PeerID, reason string) []ClosedInboundAsk {
 	t.mu.Lock()
-	defer t.mu.Unlock()
+	defer t.unlock()
 	var closed []ClosedInboundAsk
 	for cid, ask := range t.asks {
 		if ask.ToPeerID != id || ask.Closed || !t.guardLocked(ask, reason) {
@@ -1088,7 +1136,7 @@ type ClosedInboundAsk struct {
 
 func (t *AskTracker) ForgetPeer(ctx context.Context, id proto.PeerID) int {
 	t.mu.Lock()
-	defer t.mu.Unlock()
+	defer t.unlock()
 	var doomed []string
 	for cid, ask := range t.asks {
 		if (ask.ToPeerID == id || ask.FromPeerID == id) && t.guardLocked(ask, "evicted") {
@@ -1108,7 +1156,7 @@ func (t *AskTracker) ForgetPeer(ctx context.Context, id proto.PeerID) int {
 func (t *AskTracker) EvictExpired(ctx context.Context, includeStashed bool) int {
 	cutoff := time.Now().UTC().Add(-t.ttl)
 	t.mu.Lock()
-	defer t.mu.Unlock()
+	defer t.unlock()
 	var expired []string
 	for cid, ask := range t.asks {
 		if ask.CreatedAt.Before(cutoff) && (includeStashed || ask.PendingReply == nil) && t.guardLocked(ask, "evicted") {
@@ -1127,7 +1175,7 @@ func (t *AskTracker) EvictExpired(ctx context.Context, includeStashed bool) int 
 // ErrQuiesceHasOpen if open asks exist. Pair with EndQuiesce in a defer.
 func (t *AskTracker) BeginQuiesce(ctx context.Context, id proto.PeerID) error {
 	t.mu.Lock()
-	defer t.mu.Unlock()
+	defer t.unlock()
 	if _, ok := t.quiescing[id]; ok {
 		return ErrQuiesced
 	}
@@ -1143,14 +1191,14 @@ func (t *AskTracker) BeginQuiesce(ctx context.Context, id proto.PeerID) error {
 // EndQuiesce releases the switch barrier. Idempotent.
 func (t *AskTracker) EndQuiesce(ctx context.Context, id proto.PeerID) {
 	t.mu.Lock()
-	defer t.mu.Unlock()
+	defer t.unlock()
 	delete(t.quiescing, id)
 }
 
 // OpenCount is the number of open (non-closed) asks. For diagnostics.
 func (t *AskTracker) OpenCount() int {
 	t.mu.Lock()
-	defer t.mu.Unlock()
+	defer t.unlock()
 	n := 0
 	for _, ask := range t.asks {
 		if !ask.Closed {
@@ -1163,7 +1211,7 @@ func (t *AskTracker) OpenCount() int {
 // TotalCount is the total asks tracked (open + closed-but-retained). For diagnostics.
 func (t *AskTracker) TotalCount() int {
 	t.mu.Lock()
-	defer t.mu.Unlock()
+	defer t.unlock()
 	return len(t.asks)
 }
 
@@ -1177,7 +1225,7 @@ type AskPeerStats struct {
 // knows about, relative to sender. Bounded by the tracker TTL.
 func (t *AskTracker) RoutingStats(sender proto.PeerID) map[proto.PeerID]AskPeerStats {
 	t.mu.Lock()
-	defer t.mu.Unlock()
+	defer t.unlock()
 	out := map[proto.PeerID]AskPeerStats{}
 	touch := func(peer proto.PeerID, at time.Time) {
 		st := out[peer]

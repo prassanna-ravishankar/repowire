@@ -643,3 +643,36 @@ func mcpText(t *testing.T, res *mcp.CallToolResult) string {
 	}
 	return text.Text
 }
+
+// #591: once an ask moves away from the human, the human's reply must not
+// resolve it under the new holder: it is refused, nothing is sent, and the
+// item reads unanswerable.
+func TestHumanInboxReplyToAMovedAskIsRefused(t *testing.T) {
+	s := newInboxStack(t)
+	agent := s.connect(t, map[string]any{"display_name": "alpha", "circle": "1", "backend": "claude-code", "role": "agent", "path": "/work/alpha"}, nil)
+	s.connect(t, map[string]any{"display_name": "beta", "circle": "1", "backend": "claude-code", "role": "agent", "path": "/work/beta"}, nil)
+
+	asked := decodeBody(t, postJSON(t, s.srv.URL+"/ask", map[string]any{"from_peer": string(agent.id), "to_peer": "prass", "text": "merge #12?"}))
+	cid := asked["correlation_id"].(string)
+	itemID := asked["inbox"].(map[string]any)["item_id"].(string)
+	if view := decodeBody(t, httpGet(t, s.srv.URL+"/inbox/"+itemID)); view["answerable"] != true {
+		t.Fatalf("fresh item = %+v", view)
+	}
+	// An admin hand-off (no from_peer) moves the ask from the human to beta.
+	if moved := postJSON(t, s.srv.URL+"/asks/"+cid+"/delegate", map[string]any{"to_peer": "beta-claude-code"}); moved.StatusCode != http.StatusOK {
+		t.Fatalf("move: %d", moved.StatusCode)
+	}
+	resp := postJSON(t, s.srv.URL+"/inbox/"+itemID+"/reply", map[string]any{"surface": "dashboard", "text": "yes"})
+	var body map[string]any
+	_ = json.NewDecoder(resp.Body).Decode(&body)
+	resp.Body.Close()
+	if detail, _ := body["detail"].(map[string]any); resp.StatusCode != http.StatusConflict || detail["error"] != "ask_moved" || detail["holder"] != "beta-claude-code" {
+		t.Fatalf("reply to a moved ask: %d %+v", resp.StatusCode, body)
+	}
+	if view := decodeBody(t, httpGet(t, s.srv.URL+"/inbox/"+itemID)); view["answerable"] != false {
+		t.Fatalf("moved item = %+v", view)
+	}
+	if ask, _ := s.asks.Get(cid); ask.Closed {
+		t.Fatal("the human's reply closed an ask that had moved to beta")
+	}
+}
