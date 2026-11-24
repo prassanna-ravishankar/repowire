@@ -163,6 +163,32 @@ type RuntimeIdentity struct {
 - **Restart policy** stays an explicit action (`restart_peer`). A container
   never restarts an agent on its own.
 
+### Plugs
+
+The socket is designed to fit every execution Repowire launches today or has
+planned. Each plug maps the verbs to its own mechanism, and a verb a plug
+cannot honour is declared unsupported, not faked.
+
+| Verb | tmux (default) | ACP (daemon child) | Codex thread (App Server) | Hosted (#517, Cloudflare) |
+|---|---|---|---|---|
+| Reserve | placeholder pane | none | none | none |
+| Launch | `respawn-pane -k` with the command | spawn with its own process group, lazily on first prompt (today) | `thread/start` through the bridge | `Hosted.Spawn`: allocate, then `CreateAgent` (a reclaimed peer reattaches to its agent and conversation) |
+| Bind | the hook's `agent_pid` and start time | the child pid | the thread id | the hosted agent id, which is the peer id |
+| Stop | proof, SIGTERM or `kill-pane` | signal its own group, close stdio | `thread/interrupt`, `thread/unsubscribe` | `Hosted.Retire`: `RetireAgent`, then retire the peer (final; the transcript stays) |
+| Watch | pid exit (pidfd or kqueue) | child exit | the bridge's thread-closed event | none: no process. The gateway socket and reports are the evidence |
+| Sleep and wake | none | none | none | the Worker's own concern. The peer stays addressable while asleep, and a submission wakes it |
+| Attach | `switch-client` or `attach`, then window and pane | none | to verify (open question) | none; the transcript is observe-only |
+| Adopt | pid and start time reconcile | none: does not survive a daemon restart | the bridge resubscribes | `Hosted.Restore`: mappings, plus unsettled operations resubmitted by id |
+
+Two consequences for the socket's shape:
+- **Watch is optional.** For a plug without a process (hosted), "ended"
+  is only what the plug reports (a retire, or a refusal), and the daemon
+  never infers death from silence.
+- **Sleeping is not ending.** A plug may report an execution as
+  addressable but not running. The registry must keep such a peer
+  reachable, not offline. The hosted backend already does this by routing
+  submissions durably, as for the human inbox.
+
 ### What moves
 
 - `TmuxController` becomes the tmux plug, and `PaneOwnership` becomes
