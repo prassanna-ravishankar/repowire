@@ -433,7 +433,9 @@ func (r *Registry) AllocateAndRegister(ctx context.Context, params AllocateParam
 			}
 		}
 		existing.state = target
-		existing.attaching = params.AttachingSocket
+		// Only the connect that set it clears it (SocketAttached); another
+		// registration meanwhile must not reopen the demotion window.
+		existing.attaching = existing.attaching || params.AttachingSocket
 		if status, ok := target.ToStatus(); ok {
 			existing.peer.Status = status
 		}

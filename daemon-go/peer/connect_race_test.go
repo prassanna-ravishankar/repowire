@@ -47,6 +47,10 @@ func TestLazyRepairSparesAPeerWhoseSocketIsAttaching(t *testing.T) {
 	if !r.Attaching(id) {
 		t.Fatal("want attaching after a socket registration")
 	}
+	// A registration without a socket (HTTP) meanwhile keeps the window closed.
+	if _, _, err := r.AllocateAndRegister(ctx, AllocateParams{ClaimedPeerID: &id, Circle: "c", Backend: proto.AgentClaudeCode, Path: ptr("/w"), Machine: "m", Role: proto.RoleAgent}); err != nil || !r.Attaching(id) {
+		t.Fatalf("re-register: err=%v attaching=%v, want still attaching", err, r.Attaching(id))
+	}
 	r.LazyRepair(ctx)
 	if p, _ := r.GetPeer(id); p.Status != proto.StatusOnline {
 		t.Fatalf("attaching: status = %s, want online", p.Status)
