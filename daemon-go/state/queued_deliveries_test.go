@@ -291,3 +291,72 @@ func TestQueueKeepsATracedDeliveryIDAndAnswersForIt(t *testing.T) {
 		t.Error("an unknown delivery reads queued")
 	}
 }
+
+// The queue records how each traced notify left it, under its delivery id,
+// on every path: drained or replayed, expired, dropped at the cap, dropped
+// for a peer that cannot take input. Untraced rows get no stage.
+func TestQueueRecordsEachTracedNotifyOutcome(t *testing.T) {
+	ctx := context.Background()
+	s, err := NewStore(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	now := time.Now().UTC()
+	enqueue := func(id, peer string, traced bool, ttl float64, max int, at time.Time) {
+		t.Helper()
+		if traced {
+			if err := s.RecordTrace(ctx, id, "notify", "pending", "", id, peer, "repow-a", nil); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if _, err := s.EnqueueDelivery(ctx, QueuedDelivery{DeliveryID: id, PeerID: peer, Kind: DeliveryNotify, FromPeerName: "a", ToPeerName: "b", Text: "x"}, ttl, max, at); err != nil {
+			t.Fatal(err)
+		}
+	}
+	last := func(id string) (stage, status, reason string) {
+		rows, err := s.StagesFor(ctx, id)
+		if err != nil || len(rows) == 0 {
+			return "", "", ""
+		}
+		r := rows[len(rows)-1]
+		reason, _ = r.Detail["reason"].(string)
+		return r.Stage, r.Status, reason
+	}
+
+	enqueue("n-drained", "repow-drain", true, 60, 10, now)
+	enqueue("n-untraced", "repow-drain", false, 60, 10, now)
+	if _, err := s.DrainDeliveries(ctx, "repow-drain", 10, now); err != nil {
+		t.Fatal(err)
+	}
+	enqueue("n-replayed", "repow-ws", true, 60, 10, now)
+	if _, err := s.DeleteDelivery(ctx, "n-replayed"); err != nil {
+		t.Fatal(err)
+	}
+	enqueue("n-expired", "repow-exp", true, 1, 10, now)
+	enqueue("n-later", "repow-exp", true, 60, 10, now.Add(2*time.Second)) // enqueue sweeps the expired row
+	enqueue("n-capped", "repow-cap", true, 60, 1, now)
+	enqueue("n-newer", "repow-cap", true, 60, 1, now.Add(time.Millisecond))
+	enqueue("n-unaddressable", "repow-gone", true, 60, 10, now)
+	if _, err := s.DeleteDeliveriesForPeer(ctx, "repow-gone"); err != nil {
+		t.Fatal(err)
+	}
+
+	for id, want := range map[string][3]string{
+		"n-drained":       {QueueDequeued, "ok", ""},
+		"n-replayed":      {QueueDequeued, "ok", ""},
+		"n-expired":       {QueueExpired, "fail", ""},
+		"n-capped":        {QueueDropped, "fail", "queue_cap"},
+		"n-unaddressable": {QueueDropped, "fail", "peer_not_addressable"},
+		"n-later":         {"pending", "ok", ""},
+		"n-newer":         {"pending", "ok", ""},
+	} {
+		stage, status, reason := last(id)
+		if [3]string{stage, status, reason} != want {
+			t.Errorf("%s last stage = %s/%s/%s, want %v", id, stage, status, reason, want)
+		}
+	}
+	if stage, _, _ := last("n-untraced"); stage != "" {
+		t.Errorf("an untraced row got stage %q", stage)
+	}
+}

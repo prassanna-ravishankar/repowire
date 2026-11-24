@@ -39,6 +39,17 @@ func (s *Store) RecordTrace(
 	traceID, kind, stage, status, deliveryID, peerID, fromPeerID string,
 	detail map[string]any,
 ) error {
+	return recordTrace(ctx, s.db, traceID, kind, stage, status, deliveryID, peerID, fromPeerID, detail)
+}
+
+// execer is a *sql.DB or a *sql.Tx.
+type execer interface {
+	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
+}
+
+// recordTrace is RecordTrace on db, so a store write can trace inside its
+// own transaction.
+func recordTrace(ctx context.Context, db execer, traceID, kind, stage, status, deliveryID, peerID, fromPeerID string, detail map[string]any) error {
 	if status == "" {
 		status = "ok"
 	}
@@ -63,7 +74,7 @@ func (s *Store) RecordTrace(
 		(SELECT COALESCE(MAX(seq), -1) + 1 FROM delivery_traces WHERE trace_id = ?),
 		?, ?, ?, ?, ?, ?, ?
 	)`
-	_, err := s.db.ExecContext(ctx, q,
+	_, err := db.ExecContext(ctx, q,
 		uuid.NewString(),
 		traceID,
 		deliveryID,
