@@ -223,6 +223,23 @@ Destructive authority is not guessed: a live runtime needs the same pane proof a
 
 `peer rehook` re-establishes a peer's inbound ws-hook **without killing the pane or the agent** — the non-destructive recovery for the "registered/online but inbound delivery is dead" case. It is same-host only (the daemon cannot spawn a ws-hook into a foreign pane) and gated by spawn-ownership proof or live tmux pane evidence. It pings an existing connection first and never disconnects a ping-healthy peer (reports `already_healthy`). It defaults to a dry-run report; pass `--apply` to act. If the pane hook metadata names a stale peer id/display name (`HOOK_PEERID_MISMATCH`), rehook rewrites that metadata to the registry identity, drops the stale birth certificate, starts a fresh ws-hook, and reports `reconciled_hook_metadata`. In the non-mismatch respawn path, when the prior ws-hook process is still alive by pid even though its WebSocket is dead, the underlying respawn is a no-op and the response reports `respawn_skipped_pid_alive_or_contested`. For a destructive restart use `peer restart`.
 
+## `repowire container`
+
+```bash
+repowire container report [--since 7d] [--db PATH] [--json]
+```
+
+This command summarises the exit-watch soak (`rfcs/agent-container.md`, step 2) for the given window (default 7 days; `all`, `36h` or an RFC-3339 time also work). Every tmux offline signal for a spawned peer (`pane_died`, `session_closed`) is checked against the agent's own process. The report shows:
+
+- **confirmed:** the agent had exited.
+- **refuted:** the agent was still running, which makes the signal a spurious offline.
+- **unknown:** there was no identity to compare.
+- **unwatched:** no watch was armed for the peer, which is a coverage gap.
+- **exits observed:** the agent exits the watch saw, including how many it saw before tmux offlined the peer.
+- **each refuted signal:** listed with its peer, pane and pid.
+
+It reads `state.db` read-only, so it is safe to run beside the daemon.
+
 ## `repowire session`
 
 ```bash

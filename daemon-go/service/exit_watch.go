@@ -19,6 +19,12 @@ import (
 // An agent's identity is its pid with its start time (hooks.ProcessStartTime,
 // the same value the hooks record as agent_started), so a recycled pid is not
 // mistaken for the agent.
+// The events ExitWatch records; SummarizeExits reads them back.
+const (
+	EventAgentExitObserved = "agent_exit_observed"
+	EventExitSignalChecked = "exit_signal_checked"
+)
+
 type ExitWatch struct {
 	spawned func(p *proto.Peer) bool // the peer runs in a pane Repowire spawned
 	emit    func(ctx context.Context, typ string, payload map[string]any) string
@@ -124,7 +130,7 @@ func (w *ExitWatch) run(id proto.PeerID, ew *exitWatch) {
 	if known {
 		payload["peer_status"] = string(status)
 	}
-	w.emit(context.Background(), "agent_exit_observed", payload)
+	w.emit(context.Background(), EventAgentExitObserved, payload)
 }
 
 // CheckSignal records, for a tmux signal about to offline p, whether p's bound
@@ -160,7 +166,7 @@ func (w *ExitWatch) CheckSignal(ctx context.Context, signal string, p *proto.Pee
 	if p.PaneID != nil {
 		payload["pane_id"] = *p.PaneID
 	}
-	w.emit(ctx, "exit_signal_checked", payload)
+	w.emit(ctx, EventExitSignalChecked, payload)
 }
 
 // Close cancels every watch; no watch is armed afterwards.
