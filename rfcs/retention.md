@@ -33,7 +33,6 @@ When `records_days` is shorter, content goes with its record.
 | `delivery_traces` | remove `text`, `reply`, `note`, `request.text` from `detail_json` | delete row |
 | `events` | `chat_turn`, `chat_turn_delta`: delete row. Message events: remove `text`, `message`, `note`, `question`, `attachments` | delete row |
 | `inbox_items` | blank `text`, `attachments_json`, `question_json` | delete row, its pushes and refs |
-| (an unreplied ask's item) | kept while the ask may be open (`daemon.prune_max_age_hours`) | same |
 | `tracked_work` | n/a (a job keeps its result) | delete terminal jobs |
 | `operations` | n/a | delete completed operations |
 | `runtime_identity_certificates` | n/a | delete rows expired before the cutoff, except each peer's newest (a runtime renews from it) |
@@ -69,9 +68,11 @@ Each piece lives with what it expires, so its lifecycle has one owner.
 - **Attachment files:** the attachment routes, which already own the
   directory: an upload or a read first removes files past the content
   cutoff.
-- **Open asks:** the inbox's own rule keeps an unreplied ask's item (and
-  its pushes and refs) while the ask may be open, so the policy needs no
-  floor.
+- **Open asks:** the policy. An open ask still reads its peer message,
+  inbox item, refs, attachments and trace, so `RetentionPolicy` never lets
+  either class expire anything younger than the ask lifetime
+  (`daemon.prune_max_age_hours`). Every table and the attachment files get
+  this without a rule of their own, so config needs no floor.
 
 ## Readers
 

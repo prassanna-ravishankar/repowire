@@ -142,34 +142,38 @@ func TestCloseWaitsForARunningSweep(t *testing.T) {
 	}
 }
 
-// An unreplied ask's inbox item backs the human's reply, so it keeps its
-// text and its row while the ask may be open, however short the policy.
-func TestOpenAskInboxItemOutlivesAShortPolicy(t *testing.T) {
+// An open ask still reads its inbox item, peer message, refs and trace, so
+// nothing younger than the ask lifetime expires, however short the policy.
+func TestNothingYoungerThanAnOpenAskExpires(t *testing.T) {
 	s := newSweepStore(t)
-	insert := func(id, kind, created string, replied any) {
-		s.mustExec(t, `INSERT INTO inbox_items(id, direction, kind, trace_id, trace_kind, text, created_at, replied_at)
-			VALUES (?, 'in', ?, ?, ?, 'secret', ?, ?)`, id, kind, id, kind, created, replied)
+	insert := func(id, kind, created string) {
+		s.mustExec(t, `INSERT INTO inbox_items(id, direction, kind, trace_id, trace_kind, text, created_at)
+			VALUES (?, 'in', ?, ?, ?, 'secret', ?)`, id, kind, id, kind, created)
 		s.mustExec(t, `INSERT INTO inbox_refs(surface, ref, item_id) VALUES ('telegram', ?, ?)`, id, id)
+		s.mustExec(t, `INSERT INTO peer_messages(id, kind, peer_id, text, created_at) VALUES (?, ?, 'repow-b', 'secret', ?)`, "msg-"+id, kind, created)
 	}
-	insert("ask-open", "ask", ago(2*day), nil)
-	insert("ask-replied", "ask", ago(2*day), ago(day))
-	insert("ask-expired", "ask", ago(4*day), nil)
-	insert("notify", "notify", ago(2*day), nil)
+	insert("ask-open", "ask", ago(2*day))
+	insert("ask-expired", "ask", ago(4*day))
+	short := RetentionPolicy{Content: day, AskLife: 3 * day}
 
-	sweep(t, s, RetentionPolicy{Content: day, AskLife: 3 * day})
-	for id, keepsText := range map[string]bool{"ask-open": true, "ask-replied": false, "ask-expired": false, "notify": false} {
-		if got := s.count(t, `SELECT COUNT(*) FROM inbox_items WHERE id = ? AND text = 'secret'`, id) == 1; got != keepsText {
-			t.Errorf("%s keeps text = %v, want %v", id, got, keepsText)
+	sweep(t, s, short)
+	for id, kept := range map[string]bool{"ask-open": true, "ask-expired": false} {
+		if got := s.count(t, `SELECT COUNT(*) FROM inbox_items WHERE id = ? AND text = 'secret'`, id) == 1; got != kept {
+			t.Errorf("inbox %s keeps text = %v, want %v", id, got, kept)
+		}
+		if got := s.count(t, `SELECT COUNT(*) FROM peer_messages WHERE id = ?`, "msg-"+id) == 1; got != kept {
+			t.Errorf("message %s kept = %v, want %v", id, got, kept)
 		}
 	}
 
-	sweep(t, s, RetentionPolicy{Content: day, Records: day, AskLife: 3 * day})
-	for id, kept := range map[string]bool{"ask-open": true, "ask-replied": false, "ask-expired": false, "notify": false} {
+	short.Records = day
+	sweep(t, s, short)
+	for id, kept := range map[string]bool{"ask-open": true, "ask-expired": false} {
 		if got := s.count(t, `SELECT COUNT(*) FROM inbox_items WHERE id = ?`, id) == 1; got != kept {
-			t.Errorf("%s kept = %v, want %v", id, got, kept)
+			t.Errorf("inbox %s kept = %v, want %v", id, got, kept)
 		}
 		if got := s.count(t, `SELECT COUNT(*) FROM inbox_refs WHERE item_id = ?`, id) == 1; got != kept {
-			t.Errorf("%s ref kept = %v, want %v", id, got, kept)
+			t.Errorf("ref %s kept = %v, want %v", id, got, kept)
 		}
 	}
 }

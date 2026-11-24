@@ -25,8 +25,9 @@ import (
 // without a declaration.
 
 // RetentionPolicy says how long each class is kept. Zero keeps forever.
-// AskLife is how long an ask may stay open; the inbox keeps an unreplied
-// ask's item that long whatever the policy (zero protects nothing).
+// AskLife is how long an ask may stay open: nothing younger expires, whatever
+// the policy, since an open ask still reads its message, inbox item,
+// attachments and trace (zero sets no minimum).
 type RetentionPolicy struct {
 	Content time.Duration
 	Records time.Duration
@@ -58,8 +59,7 @@ type sweepRule struct {
 // An empty records or content cutoff means that class is kept forever.
 type retentionCutoffs struct {
 	records, content string
-	asksSince        string // an ask created at or after this may be open; "" protects none
-	remote           int64  // unix seconds: the cross-machine window
+	remote           int64 // unix seconds: the cross-machine window
 }
 
 // tableRetention is a domain's declaration for the tables it owns: the
@@ -80,6 +80,14 @@ var tableRetentions = []tableRetention{
 	sessionBindingRetention, queuedDeliveryRetention, identityRetention, migrationRetention, legacyImportRetention,
 }
 
+// atLeastAskLife raises a non-zero age to AskLife.
+func (p RetentionPolicy) atLeastAskLife(d time.Duration) time.Duration {
+	if d > 0 && d < p.AskLife {
+		return p.AskLife
+	}
+	return d
+}
+
 // ContentCutoff is the instant before which content goes: the records
 // cutoff when records are kept for less time, zero when both are kept
 // forever.
@@ -88,7 +96,7 @@ func (p RetentionPolicy) ContentCutoff(now time.Time) time.Time {
 	if p.Records > 0 && (d == 0 || p.Records < d) {
 		d = p.Records
 	}
-	if d == 0 {
+	if d = p.atLeastAskLife(d); d == 0 {
 		return time.Time{}
 	}
 	return now.Add(-d)
@@ -96,14 +104,11 @@ func (p RetentionPolicy) ContentCutoff(now time.Time) time.Time {
 
 func (p RetentionPolicy) cutoffs(now time.Time) retentionCutoffs {
 	c := retentionCutoffs{remote: now.Add(-RemoteWindow).Unix()}
-	if p.Records > 0 {
-		c.records = sweepStamp(now.Add(-p.Records))
+	if records := p.atLeastAskLife(p.Records); records > 0 {
+		c.records = sweepStamp(now.Add(-records))
 	}
 	if cutoff := p.ContentCutoff(now); !cutoff.IsZero() {
 		c.content = sweepStamp(cutoff)
-	}
-	if p.AskLife > 0 {
-		c.asksSince = sweepStamp(now.Add(-p.AskLife))
 	}
 	return c
 }

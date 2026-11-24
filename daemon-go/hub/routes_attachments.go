@@ -8,8 +8,9 @@ package hub
 //	GET  /attachments/{id}   stream a previously-uploaded file by id-prefix (404 if absent)
 //
 // Files live under ~/.repowire/attachments. Limits (matching Python): 10MB per
-// file (413), 200MB total directory cap (507), and a 24h TTL swept on every
-// upload so a stale-but-expired dir doesn't deny a legitimate upload.
+// file (413), 200MB total directory cap (507), and expiry with other content
+// under the retention policy, swept on every upload and read
+// (expireAttachments).
 
 import (
 	"fmt"
@@ -203,7 +204,8 @@ func (h *Hub) WithRetention(p state.RetentionPolicy) *Hub {
 }
 
 // expireAttachments removes regular files in dir modified before the content
-// cutoff. Best-effort; the zero policy keeps everything.
+// cutoff (never younger than an ask may stay open). Best-effort; the zero
+// policy keeps everything.
 func (h *Hub) expireAttachments(dir string) {
 	cutoff := h.attachmentRetention.ContentCutoff(time.Now())
 	if cutoff.IsZero() {
