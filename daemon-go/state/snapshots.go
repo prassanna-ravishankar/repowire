@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/repowire/repowire/daemon-go/peer"
@@ -58,13 +60,24 @@ func vacuumInto(ctx context.Context, db *sql.DB, path string) error {
 	return nil
 }
 
+// snapshotName matches only the copies the store names itself
+// (snapshotPath), so pruning never touches a file someone else made, such as
+// a hand-made state.db.pre-retention backup.
+var snapshotName = regexp.MustCompile(`\.pre-(retention|migration-v[0-9]+-to-v[0-9]+)-[0-9]{8}-[0-9]{6}$`)
+
 // pruneSnapshots keeps the newest keep copies of dbPath and removes the rest,
 // returning what it removed. keep <= 0 keeps every copy.
 func pruneSnapshots(dbPath string, keep int) []string {
 	if keep <= 0 {
 		return nil
 	}
-	matches, _ := filepath.Glob(dbPath + ".pre-*")
+	var matches []string
+	all, _ := filepath.Glob(dbPath + ".pre-*")
+	for _, m := range all {
+		if snapshotName.MatchString(strings.TrimPrefix(m, dbPath)) {
+			matches = append(matches, m)
+		}
+	}
 	type copyFile struct {
 		path string
 		mod  time.Time

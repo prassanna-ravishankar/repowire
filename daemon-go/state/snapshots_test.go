@@ -87,7 +87,13 @@ func TestFreshDatabaseIsNotCopied(t *testing.T) {
 func TestOldCopiesArePrunedToTheNewest(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "state.db")
 	olderSchemaDB(t, path)
-	for i, name := range []string{"pre-migration-v15-to-v16-a", "pre-migration-v16-to-v17-b", "pre-retention-c"} {
+	// A hand-made backup with a similar name is never ours to prune.
+	if err := os.WriteFile(path+".pre-retention", []byte("mine"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	old := time.Now().Add(-24 * time.Hour)
+	_ = os.Chtimes(path+".pre-retention", old, old)
+	for i, name := range []string{"pre-migration-v15-to-v16-20261101-000000", "pre-migration-v16-to-v17-20261102-000000", "pre-retention-20261103-000000"} {
 		old := path + "." + name
 		if err := os.WriteFile(old, []byte("x"), 0o600); err != nil {
 			t.Fatal(err)
@@ -101,8 +107,8 @@ func TestOldCopiesArePrunedToTheNewest(t *testing.T) {
 	}
 	defer s.Close()
 	left, _ := filepath.Glob(path + ".pre-*")
-	if len(left) != 2 || !slicesHasSuffix(left, ".pre-retention-c") || !slicesHasPrefix(left, path+".pre-migration-v17-to-v18-") {
-		t.Fatalf("kept %v, want the new copy and the newest old one", left)
+	if len(left) != 3 || !slicesHasSuffix(left, ".pre-retention-20261103-000000") || !slicesHasPrefix(left, path+".pre-migration-v17-to-v18-") || !slicesHasSuffix(left, ".pre-retention") {
+		t.Fatalf("kept %v, want the new copy, the newest old one, and the hand-made backup", left)
 	}
 	if n := s.count(t, `SELECT COUNT(*) FROM events WHERE type = 'state_snapshot' AND json_array_length(payload_json, '$.pruned') = 2`); n != 1 {
 		t.Fatal("the pruned copies were not journaled")
