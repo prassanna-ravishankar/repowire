@@ -6,7 +6,6 @@ import (
 	"log"
 	"strings"
 	"sync"
-	"time"
 	"unicode/utf8"
 
 	"github.com/google/uuid"
@@ -22,8 +21,8 @@ import (
 // message_id the recipient can later list, peek at, or fetch.
 //
 // A recipient that chose pull delivery is sent a one-line nudge naming the
-// id instead of the body. The choice is durable per peer_id. Retention is
-// swept lazily by the insert that finds a sweep due; there is no timer.
+// id instead of the body. The choice is durable per peer_id. Records expire
+// under the retention policy (service/retention.go).
 // ============================================================================
 
 // Message delivery modes.
@@ -33,9 +32,7 @@ const (
 )
 
 const (
-	messageRetention     = 7 * 24 * time.Hour
-	messageSweepInterval = time.Hour
-	nudgePreviewRunes    = 80
+	nudgePreviewRunes = 80
 )
 
 // MessageStore is the persistence seam; *state.Store satisfies it.
@@ -45,7 +42,6 @@ type MessageStore interface {
 	ListPeerMessages(ctx context.Context, filter state.PeerMessageFilter) ([]state.PeerMessage, error)
 	MarkPeerMessageRead(ctx context.Context, id string) (bool, error)
 	DeletePeerMessage(ctx context.Context, id string) error
-	DeletePeerMessagesBefore(ctx context.Context, cutoff time.Time) (int, error)
 	SetPeerMessageDelivery(ctx context.Context, peerID, mode string) error
 	PeerMessageDeliveries(ctx context.Context) (map[string]string, error)
 }
@@ -54,9 +50,8 @@ type MessageStore interface {
 type Messages struct {
 	store MessageStore
 
-	mu        sync.Mutex
-	lastSweep time.Time
-	modes     map[proto.PeerID]string // loaded on first use; guarded by mu
+	mu    sync.Mutex
+	modes map[proto.PeerID]string // loaded on first use; guarded by mu
 }
 
 // NewMessages wires the message record over store.
@@ -126,7 +121,6 @@ func (m *Messages) Record(ctx context.Context, msg state.PeerMessage) *state.Pee
 	if m == nil {
 		return nil
 	}
-	m.maybeSweep(ctx)
 	if err := m.store.InsertPeerMessage(ctx, &msg); err != nil {
 		log.Printf("messages: record %s for %s: %v", msg.Kind, msg.PeerID, err)
 		return nil
@@ -163,20 +157,6 @@ func (m *Messages) Discard(ctx context.Context, msg *state.PeerMessage) {
 	}
 	if err := m.store.DeletePeerMessage(ctx, msg.ID); err != nil {
 		log.Printf("messages: discard %s: %v", msg.ID, err)
-	}
-}
-
-func (m *Messages) maybeSweep(ctx context.Context) {
-	now := time.Now()
-	m.mu.Lock()
-	if !m.lastSweep.IsZero() && now.Sub(m.lastSweep) < messageSweepInterval {
-		m.mu.Unlock()
-		return
-	}
-	m.lastSweep = now
-	m.mu.Unlock()
-	if _, err := m.store.DeletePeerMessagesBefore(ctx, now.Add(-messageRetention)); err != nil {
-		log.Printf("messages: retention sweep: %v", err)
 	}
 }
 

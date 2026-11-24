@@ -56,6 +56,18 @@ human:
       broadcast: false
 ```
 
+## `retention`
+
+```yaml
+retention:
+  content_days: 7     # text a peer or the human wrote, and attachment files
+  records_days: 180   # who did what, when, and how it ended
+```
+
+One policy covers everything the daemon keeps ([state and storage](../operate/state-and-storage.md#retention)). **Content** is authored text: message bodies, replies, delegation notes, transcripts (`chat_turn`), the human inbox's text, and uploaded attachments. After `content_days` it is removed in place (JSON rows gain `"content_expired": true`), or the row or file is deleted when it is nothing but content. **Records** are the metadata rows (traces, events, inbox items, terminal jobs, completed operations, expired runtime certificates other than each peer's newest); they are deleted after `records_days`. When `records_days` is shorter, content goes with its record. `0` keeps a class forever; otherwise a value is 7 to 36500 days, and at least `daemon.prune_max_age_hours` (the floor outlives an open ask, whose inbox item and reply handle the sweep would otherwise remove). Any other value keeps the default and warns. Env: `REPOWIRE_RETENTION__CONTENT_DAYS`, `REPOWIRE_RETENTION__RECORDS_DAYS`.
+
+The sweep runs from lazy repair at most once an hour (and when the daemon starts), never on a timer. `repowire config check` prints the policy. Copy `state.db` first if you need old message text, for example for `repowire route reconstruct`: a sweep is irreversible.
+
 ## `human`
 
 The daemon-owned human peer and its [inbox](../concepts/human-inbox.md).

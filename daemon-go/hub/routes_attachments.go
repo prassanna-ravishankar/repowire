@@ -18,7 +18,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"time"
 
 	"github.com/google/uuid"
 )
@@ -26,11 +25,10 @@ import (
 const (
 	maxAttachmentFileSize = 10 * 1024 * 1024  // 10MB
 	maxAttachmentDirSize  = 200 * 1024 * 1024 // 200MB
-	attachmentMaxAgeHours = 24
 )
 
-// attachmentsDir returns ~/.repowire/attachments (created on demand by callers).
-func attachmentsDir() string {
+// AttachmentsDir returns ~/.repowire/attachments (created on demand by callers).
+func AttachmentsDir() string {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return filepath.Join(".repowire", "attachments")
@@ -41,24 +39,6 @@ func attachmentsDir() string {
 func (h *Hub) registerAttachmentRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /attachments", h.requireAuth(h.uploadAttachment))
 	mux.HandleFunc("GET /attachments/{attachment_id}", h.requireAuth(h.getAttachment))
-}
-
-// cleanupExpiredAttachments removes files older than the TTL. Best-effort.
-func cleanupExpiredAttachments(dir string) {
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		return
-	}
-	cutoff := time.Now().Add(-attachmentMaxAgeHours * time.Hour)
-	for _, e := range entries {
-		info, err := e.Info()
-		if err != nil {
-			continue
-		}
-		if info.ModTime().Before(cutoff) {
-			_ = os.Remove(filepath.Join(dir, e.Name()))
-		}
-	}
 }
 
 // attachmentDirSize totals the bytes used by the attachments dir. Best-effort.
@@ -98,20 +78,17 @@ func (h *Hub) uploadAttachment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	dir := attachmentsDir()
+	dir := AttachmentsDir()
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to create attachments dir: "+err.Error())
 		return
 	}
 
-	// Sweep TTL'd files first so a stale-but-expired dir doesn't deny a legit upload.
-	cleanupExpiredAttachments(dir)
-
 	used := attachmentDirSize(dir)
 	if used >= maxAttachmentDirSize {
 		writeError(w, http.StatusInsufficientStorage,
-			fmt.Sprintf("Attachments directory full (%dMB used, %dMB cap). Wait for the %dh TTL to clear older files.",
-				used/1024/1024, maxAttachmentDirSize/1024/1024, attachmentMaxAgeHours))
+			fmt.Sprintf("Attachments directory full (%dMB used, %dMB cap). Files expire after retention.content_days.",
+				used/1024/1024, maxAttachmentDirSize/1024/1024))
 		return
 	}
 
@@ -145,8 +122,8 @@ func (h *Hub) uploadAttachment(w http.ResponseWriter, r *http.Request) {
 				out.Close()
 				_ = os.Remove(dest)
 				writeError(w, http.StatusInsufficientStorage,
-					fmt.Sprintf("Attachments directory would exceed cap (%dMB). Wait for the %dh TTL to clear older files.",
-						maxAttachmentDirSize/1024/1024, attachmentMaxAgeHours))
+					fmt.Sprintf("Attachments directory would exceed cap (%dMB). Files expire after retention.content_days.",
+						maxAttachmentDirSize/1024/1024))
 				return
 			}
 			if _, werr := out.Write(buf[:n]); werr != nil {
@@ -192,7 +169,7 @@ func (h *Hub) getAttachment(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "Not found")
 		return
 	}
-	dir := attachmentsDir()
+	dir := AttachmentsDir()
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		writeError(w, http.StatusNotFound, "Not found")

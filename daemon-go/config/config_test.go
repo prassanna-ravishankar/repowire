@@ -392,3 +392,65 @@ func TestLoadDiagnosticsNeverQuoteRejectedValues(t *testing.T) {
 		})
 	}
 }
+
+func TestRetentionDefaultsOverridesAndBadValues(t *testing.T) {
+	t.Setenv("REPOWIRE_RETENTION__CONTENT_DAYS", "")
+	t.Setenv("REPOWIRE_RETENTION__RECORDS_DAYS", "")
+	if cfg := loadYAML(t, "daemon:\n  port: 9100\n"); cfg.Retention != (RetentionConfig{ContentDays: 7, RecordsDays: 180}) {
+		t.Fatalf("defaults = %+v", cfg.Retention)
+	}
+	if cfg := loadYAML(t, "retention:\n  content_days: 30\n  records_days: 0\n"); cfg.Retention != (RetentionConfig{ContentDays: 30, RecordsDays: 0}) {
+		t.Fatalf("file values = %+v", cfg.Retention)
+	}
+	t.Setenv("REPOWIRE_RETENTION__CONTENT_DAYS", "14")
+	if cfg := loadYAML(t, "retention:\n  content_days: 30\n"); cfg.Retention.ContentDays != 14 {
+		t.Fatalf("env override = %+v", cfg.Retention)
+	}
+	t.Setenv("REPOWIRE_RETENTION__CONTENT_DAYS", "")
+
+	cfg, err := tryLoadYAML(t, "retention:\n  content_days: soon\n  records_days: -1\n")
+	if err != nil {
+		t.Fatalf("a bad retention value failed the load: %v", err)
+	}
+	if cfg.Retention != (RetentionConfig{ContentDays: 7, RecordsDays: 180}) {
+		t.Fatalf("bad values not reset to defaults: %+v", cfg.Retention)
+	}
+	joined := strings.Join(cfg.Warnings, "\n")
+	if !strings.Contains(joined, "retention.content_days") || !strings.Contains(joined, "retention.records_days") || strings.Contains(joined, "soon") {
+		t.Fatalf("warnings = %q", cfg.Warnings)
+	}
+}
+
+func TestRetentionOutlivesTheAskLifetime(t *testing.T) {
+	t.Setenv("REPOWIRE_RETENTION__CONTENT_DAYS", "")
+	t.Setenv("REPOWIRE_RETENTION__RECORDS_DAYS", "")
+	cfg := loadYAML(t, "daemon:\n  prune_max_age_hours: 480\nretention:\n  content_days: 10\n  records_days: 30\n")
+	if cfg.Retention != (RetentionConfig{ContentDays: 20, RecordsDays: 30}) || !strings.Contains(strings.Join(cfg.Warnings, "\n"), "retention.content_days") {
+		t.Fatalf("retention %+v, warnings %q", cfg.Retention, cfg.Warnings)
+	}
+	t.Setenv("REPOWIRE_DAEMON__PRUNE_MAX_AGE_HOURS", "NaN")
+	if cfg := loadYAML(t, "retention:\n  content_days: 3\n"); cfg.Retention.ContentDays != 7 {
+		t.Fatalf("unreadable ask lifetime: retention %+v", cfg.Retention)
+	}
+}
+
+func TestRetentionRejectsUnrepresentableDays(t *testing.T) {
+	t.Setenv("REPOWIRE_RETENTION__RECORDS_DAYS", "")
+	for _, value := range []string{".nan", ".inf", "1e12", "0.5", "6"} {
+		t.Setenv("REPOWIRE_RETENTION__CONTENT_DAYS", "")
+		cfg, err := tryLoadYAML(t, "retention:\n  content_days: "+value+"\n")
+		if err != nil {
+			t.Fatalf("%s failed the load: %v", value, err)
+		}
+		if cfg.Retention.ContentDays != 7 || !strings.Contains(strings.Join(cfg.Warnings, "\n"), "retention.content_days") {
+			t.Fatalf("yaml %s: retention %+v, warnings %q", value, cfg.Retention, cfg.Warnings)
+		}
+	}
+	for _, value := range []string{"NaN", "+Inf", "1e12"} {
+		t.Setenv("REPOWIRE_RETENTION__CONTENT_DAYS", value)
+		cfg := loadYAML(t, "daemon:\n  port: 9100\n")
+		if cfg.Retention.ContentDays != 7 {
+			t.Fatalf("env %s: retention %+v", value, cfg.Retention)
+		}
+	}
+}

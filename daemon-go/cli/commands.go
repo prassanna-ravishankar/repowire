@@ -787,19 +787,7 @@ func runWhy(argv []string) int {
 		}
 		for _, rawStage := range anySlice(trace["stages"]) {
 			stage, _ := rawStage.(map[string]any)
-			detail, _ := stage["detail"].(map[string]any)
-			switch stringValue(stage, "stage") {
-			case "created":
-				fmt.Printf("  %s  @%s → @%s\n", stringValue(stage, "ts"), stringValue(detail, "from_peer"), stringValue(detail, "to_peer"))
-				if text := stringValue(detail, "text"); text != "" {
-					fmt.Println("    " + strings.ReplaceAll(text, "\n", "\n    "))
-				}
-			case "closed":
-				fmt.Printf("  %s  %s\n", stringValue(stage, "ts"), stringValue(detail, "close_reason"))
-				if reply := stringValue(detail, "reply"); reply != "" {
-					fmt.Println("    " + strings.ReplaceAll(reply, "\n", "\n    "))
-				}
-			}
+			printWhyStage(os.Stdout, stage)
 		}
 	}
 	return 0
@@ -1039,6 +1027,7 @@ func configCheck(path string, require []string, w io.Writer) int {
 	fmt.Fprintf(w, "mcp_http: enabled=%v bind=%s require_auth=%v\n", mcp.Enabled, mcp.Bind, mcp.RequireAuth)
 	approval := cfg.Experiments.RemoteToolApproval
 	fmt.Fprintf(w, "remote_tool_approval: enabled=%v gated=%s\n", approval.Enabled, strings.Join(approval.GatedTools, ","))
+	fmt.Fprintf(w, "retention: content_days=%g records_days=%g\n", cfg.Retention.ContentDays, cfg.Retention.RecordsDays)
 	code := 0
 	for _, name := range require {
 		name = strings.TrimSpace(name)
@@ -1061,4 +1050,26 @@ func relayEndpoint(raw string) string {
 		return "set (not a URL)"
 	}
 	return u.Scheme + "://" + u.Host
+}
+
+// printWhyStage renders an ask's created and closed stages with their text.
+// Text removed under retention says so, so it is not mistaken for an ask or
+// reply that never had any.
+func printWhyStage(w io.Writer, stage map[string]any) {
+	detail, _ := stage["detail"].(map[string]any)
+	body := func(key string) {
+		if text := stringValue(detail, key); text != "" {
+			fmt.Fprintln(w, "    "+strings.ReplaceAll(text, "\n", "\n    "))
+		} else if expired, _ := detail["content_expired"].(bool); expired {
+			fmt.Fprintln(w, "    (text expired under retention)")
+		}
+	}
+	switch stringValue(stage, "stage") {
+	case "created":
+		fmt.Fprintf(w, "  %s  @%s → @%s\n", stringValue(stage, "ts"), stringValue(detail, "from_peer"), stringValue(detail, "to_peer"))
+		body("text")
+	case "closed":
+		fmt.Fprintf(w, "  %s  %s\n", stringValue(stage, "ts"), stringValue(detail, "close_reason"))
+		body("reply")
+	}
 }
