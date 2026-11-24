@@ -3,6 +3,7 @@ import { admission, deriveState, meshWindow, utcDay, type AgentState } from './l
 import { execCost, modelCost, type TokenUsage } from './prices';
 import { followUp, managedTool, type MeshEnv } from './mesh';
 import { MANAGED, remoteResult } from './protocol';
+import { mostConservative, parsePolicy, SWEEP_INTERVAL_MS, sweep, type RetentionPolicy, type TableRetention } from './retention';
 import type { ExecOutcome } from './workspace';
 
 // How long an agent's tool call waits for the daemon before failing.
@@ -30,6 +31,11 @@ export type Via = 'daemon' | 'control';
 export interface RelayRequest {
   id: string; agent: string; kind: 'ask' | 'notify'; requester: string; text: string;
   created_at: string; state: 'submitting' | 'accepted' | 'not_delivered';
+  // SHA-256 of the text as submitted, so a retry still matches its request
+  // once retention has stripped the text. Null for requests made before it.
+  digest: string | null;
+  // When a request that never ran was settled as not delivered.
+  settled_at: string | null;
 }
 // A finished command as the agent reports it: the workspace's own outcome, or
 // when the workspace could not answer, the agent's elapsed time and no state.
@@ -102,6 +108,8 @@ const ADDED_COLUMNS = [
   "ALTER TABLE agents ADD COLUMN circle TEXT NOT NULL DEFAULT 'managed'",
   'ALTER TABLE remote_outbound ADD COLUMN delivery_at INTEGER NOT NULL DEFAULT 0',
   'ALTER TABLE agents ADD COLUMN asks_rev INTEGER NOT NULL DEFAULT 0',
+  'ALTER TABLE requests ADD COLUMN digest TEXT',
+  'ALTER TABLE requests ADD COLUMN settled_at TEXT',
 ];
 
 // A run as listed and pushed; its answer is fetched one run at a time.
@@ -168,15 +176,25 @@ export class Gateway extends DurableObject {
       version: header('X-Repowire-Version'), connected_at: now(), connected: true,
     };
     server.serializeAttachment(info);
+    const policy = parsePolicy(request.headers.get('X-Repowire-Retention'));
+    if (policy) this.setRetention(info.daemon_id ?? 'unknown', policy);
     this.ctx.acceptWebSocket(server, ['daemon']);
     for (const [id, report] of await this.ctx.storage.list<GatewayReport>({ prefix: 'outbox:' })) {
       server.send(JSON.stringify({ type: 'settled', id, ...report }));
     }
     this.ui({ type: 'client', client: info });
+    this.housekeep();
     return new Response(null, { status: 101, webSocket: client });
   }
 
   // ---- directory ----------------------------------------------------------
+
+  // An agent row is its identity: ownership is immutable, and a retired row is
+  // the tombstone that keeps its id from moving. A workspace row is the live
+  // state of its container.
+  static readonly directoryRetention: TableRetention = {
+    tables: ['agents', 'workspaces'], exempt: 'identity and live state, kept while the owner exists',
+  };
 
   // The owner this object belongs to, recorded by the first caller that names it.
   async owner(name?: string): Promise<string | undefined> {
@@ -242,9 +260,29 @@ export class Gateway extends DurableObject {
   }
 
   // ---- requests -----------------------------------------------------------
+
+  // A request is a record; its text is content. One whose run is still open
+  // stays whole, since its reader still waits on it.
+  static readonly requestsRetention: TableRetention = {
+    tables: ['requests'],
+    rules: (c) => {
+      // Only on proof that it ended, timed from when it ended: its run settled,
+      // or it was settled as never delivered. A request with no run yet is
+      // still pending (its reader reconciles it), and its record outlives
+      // neither its run nor its reader's wait.
+      const ended = `(EXISTS (SELECT 1 FROM runs r WHERE r.agent = requests.agent AND r.op = requests.id AND r.settled_at IS NOT NULL AND r.settled_at < ?)
+        OR (state = 'not_delivered' AND COALESCE(settled_at, created_at) < ?))`;
+      return {
+        records: c.records ? [{ name: 'requests.delete', table: 'requests', where: ended, args: [c.records.iso, c.records.iso] }] : [],
+        // Text goes only where a digest still identifies the request for a retry.
+        content: c.content ? [{ name: 'requests.strip', table: 'requests', set: "text = ''", where: `text != '' AND digest IS NOT NULL AND ${ended}`,
+          args: [c.content.iso, c.content.iso] }] : [],
+      };
+    },
+  };
+
   // The relay's asks and notifies. A request's id is its run's operation id,
   // so its result is that run.
-
   request(id: string): RelayRequest | null {
     const row = this.sql.exec('SELECT * FROM requests WHERE id = ?', id).toArray()[0];
     return row ? (row as unknown as RelayRequest) : null;
@@ -252,17 +290,17 @@ export class Gateway extends DurableObject {
 
   // Records a request before it is submitted. Returns the existing one for a
   // known id, so a retry never resubmits.
-  openRequest(init: Omit<RelayRequest, 'state' | 'created_at'>): { request: RelayRequest; created: boolean } {
+  openRequest(init: Omit<RelayRequest, 'state' | 'created_at' | 'settled_at'>): { request: RelayRequest; created: boolean } {
     const created = this.sql.exec(
-      `INSERT OR IGNORE INTO requests (id, agent, kind, requester, text, created_at, state) VALUES (?, ?, ?, ?, ?, ?, 'submitting')`,
-      init.id, init.agent, init.kind, init.requester, init.text, now()).rowsWritten > 0;
+      `INSERT OR IGNORE INTO requests (id, agent, kind, requester, text, digest, created_at, state) VALUES (?, ?, ?, ?, ?, ?, ?, 'submitting')`,
+      init.id, init.agent, init.kind, init.requester, init.text, init.digest, now()).rowsWritten > 0;
     return { request: this.request(init.id)!, created };
   }
 
   acceptRequest(id: string) { this.sql.exec("UPDATE requests SET state = 'accepted' WHERE id = ? AND state = 'submitting'", id); }
 
   // The agent confirmed it never took the request and will refuse it.
-  requestUndelivered(id: string) { this.sql.exec("UPDATE requests SET state = 'not_delivered' WHERE id = ? AND state = 'submitting'", id); }
+  requestUndelivered(id: string) { this.sql.exec("UPDATE requests SET state = 'not_delivered', settled_at = ? WHERE id = ? AND state = 'submitting'", now(), id); }
 
   // A request the agent refused as retired before recording it: forgotten.
   dropRequest(id: string) { this.sql.exec("DELETE FROM requests WHERE id = ? AND state = 'submitting'", id); }
@@ -297,6 +335,18 @@ export class Gateway extends DurableObject {
 
   // ---- runs and metering --------------------------------------------------
 
+  // A settled run is a record and its answer is content; an open run stays.
+  // The usage ledger is what an owner is billed from, so it is kept forever
+  // (rfcs/managed-accounts.md).
+  static readonly runsRetention: TableRetention = {
+    tables: ['runs'],
+    rules: (c) => ({
+      records: c.records ? [{ name: 'runs.delete', table: 'runs', where: 'settled_at IS NOT NULL AND settled_at < ?', args: [c.records.iso] }] : [],
+      content: c.content ? [{ name: 'runs.strip', table: 'runs', set: 'answer = NULL', where: 'answer IS NOT NULL AND settled_at IS NOT NULL AND settled_at < ?', args: [c.content.iso] }] : [],
+    }),
+  };
+  static readonly usageRetention: TableRetention = { tables: ['usage_event', 'usage_day'], exempt: 'billing ledger, kept forever' };
+
   // The refusal for a new submission to agent, or null. Checked before the
   // runtime admits it, so nothing over budget is queued.
   admit(agent: string): string | null {
@@ -325,7 +375,7 @@ export class Gateway extends DurableObject {
   // A pending start the agent could not admit, so the run never ran.
   runWithdrawn(agent: string, op: string) {
     this.sql.exec('DELETE FROM runs WHERE agent = ? AND op = ? AND settled_at IS NULL', agent, op);
-    this.sql.exec("UPDATE requests SET state = 'not_delivered' WHERE id = ? AND agent = ? AND state = 'submitting'", op, agent);
+    this.sql.exec("UPDATE requests SET state = 'not_delivered', settled_at = ? WHERE id = ? AND agent = ? AND state = 'submitting'", now(), op, agent);
     return this.refresh(agent);
   }
 
@@ -367,9 +417,20 @@ export class Gateway extends DurableObject {
     if (run) this.ui({ type: 'run', agent: report.agent, run });
     this.refresh(report.agent, report.operationId, report.reason ?? null);
     await this.publishOutbox();
+    this.housekeep();
   }
 
   // ---- remote (rfcs/managed-in-the-mesh.md) ---------------------------------
+  // Cross-machine records keep the protocol's fixed window whatever the
+  // policy: a live remote ask is retried and answered from its row, and a
+  // fence guards its id against a late create until then.
+  static readonly remoteRetention: TableRetention = {
+    tables: ['remote_inbound', 'remote_outbound', 'remote_fences'],
+    rules: (c) => ({
+      records: ['remote_outbound', 'remote_inbound', 'remote_fences'].map((table) => ({ name: `${table}.delete`, table, where: 'created_at < ?', args: [c.remote] })),
+    }),
+  };
+
   // This owner's side of the cross-machine protocol when managed is the
   // target. Every multi-statement change is one synchronous transaction, and
   // every terminal write is a compare-and-set, so a racing settle, read or
@@ -518,14 +579,6 @@ export class Gateway extends DurableObject {
   openOutbound(agent: string) {
     return this.sql.exec("SELECT * FROM remote_outbound WHERE from_agent = ? AND (state != 'settled' OR delivered = 0) ORDER BY created_at", agent)
       .toArray() as unknown as RemoteOutbound[];
-  }
-
-  pruneRemote(before: number) {
-    this.ctx.storage.transactionSync(() => {
-      this.sql.exec('DELETE FROM remote_outbound WHERE created_at < ?', before);
-      this.sql.exec('DELETE FROM remote_inbound WHERE created_at < ?', before);
-      this.sql.exec('DELETE FROM remote_fences WHERE created_at < ?', before);
-    });
   }
 
   private inbound(id: string) {
@@ -701,6 +754,39 @@ export class Gateway extends DurableObject {
   }
 
   // ---- internals ----------------------------------------------------------
+
+  // Every table's retention, each declared beside its queries. Key-value
+  // state is bounded or live and is not swept: the report outbox (until the
+  // daemon acknowledges it), the recent clients and mesh windows, the owner,
+  // the store epoch and the retention keys themselves.
+  static readonly retention: TableRetention[] = [
+    Gateway.directoryRetention, Gateway.requestsRetention, Gateway.runsRetention, Gateway.usageRetention, Gateway.remoteRetention,
+  ];
+
+  // Each daemon's policy, as it last named it on connect. One namespace may
+  // have several machines: the sweep keeps each class as long as any of them
+  // asks, so no machine's data goes sooner than its own policy allows. A
+  // daemon that stops connecting keeps its say. Without any, the shared
+  // defaults apply. Accounts move this to the account (rfcs/managed-accounts.md).
+  setRetention(daemonId: string, policy: RetentionPolicy) { this.ctx.storage.kv.put(`retention:policy:${daemonId}`, policy); }
+
+  retentionPolicy(): RetentionPolicy {
+    return mostConservative([...this.ctx.storage.kv.list<RetentionPolicy>({ prefix: 'retention:policy:' })].map(([, policy]) => policy));
+  }
+
+  // Sweeps at most hourly, on the path of a request that found one due:
+  // nothing here runs on a timer. Returns the rows each rule changed, or null
+  // when no sweep was due.
+  housekeep(nowMs = Date.now()) {
+    const last = this.ctx.storage.kv.get<number>('retention:swept_at') ?? 0;
+    if (nowMs - last < SWEEP_INTERVAL_MS) return null;
+    // Stamped first: a sweep that throws waits for the next interval rather
+    // than retrying on every request.
+    this.ctx.storage.kv.put('retention:swept_at', nowMs);
+    const counts = this.ctx.storage.transactionSync(() => sweep(this.sql, Gateway.retention, this.retentionPolicy(), nowMs));
+    if (Object.keys(counts).length) console.log('retention_swept', JSON.stringify(counts));
+    return counts;
+  }
 
   private daemon() {
     return this.ctx.getWebSockets('daemon').filter((socket) => (socket.deserializeAttachment() as Client | null)?.connected !== false).at(-1);

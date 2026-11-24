@@ -190,6 +190,9 @@ type Hosted struct {
 	runtime HostedRuntime
 	store   *state.Store
 	machine string
+	// retention is the daemon's policy as the X-Repowire-Retention header
+	// ("" sends none, and the runtime keeps its defaults).
+	retention string
 
 	// settled observers run in order once per submission the runtime settles.
 	settled []namedObserver
@@ -211,6 +214,18 @@ func NewHosted(reg hostedRegistry, runtime HostedRuntime, store *state.Store, ma
 	ctx, cancel := context.WithCancel(context.Background())
 	return &Hosted{reg: reg, runtime: runtime, store: store, machine: machine,
 		inflight: map[proto.PeerID]int{}, ctx: ctx, cancel: cancel}
+}
+
+// WithRetention names the daemon's retention policy to the runtime: it goes
+// on every gateway connect (X-Repowire-Retention), and the owner's Gateway
+// sweeps its own tables by it (hosted/src/retention.ts). Seconds; 0 keeps a
+// class forever. Call before Connect.
+func (h *Hosted) WithRetention(p state.RetentionPolicy) *Hosted {
+	body, _ := json.Marshal(map[string]int64{
+		"content_s": int64(p.Content / time.Second), "records_s": int64(p.Records / time.Second), "ask_life_s": int64(p.AskLife / time.Second),
+	})
+	h.retention = string(body)
+	return h
 }
 
 // HostedObserver sees one settled submission: done with the final text, or

@@ -392,7 +392,7 @@ func runDaemon() {
 	// after the job services in (9), which observe their runs.
 	var hosted *service.Hosted
 	if cfg.Hosted.URL != "" && cfg.Hosted.Token != "" {
-		hosted = service.NewHosted(reg, service.NewHostedClient(cfg.Hosted.URL, cfg.Hosted.Token, selfMachine), store, selfMachine)
+		hosted = service.NewHosted(reg, service.NewHostedClient(cfg.Hosted.URL, cfg.Hosted.Token, selfMachine), store, selfMachine).WithRetention(retention)
 		delivery.WithHosted(hosted)
 		h.WithHosted(hosted)
 	}
