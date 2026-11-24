@@ -25,10 +25,10 @@ func waitExit(pid int, cancel <-chan struct{}, armed func() bool) (exited bool, 
 		return false, err
 	}
 	defer unix.Close(wake[0])
+	defer unix.Close(wake[1])
 	if armed != nil && !armed() {
 		return true, nil
 	}
-	defer unix.Close(wake[1])
 	defer stopWaker(cancel, func() { _, _ = unix.Write(wake[1], []byte{1}) })()
 	fds := []unix.PollFd{{Fd: int32(pidfd), Events: unix.POLLIN}, {Fd: int32(wake[0]), Events: unix.POLLIN}}
 	for {
