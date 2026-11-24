@@ -163,6 +163,11 @@ func (h *Hub) registerPeerImpl(r *http.Request, req RegisterPeerRequest, persist
 	if backend == "" {
 		backend = proto.AgentClaudeCode
 	}
+	if backend == proto.AgentHosted {
+		// Only the daemon registers hosted peers, at spawn: delivery to one
+		// reaches the hosted runtime under its peer_id.
+		return RegisterResponse{}, http.StatusUnprocessableEntity, "hosted peers are registered by spawn, not POST /peers"
+	}
 	role, circle, circleSource := req.Role, "", derefString(req.CircleSource)
 	if req.PaneID != nil && *req.PaneID != "" {
 		var code int
@@ -405,6 +410,11 @@ func (h *Hub) unregisterPeerImpl(r *http.Request, name string, circle *string, t
 	// resurrect the same peer through reconnect. POST /peer/unregister remains a
 	// non-terminal transport repair primitive for service clients.
 	if terminal {
+		// A peer a container plug owns (a hosted agent) is stopped there first,
+		// as kill_peer does: closing only the identity would leave it running.
+		if kind, err := h.stopOwnedPeer(ctx, p); err != nil {
+			return http.StatusInternalServerError, "kill_failed: the " + kind + " container could not stop the peer; it remains registered: " + err.Error()
+		}
 		_, _ = h.reg.ClosePeer(ctx, p.PeerID, "operator_close")
 	}
 	// Delete by the RESOLVED peer_id, not the raw name: the id is already

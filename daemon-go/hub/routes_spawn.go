@@ -184,6 +184,8 @@ type SpawnRequest struct {
 	// FromPeer is the spawner's identity, used as the sender of the opening
 	// message once the new peer registers. Empty → the daemon's MCP identity.
 	FromPeer string `json:"from_peer,omitempty"`
+	// Workspace attaches a hosted agent to a shared sandbox. Hosted only.
+	Workspace *string `json:"workspace,omitempty"`
 }
 
 // SpawnResponse mirrors spawn.py SpawnResponse.
@@ -222,6 +224,12 @@ func (h *Hub) handleSpawn(w http.ResponseWriter, r *http.Request) {
 // It preserves the route's validation, configured-command policy, and
 // ownership recording without requiring JSON plumbing.
 func (h *Hub) spawnPeer(ctx context.Context, req SpawnRequest) (SpawnResponse, error) {
+	if req.Backend != nil && *req.Backend == proto.AgentHosted {
+		return h.spawnHosted(ctx, req)
+	}
+	if req.Workspace != nil {
+		return SpawnResponse{}, &service.SpawnError{Status: http.StatusUnprocessableEntity, Detail: "workspace applies only to backend hosted"}
+	}
 	if h.spawn == nil || h.spawn.svc == nil || h.spawn.reg == nil {
 		return SpawnResponse{}, &service.SpawnError{Status: http.StatusServiceUnavailable, Detail: "spawn not configured"}
 	}
@@ -271,7 +279,7 @@ func (h *Hub) spawnPeer(ctx context.Context, req SpawnRequest) (SpawnResponse, e
 	if !supportedSpawnBackend(backend) {
 		return SpawnResponse{}, &service.SpawnError{Status: http.StatusUnprocessableEntity, Detail: map[string]any{
 			"error": "unsupported_backend", "backend": string(backend),
-			"hint": "Supported runtimes are claude-code, codex, opencode, and pi.",
+			"hint": "Supported runtimes are claude-code, codex, opencode, pi, and hosted.",
 		}}
 	}
 
@@ -367,6 +375,44 @@ func (h *Hub) spawnPeer(ctx context.Context, req SpawnRequest) (SpawnResponse, e
 		}
 	}
 
+	return resp, nil
+}
+
+// spawnHosted registers a managed agent and creates it on the hosted runtime.
+// Nothing runs locally, so the path is only the peer's label and is not
+// checked against the spawn allowlist. The opening message is delivered at
+// once: the peer is registered before the runtime is asked to create it.
+func (h *Hub) spawnHosted(ctx context.Context, req SpawnRequest) (SpawnResponse, error) {
+	if h.hosted == nil {
+		return SpawnResponse{}, &service.SpawnError{Status: http.StatusServiceUnavailable, Detail: "hosted runtime not configured (hosted.url, hosted.token)"}
+	}
+	if req.Circle == "" {
+		return SpawnResponse{}, &service.SpawnError{Status: http.StatusUnprocessableEntity, Detail: "circle is required"}
+	}
+	if strings.TrimSpace(req.Path) == "" {
+		return SpawnResponse{}, &service.SpawnError{Status: http.StatusUnprocessableEntity, Detail: "path is required; it names the hosted peer"}
+	}
+	if req.Profile != nil || req.Command != nil {
+		return SpawnResponse{}, &service.SpawnError{Status: http.StatusUnprocessableEntity, Detail: "profile and command do not apply to backend hosted"}
+	}
+	id, name, err := h.hosted.Spawn(ctx, service.HostedSpawnParams{Path: req.Path, Circle: req.Circle, Role: req.Role, Workspace: req.Workspace})
+	if err != nil {
+		return SpawnResponse{}, &service.SpawnError{Status: http.StatusBadGateway, Detail: err.Error()}
+	}
+	idStr := string(id)
+	resp := SpawnResponse{OK: true, DisplayName: string(name), PeerID: &idStr, RegistrationState: "registered", Warnings: []string{}}
+	if req.Message != nil && strings.TrimSpace(*req.Message) != "" {
+		resp.SeedState = "delivered"
+		if h.ask == nil || h.ask.delivery == nil {
+			resp.SeedState = "undeliverable"
+			resp.Warnings = append(resp.Warnings, "opening message not delivered: delivery service unavailable")
+		} else if _, err := h.ask.delivery.Notify(ctx, service.NotifyParams{
+			FromPeer: firstNonempty(req.FromPeer, mcpDefaultIdentity), ToPeer: idStr, Text: *req.Message, BypassCircle: true,
+		}); err != nil {
+			resp.SeedState = "undeliverable"
+			resp.Warnings = append(resp.Warnings, "opening message not delivered: "+err.Error())
+		}
+	}
 	return resp, nil
 }
 
@@ -488,18 +534,17 @@ func (h *Hub) killPeer(ctx context.Context, req KillPeerRequest) (KillResponse, 
 
 	// A plug that owns the peer outright stops it by peer; the operator close
 	// then applies as for every other backend.
-	if plug := h.spawn.svc.PeerContainerFor(resolved); plug != nil {
-		if err := plug.StopPeer(ctx, resolved); err != nil {
-			// Fail loud and keep the peer, as a failed pane stop does.
-			return KillResponse{}, &service.SpawnError{Status: http.StatusInternalServerError, Detail: map[string]any{
-				"error":     "kill_failed",
-				"hint":      "The " + plug.Kind() + " container could not stop the peer; it remains registered so the operator can inspect it.",
-				"container": plug.Kind(),
-				"detail":    err.Error(),
-			}}
-		}
+	if kind, err := h.stopOwnedPeer(ctx, resolved); err != nil {
+		// Fail loud and keep the peer, as a failed pane stop does.
+		return KillResponse{}, &service.SpawnError{Status: http.StatusInternalServerError, Detail: map[string]any{
+			"error":     "kill_failed",
+			"hint":      "The " + kind + " container could not stop the peer; it remains registered so the operator can inspect it.",
+			"container": kind,
+			"detail":    err.Error(),
+		}}
+	} else if kind != "" {
 		h.closeKilledPeer(ctx, resolved.PeerID)
-		return KillResponse{OK: true, Container: plug.Kind()}, nil
+		return KillResponse{OK: true, Container: kind}, nil
 	}
 
 	peerCopy := h.peerWithAdoptedOwnership(resolved)
@@ -520,6 +565,21 @@ func (h *Hub) killPeer(ctx context.Context, req KillPeerRequest) (KillResponse, 
 	h.closeKilledPeer(ctx, peerCopy.PeerID)
 	t := true
 	return KillResponse{OK: true, TmuxKilled: &t}, nil
+}
+
+// stopOwnedPeer stops p through the container plug that owns it outright,
+// before an operator close (kill_peer, DELETE /peers/{name}), so closing the
+// identity never leaves its execution running. It returns the plug's kind,
+// "" when no plug owns p. On error the caller keeps the peer registered.
+func (h *Hub) stopOwnedPeer(ctx context.Context, p *proto.Peer) (string, error) {
+	if h.spawn == nil || h.spawn.svc == nil {
+		return "", nil
+	}
+	plug := h.spawn.svc.PeerContainerFor(p)
+	if plug == nil {
+		return "", nil
+	}
+	return plug.Kind(), plug.StopPeer(ctx, p)
 }
 
 // closeKilledPeer is the operator close kill shares with DELETE /peers/{name}:
@@ -617,7 +677,7 @@ func (h *Hub) handleForkBackend(w http.ResponseWriter, r *http.Request) {
 	if !supportedSpawnBackend(req.NewBackend) {
 		writeJSONError(w, http.StatusUnprocessableEntity, map[string]any{
 			"error": "unsupported_backend", "backend": string(req.NewBackend),
-			"hint": "Supported runtimes are claude-code, codex, opencode, and pi.",
+			"hint": "Supported runtimes are claude-code, codex, opencode, pi, and hosted.",
 		})
 		return
 	}
