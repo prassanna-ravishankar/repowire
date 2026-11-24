@@ -62,7 +62,7 @@ characters), and recorded on the thread.
   recorded as `{from: H, to: N, by: actor, reason}`, so attribution survives:
   H did not hand it off; the actor moved it. The generation increments, and
   any later ack, decline or answer from H is refused, as for a former
-  delegator. A tracker operation `Reassign(cid, by, to, note)` shares
+  delegator. A tracker operation `Reassign(cid, by, to, reason)` shares
   `Delegate`'s mutation and `UndoDelegation`'s rollback, without
   delegate's "the caller must be the holder" rule. It is not `Delegate`
   with that check cleared, since that would erase who acted.
