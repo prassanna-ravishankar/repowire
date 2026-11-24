@@ -55,6 +55,22 @@ export function mostConservative(policies: RetentionPolicy[]): RetentionPolicy {
   };
 }
 
+// Age in seconds after which an operation's dedupe marker may go: the records
+// age, never shorter than the cross-machine window or the ask lifetime, since
+// a resend or read-back of the id may come until then. 0 keeps it forever.
+export function markerAge(p: RetentionPolicy) {
+  return p.records_s === 0 ? 0 : Math.max(p.records_s, REMOTE_WINDOW_S, p.ask_life_s);
+}
+
+// Age in seconds after which a retired agent, or a workspace no live agent
+// uses, is deleted whole. It is content (a conversation, a filesystem), so the
+// content age applies, no later than records, with the same floors as the
+// markers it takes with it. 0 keeps it forever.
+export function wholeAge(p: RetentionPolicy) {
+  const content = p.records_s > 0 && (p.content_s === 0 || p.records_s < p.content_s) ? p.records_s : p.content_s;
+  return content === 0 ? 0 : Math.max(content, REMOTE_WINDOW_S, p.ask_life_s);
+}
+
 // The cutoffs of one sweep. A class kept forever has none. Content goes no
 // later than its record. Text columns hold ISO instants, integer columns
 // Unix seconds; both forms are given.

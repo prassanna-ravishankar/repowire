@@ -40,6 +40,11 @@ describe("agentSubline", () => {
   it("shows what a parked agent waits on", () => {
     expect(agentSubline(byId("scratch"), NOW)).toBe("waiting on ask #a81f · since 41m ago");
   });
+  it("says when retention deleted a retired agent's conversation", () => {
+    const retired = byId("old-experiment");
+    expect(agentSubline(retired, NOW)).not.toContain("deleted");
+    expect(agentSubline({ ...retired, purged_at: retired.retired_at }, NOW)).toMatch(/^retired .* · conversation deleted$/);
+  });
 });
 
 describe("runStatus", () => {

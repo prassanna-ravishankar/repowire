@@ -23,6 +23,8 @@ export interface Agent {
   created_at: string;
   created_by: string;
   retired_at: string | null;
+  /** When retention deleted this retired agent's conversation (null while it is kept). */
+  purged_at?: string | null;
   runs: number;
   tokens_in: number;
   tokens_out: number;

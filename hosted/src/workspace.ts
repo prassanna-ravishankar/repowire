@@ -17,9 +17,26 @@ export interface ExecOutcome {
 export class Workspace extends DurableObject {
   private exclusive = serial();
 
+  // Deletes this workspace's files for good, when no agent uses it any more
+  // (the owner's Gateway decides; rfcs/retention.md, "Hosted"). In turn with
+  // commands, and never while a container runs. The last snapshot cannot be
+  // deleted through the Worker API; with its id forgotten it is never restored,
+  // and it expires on the platform 30 days after it was taken or last restored.
+  // The Gateway decided from what it knew; a command that ran here since
+  // `idleSinceMs` means the workspace is in use again, so it is kept.
+  purge(idleSinceMs: number): Promise<boolean> {
+    return this.exclusive(async () => {
+      if (this.ctx.container?.running) return false;
+      if ((await this.ctx.storage.get<number>('lastExecAt') ?? 0) >= idleSinceMs) return false;
+      await this.ctx.storage.deleteAll();
+      return true;
+    });
+  }
+
   exec(command: string): Promise<ExecOutcome> {
     return this.exclusive(async () => {
       const started = Date.now();
+      await this.ctx.storage.put('lastExecAt', started);
       let snapshotted = false;
       const outcome = async (result: Pick<ExecOutcome, 'ok' | 'result' | 'error'>): Promise<ExecOutcome> => ({
         ...result, wall_ms: Date.now() - started, snapshotted,
