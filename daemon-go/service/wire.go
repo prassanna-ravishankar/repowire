@@ -438,7 +438,7 @@ func (w *Wire) reduceAsk(t *WireThread, rows []state.TraceRow, ask *Ask, tracked
 func (w *Wire) reduceNotify(ctx context.Context, t *WireThread, id string, rows []state.TraceRow) error {
 	var sender, recipient proto.PeerID
 	var pendingAt time.Time
-	delivered, failed, unverified, dequeued, remote := false, false, false, false, ""
+	delivered, failed, unverified, dequeued, remote, outcome := false, false, false, false, "", ""
 	for _, r := range rows {
 		at := parseWireTS(r.TS)
 		if t.CreatedAt.IsZero() {
@@ -454,6 +454,8 @@ func (w *Wire) reduceNotify(ctx context.Context, t *WireThread, id string, rows 
 		switch {
 		case wireDelivered[r.Stage]:
 			delivered = true
+		case r.Stage == state.QueueExpired || r.Stage == state.QueueDropped:
+			outcome = r.Stage // the queue's own failure, shown as itself
 		case r.Status == "fail":
 			failed = true
 		case r.Stage == "pending":
@@ -470,6 +472,8 @@ func (w *Wire) reduceNotify(ctx context.Context, t *WireThread, id string, rows 
 	switch {
 	case delivered:
 		t.State = "delivered"
+	case outcome != "":
+		t.State = outcome
 	case failed:
 		t.State = "failed"
 	case remote != "":

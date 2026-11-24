@@ -422,7 +422,9 @@ Where it differs from the draft above:
   and `undelivered` past the threshold). The queue records how the notify
   left it as a stage under its delivery id: `dequeued` (handed to the
   reconnected peer), `expired`, or `dropped` (the per-peer cap, or a peer
-  that cannot take input), read as `dequeued`, `failed` and `failed`. One
+  that cannot take input), each read as itself. Expiry is recorded lazily,
+  on the next enqueue or drain: until then an expired notify is no longer
+  queued and reads `unverified`. One
   sent on a transport with no receipt (`websocket_sent`), or queued before
   the queue recorded outcomes, reads `unverified`. A cross-machine notify
   reads `remote_<outcome>`.

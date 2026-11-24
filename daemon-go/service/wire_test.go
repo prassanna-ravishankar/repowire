@@ -278,7 +278,7 @@ func TestWireReadsTheStagesTheDaemonWrites(t *testing.T) {
 	for id, want := range map[string]string{
 		"notif-queued": "queued undelivered", "notif-drained": "unverified", "notif-receipt": "delivered",
 		"notif-noreceipt": "unverified", "notif-remote": "remote_queued", "notif-failed": "failed",
-		"notif-dequeued": "dequeued", "notif-expired": "failed", "notif-dropped": "failed",
+		"notif-dequeued": "dequeued", "notif-expired": "expired", "notif-dropped": "dropped",
 	} {
 		got, _, err := w.Thread(ctx, id)
 		if err != nil {
