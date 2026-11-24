@@ -45,8 +45,21 @@ spec:
         ports:
         - containerPort: {{ .Values.relay.port }}
         command: ["repowire", "relay", "start", "--host", "{{ .Values.relay.host }}", "--port", "{{ .Values.relay.port }}"]
-        {{- if .Values.oauth.enabled }}
+        {{- if or .Values.oauth.enabled .Values.managed.secretName }}
         env:
+        {{- end }}
+        {{- with .Values.managed.secretName }}
+        {{- $secret := . }}
+        {{- range $name, $key := dict "REPOWIRE_MANAGED_URL" "managed-url" "REPOWIRE_MANAGED_CONTROL_TOKEN" "managed-control-token" "REPOWIRE_MANAGED_USERS" "managed-users" "REPOWIRE_ADMIN_USERS" "admin-users" "REPOWIRE_CF_ACCOUNT_ID" "cf-account-id" "REPOWIRE_CF_ANALYTICS_TOKEN" "cf-analytics-token" }}
+        - name: {{ $name }}
+          valueFrom:
+            secretKeyRef:
+              name: {{ $secret }}
+              key: {{ $key }}
+              optional: true
+        {{- end }}
+        {{- end }}
+        {{- if .Values.oauth.enabled }}
         - name: REPOWIRE_RELAY_OAUTH_ISSUER
           value: {{ required "oauth.issuer is required" .Values.oauth.issuer | quote }}
         - name: REPOWIRE_RELAY_OAUTH_DB

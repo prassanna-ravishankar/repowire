@@ -94,10 +94,17 @@ func (r oauthRecords[T]) remove(key string) {
 	}
 }
 func (r oauthRecords[T]) list(owner string) []T {
+	return r.scan(" AND owner=?", owner)
+}
+
+// all is for operator counts; request paths stay owner-scoped through list.
+func (r oauthRecords[T]) all() []T { return r.scan("") }
+func (r oauthRecords[T]) scan(where string, args ...any) []T {
 	if r.d.err != nil {
 		return nil
 	}
-	rows, err := r.d.tx.Query("SELECT data FROM oauth_records WHERE kind=? AND owner=? AND expires>?", r.kind, owner, time.Now().UnixNano())
+	args = append([]any{r.kind, time.Now().UnixNano()}, args...)
+	rows, err := r.d.tx.Query("SELECT data FROM oauth_records WHERE kind=? AND expires>?"+where, args...)
 	if err != nil {
 		r.d.err = err
 		return nil
