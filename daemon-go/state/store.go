@@ -119,6 +119,21 @@ func DefaultPath() string {
 	return filepath.Join(home, ".repowire", "state.db")
 }
 
+// readOnly opens a second, read-only connection to the database file, for a
+// long read that must not hold the store's one connection (writers keep
+// going beside it under WAL). nil, nil for an in-memory store.
+func (s *Store) readOnly() (*sql.DB, error) {
+	if s.path == "" || s.path == ":memory:" {
+		return nil, nil
+	}
+	ro, err := sql.Open("sqlite", fmt.Sprintf("file:%s?mode=ro&_pragma=busy_timeout(5000)", s.path))
+	if err != nil {
+		return nil, fmt.Errorf("open read-only state db: %w", err)
+	}
+	ro.SetMaxOpenConns(1)
+	return ro, nil
+}
+
 // OpenReadOnly opens an existing state db for offline analysis. It never
 // migrates or writes, so it is safe beside a running daemon.
 func OpenReadOnly(dbPath string) (*Store, error) {

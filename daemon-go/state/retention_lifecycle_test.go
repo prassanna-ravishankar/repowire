@@ -2,6 +2,8 @@ package state
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"sync"
 	"testing"
 	"time"
@@ -162,7 +164,12 @@ func TestASweepThatChangesNothingIsNotJournaled(t *testing.T) {
 				return map[string]int{"attachments.delete": 0}
 			},
 		},
-		Emit: func(context.Context, string, map[string]any) string { emitted++; return "" },
+		Emit: func(_ context.Context, typ string, _ map[string]any) string {
+			if typ == "retention_swept" { // the first sweep also journals its backup
+				emitted++
+			}
+			return ""
+		},
 	}}
 	if err := s.startRetention(r); err != nil {
 		t.Fatal(err)
@@ -246,5 +253,105 @@ func TestNothingYoungerThanAnOpenAskExpires(t *testing.T) {
 		if got := s.count(t, `SELECT COUNT(*) FROM inbox_refs WHERE item_id = ?`, id) == 1; got != kept {
 			t.Errorf("ref %s kept = %v, want %v", id, got, kept)
 		}
+	}
+}
+
+// Before a database's first sweep the store copies it once, next to it, so
+// an upgrade that turns retention on never loses history beyond recovery.
+func TestFirstSweepBacksUpTheDatabaseOnce(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "state.db")
+	s, err := NewStore(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	var mu sync.Mutex
+	now := sweepNow
+	clock := func() time.Time { mu.Lock(); defer mu.Unlock(); return now }
+	seedEvent(t, s, "e-old", "chat_turn", ago(8*day), `{"text":"history"}`)
+
+	r := &retention{policy: defaultPolicy, now: clock}
+	if err := s.startRetention(r); err != nil {
+		t.Fatal(err)
+	}
+	waitSweep(t, r)
+	backups, _ := filepath.Glob(dbPath + ".pre-retention-*")
+	if len(backups) != 1 {
+		t.Fatalf("backups = %v, want one", backups)
+	}
+	if n := s.count(t, `SELECT COUNT(*) FROM events WHERE event_id = 'e-old'`); n != 0 {
+		t.Fatal("the sweep did not run after the backup")
+	}
+	if info, err := os.Stat(backups[0]); err != nil || info.Mode().Perm() != 0o600 {
+		t.Fatalf("backup mode = %v, %v; want 0600 (it holds message text)", info.Mode().Perm(), err)
+	}
+	if n := s.count(t, `SELECT COUNT(*) FROM events WHERE type = 'retention_backup' AND json_extract(payload_json, '$.path') = ?`, backups[0]); n != 1 {
+		t.Fatal("the backup's path was not journaled")
+	}
+	copyStore, err := NewStore(backups[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := copyStore.count(t, `SELECT COUNT(*) FROM events WHERE event_id = 'e-old'`); n != 1 {
+		t.Fatal("the backup does not hold what the sweep removed")
+	}
+	copyStore.Close()
+
+	// A later sweep takes no second copy.
+	seedEvent(t, s, "e-old-2", "chat_turn", ago(8*day), `{"text":"x"}`)
+	mu.Lock()
+	now = now.Add(2 * time.Hour)
+	mu.Unlock()
+	if err := s.AppendEvent(ctx, peer.Event{Type: "peer_status"}); err != nil {
+		t.Fatal(err)
+	}
+	waitSweep(t, r)
+	if again, _ := filepath.Glob(dbPath + ".pre-retention-*"); len(again) != 1 {
+		t.Fatalf("backups after a second sweep = %v", again)
+	}
+}
+
+func TestNoBackupWhenRetentionKeepsEverything(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "state.db")
+	s, err := NewStore(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	r := &retention{policy: RetentionPolicy{}, now: func() time.Time { return sweepNow }}
+	if err := s.startRetention(r); err != nil {
+		t.Fatal(err)
+	}
+	waitSweep(t, r)
+	if backups, _ := filepath.Glob(dbPath + ".pre-retention-*"); len(backups) != 0 {
+		t.Fatalf("keep-forever policy took %v", backups)
+	}
+}
+
+// A backup that fails stops the sweep: nothing is removed without a copy.
+func TestFailedBackupMeansNoSweep(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "state.db")
+	s, err := NewStore(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	seedEvent(t, s, "e-old", "chat_turn", ago(8*day), `{"text":"history"}`)
+	// Occupy the path the copy would take, so VACUUM INTO fails.
+	if err := os.Mkdir(dbPath+".pre-retention-"+sweepNow.UTC().Format("20060102-150405"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	r := &retention{policy: defaultPolicy, now: func() time.Time { return sweepNow }}
+	if err := s.startRetention(r); err != nil {
+		t.Fatal(err)
+	}
+	waitSweep(t, r)
+	if n := s.count(t, `SELECT COUNT(*) FROM events WHERE event_id = 'e-old'`); n != 1 {
+		t.Fatal("the sweep ran without a backup")
+	}
+	if n := s.count(t, `SELECT COUNT(*) FROM events WHERE type = 'retention_backup_failed'`); n != 1 {
+		t.Fatal("the failed backup was not journaled")
 	}
 }

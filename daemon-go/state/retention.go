@@ -2,9 +2,11 @@ package state
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"log"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -281,6 +283,18 @@ func (s *Store) maybeSweep() {
 		if r.beforeSweep != nil {
 			r.beforeSweep(r.ctx)
 		}
+		path, err := s.backupBeforeFirstSweep(r.ctx, r.policy, now)
+		if err != nil {
+			if r.ctx.Err() == nil {
+				log.Printf("retention: %v; nothing is swept until the backup succeeds", err)
+				r.journal(s, "retention_backup_failed", map[string]any{"error": err.Error()})
+			}
+			return
+		}
+		if path != "" {
+			log.Printf("retention: backed up the database to %s before its first sweep", path)
+			r.journal(s, "retention_backup", map[string]any{"path": path})
+		}
 		counts, err := s.Sweep(r.ctx, r.policy, now)
 		if err != nil && r.ctx.Err() == nil {
 			log.Printf("retention: %v", err)
@@ -299,13 +313,68 @@ func (s *Store) maybeSweep() {
 			return
 		}
 		log.Printf("retention: swept %v", counts)
-		payload := map[string]any{"counts": counts}
-		if r.plugs.Emit != nil {
-			r.plugs.Emit(r.ctx, "retention_swept", payload)
-		} else if err := s.AppendEvent(r.ctx, peer.Event{Type: "retention_swept", Payload: payload}); err != nil {
-			log.Printf("retention: journal: %v", err)
-		}
+		r.journal(s, "retention_swept", map[string]any{"counts": counts})
 	}()
+}
+
+// journal records a retention event through the daemon's event path when
+// one is plugged in, else in the store.
+func (r *retention) journal(s *Store, typ string, payload map[string]any) {
+	if r.plugs.Emit != nil {
+		r.plugs.Emit(r.ctx, typ, payload)
+	} else if err := s.AppendEvent(r.ctx, peer.Event{Type: typ, Payload: payload}); err != nil {
+		log.Printf("retention: journal %s: %v", typ, err)
+	}
+}
+
+// retentionBackupKey in daemon_meta names the copy taken before the
+// database's first sweep.
+const retentionBackupKey = "retention_backup"
+
+// backupBeforeFirstSweep copies the database once, next to it, before the
+// first sweep under a policy that strips or deletes history (a 0/0 policy
+// keeps it all; it still prunes cross-machine protocol rows on their fixed
+// window, as before retention existed). Upgrading to a release with retention
+// then never loses history beyond recovery: the copy holds every row the
+// first sweep strips or deletes. The copy runs on a separate read-only
+// connection, so the daemon keeps reading and writing while a large database
+// copies; it is private (0600) since it holds message text, and the daemon
+// never deletes it. It returns the copy's path, or "" when one was taken
+// before, the policy keeps everything, or the store is in memory.
+func (s *Store) backupBeforeFirstSweep(ctx context.Context, p RetentionPolicy, now time.Time) (string, error) {
+	if s.path == "" || s.path == ":memory:" || (p.Content == 0 && p.Records == 0) {
+		return "", nil
+	}
+	var taken string
+	err := s.db.QueryRowContext(ctx, `SELECT value FROM daemon_meta WHERE key = ?`, retentionBackupKey).Scan(&taken)
+	if err == nil {
+		return "", nil
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return "", fmt.Errorf("read the retention backup marker: %w", err)
+	}
+	path := s.path + ".pre-retention-" + now.UTC().Format("20060102-150405")
+	_, statErr := os.Stat(path)
+	existed := statErr == nil
+	ro, err := s.readOnly()
+	if err != nil {
+		return "", err
+	}
+	_, err = ro.ExecContext(ctx, `VACUUM INTO ?`, path)
+	_ = ro.Close()
+	if err != nil {
+		if info, serr := os.Stat(path); !existed && serr == nil && info.Mode().IsRegular() {
+			_ = os.Remove(path) // a half-written copy is no backup; never remove a file that was already there
+		}
+		return "", fmt.Errorf("back up the database before its first retention sweep: %w", err)
+	}
+	if err := os.Chmod(path, 0o600); err != nil {
+		return "", fmt.Errorf("make the retention backup private: %w", err)
+	}
+	if _, err := s.db.ExecContext(ctx, `INSERT INTO daemon_meta(key, value) VALUES (?, ?)`, retentionBackupKey, path); err != nil {
+		return "", fmt.Errorf("record the retention backup: %w", err)
+	}
+	return path, nil
 }
 
 // stopRetention cancels a sweep in flight and waits for it; no sweep starts

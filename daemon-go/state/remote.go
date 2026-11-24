@@ -377,5 +377,5 @@ var (
 			return records, nil
 		},
 	}
-	daemonMetaRetention = tableRetention{tables: []string{"daemon_meta"}, exempt: "the store epoch identifies this daemon to other machines"}
+	daemonMetaRetention = tableRetention{tables: []string{"daemon_meta"}, exempt: "store facts: the epoch other machines know it by, and the pre-retention backup's path"}
 )
