@@ -24,10 +24,11 @@ type ExitWatch struct {
 	emit    func(ctx context.Context, typ string, payload map[string]any) string
 	status  func(id proto.PeerID) (proto.PeerStatus, bool)
 	started func(pid int) (string, bool)
-	wait    func(pid int, cancel <-chan struct{}, armed func()) (bool, error)
+	wait    func(pid int, cancel <-chan struct{}, armed func() bool) (bool, error)
 
 	mu      sync.Mutex
-	watches map[proto.PeerID]*exitWatch
+	watches map[proto.PeerID]*exitWatch // kept after an exit, until the next bind
+	binds   map[proto.PeerID]uint64     // the latest Bind per peer, in call order
 	closed  bool
 }
 
@@ -36,20 +37,38 @@ type exitWatch struct {
 	started string
 	pane    string
 	cancel  chan struct{}
+	exited  bool // the watch saw this process end (guarded by ExitWatch.mu)
 }
 
 // NewExitWatch builds the observer. spawned decides which peers are watched;
 // emit records events (the registry's AddEvent); status reads a peer's
 // current status for the record.
 func NewExitWatch(spawned func(p *proto.Peer) bool, emit func(context.Context, string, map[string]any) string, status func(proto.PeerID) (proto.PeerStatus, bool)) *ExitWatch {
-	return &ExitWatch{spawned: spawned, emit: emit, status: status, started: hooks.ProcessStartTime, wait: waitExit, watches: map[proto.PeerID]*exitWatch{}}
+	return &ExitWatch{spawned: spawned, emit: emit, status: status, started: hooks.ProcessStartTime, wait: waitExit, watches: map[proto.PeerID]*exitWatch{}, binds: map[proto.PeerID]uint64{}}
 }
 
 // Bind arms a watch for p's agent when p is a spawned, pane-backed peer with a
 // known agent pid (Adopt is Bind over the restored peers). A re-bind to the
 // same process is a no-op; to another process it replaces the watch. It shells
-// out, so callers on a request path run it in the background.
-func (w *ExitWatch) Bind(p proto.Peer) {
+// out, so callers on a request path use BindAsync.
+func (w *ExitWatch) Bind(p proto.Peer) { w.bind(p, w.claim(p.PeerID)) }
+
+// BindAsync is Bind in the background. The order of calls decides: a bind
+// that finishes after a later one for the same peer is dropped, so a slow,
+// stale registration cannot replace a newer runtime's watch.
+func (w *ExitWatch) BindAsync(p proto.Peer) {
+	seq := w.claim(p.PeerID)
+	go w.bind(p, seq)
+}
+
+func (w *ExitWatch) claim(id proto.PeerID) uint64 {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.binds[id]++
+	return w.binds[id]
+}
+
+func (w *ExitWatch) bind(p proto.Peer, seq uint64) {
 	if p.PaneID == nil || *p.PaneID == "" || p.AgentPID == nil || *p.AgentPID <= 0 || !w.spawned(&p) {
 		return
 	}
@@ -59,16 +78,18 @@ func (w *ExitWatch) Bind(p proto.Peer) {
 		return // not running now: no identity to watch
 	}
 	w.mu.Lock()
-	if w.closed {
+	if w.closed || w.binds[p.PeerID] != seq {
 		w.mu.Unlock()
-		return
+		return // closed, or a later bind for this peer has taken over
 	}
 	if cur := w.watches[p.PeerID]; cur != nil {
-		if cur.pid == pid && cur.started == started {
+		if cur.pid == pid && cur.started == started && !cur.exited {
 			w.mu.Unlock()
 			return
 		}
-		close(cur.cancel)
+		if !cur.exited {
+			close(cur.cancel)
+		}
 	}
 	ew := &exitWatch{pid: pid, started: started, pane: *p.PaneID, cancel: make(chan struct{})}
 	w.watches[p.PeerID] = ew
@@ -77,17 +98,17 @@ func (w *ExitWatch) Bind(p proto.Peer) {
 }
 
 func (w *ExitWatch) run(id proto.PeerID, ew *exitWatch) {
-	recycled := false
-	exited, err := w.wait(ew.pid, ew.cancel, func() {
+	exited, err := w.wait(ew.pid, ew.cancel, func() bool {
 		// Re-check identity once armed: an exit between Bind's check and the
 		// arming would otherwise be missed, or a recycled pid watched.
-		if s, ok := w.started(ew.pid); !ok || s != ew.started {
-			recycled = true
-		}
+		s, ok := w.started(ew.pid)
+		return ok && s == ew.started
 	})
 	w.mu.Lock()
 	current := w.watches[id] == ew
-	if current {
+	if current && exited {
+		ew.exited = true // kept, so a signal checked after the exit still sees it
+	} else if current {
 		delete(w.watches, id)
 	}
 	w.mu.Unlock()
@@ -95,7 +116,7 @@ func (w *ExitWatch) run(id proto.PeerID, ew *exitWatch) {
 		log.Printf("exit watch: %s pid %d: %v", id, ew.pid, err)
 		return
 	}
-	if !current || (!exited && !recycled) {
+	if !current || !exited {
 		return // replaced or cancelled
 	}
 	status, known := w.status(id)
@@ -116,6 +137,7 @@ func (w *ExitWatch) CheckSignal(ctx context.Context, signal string, p *proto.Pee
 	pid := *p.AgentPID
 	w.mu.Lock()
 	ew := w.watches[p.PeerID]
+	exited := ew != nil && ew.exited
 	w.mu.Unlock()
 	// A watched peer counts as spawned even once its pane is gone (pane death
 	// forgets the ownership before this runs).
@@ -124,7 +146,9 @@ func (w *ExitWatch) CheckSignal(ctx context.Context, signal string, p *proto.Pee
 	}
 	alive := "unknown"
 	if ew != nil && ew.pid == pid {
-		if s, ok := w.started(pid); ok && s == ew.started {
+		if exited {
+			alive = "false"
+		} else if s, ok := w.started(pid); ok && s == ew.started {
 			alive = "true"
 		} else {
 			alive = "false"
@@ -145,7 +169,9 @@ func (w *ExitWatch) Close() {
 	defer w.mu.Unlock()
 	w.closed = true
 	for id, ew := range w.watches {
-		close(ew.cancel)
+		if !ew.exited {
+			close(ew.cancel)
+		}
 		delete(w.watches, id)
 	}
 }

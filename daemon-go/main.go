@@ -479,9 +479,9 @@ func runDaemon() {
 		}
 		return p.Status, true
 	})
-	reg.OnRegistered = func(p proto.Peer) { go exitWatch.Bind(p) }
+	reg.OnRegistered = exitWatch.BindAsync
 	for _, p := range reg.GetAllPeers() {
-		go exitWatch.Bind(*p)
+		exitWatch.BindAsync(*p)
 	}
 
 	sessionControl := service.NewSessionControl(reg, spawnService, store).WithResume(service.ResolveLocalResume)

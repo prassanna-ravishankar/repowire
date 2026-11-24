@@ -125,3 +125,47 @@ func TestExitWatchOnlyWatchesSpawnedPaneAgents(t *testing.T) {
 		t.Fatalf("watches=%d events=%d; want none for a peer Repowire did not spawn", n, len(rec.got))
 	}
 }
+
+// A pane-died signal checked after the watch saw the exit still records it,
+// although pane death has already forgotten the spawn ownership by then.
+func TestExitWatchKeepsAnExitForALaterSignal(t *testing.T) {
+	rec := newRecordedEvents()
+	spawned := true
+	var mu sync.Mutex
+	w := NewExitWatch(func(*proto.Peer) bool { mu.Lock(); defer mu.Unlock(); return spawned }, rec.emit,
+		func(proto.PeerID) (proto.PeerStatus, bool) { return proto.StatusOnline, true })
+	defer w.Close()
+	agent := startAgent(t)
+	p := watchedPeer(agent.Process.Pid)
+	w.Bind(p)
+	_ = agent.Process.Kill()
+	_ = agent.Wait()
+	if typ, _ := rec.next(t); typ != "agent_exit_observed" {
+		t.Fatalf("got %s, want agent_exit_observed", typ)
+	}
+	mu.Lock()
+	spawned = false // pane death forgot the ownership
+	mu.Unlock()
+	w.CheckSignal(context.Background(), "pane_died", &p)
+	if typ, ev := rec.next(t); typ != "exit_signal_checked" || ev["agent_alive"] != "false" || ev["watched"] != true {
+		t.Fatalf("got %s %v; want exit_signal_checked agent_alive=false watched", typ, ev)
+	}
+}
+
+// Binds apply in call order: one that finishes after a later bind for the
+// same peer is dropped, so a stale registration cannot replace a newer watch.
+func TestExitWatchDropsAStaleBind(t *testing.T) {
+	rec := newRecordedEvents()
+	w := newTestExitWatch(rec)
+	defer w.Close()
+	older, newer := startAgent(t), startAgent(t)
+	staleSeq := w.claim("repow-w")
+	w.Bind(watchedPeer(newer.Process.Pid))
+	w.bind(watchedPeer(older.Process.Pid), staleSeq)
+	w.mu.Lock()
+	got := w.watches["repow-w"]
+	w.mu.Unlock()
+	if got == nil || got.pid != newer.Process.Pid {
+		t.Fatalf("watching %+v; want the newer agent %d", got, newer.Process.Pid)
+	}
+}

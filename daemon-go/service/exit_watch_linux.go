@@ -9,9 +9,9 @@ import (
 // waitExit blocks until pid exits (true) or cancel is closed (false), using a
 // pidfd (Linux 5.3+), which works for a non-child pid of the same user. A
 // pipe wakes the poll for cancellation. armed runs once the pidfd is open,
-// so the caller can re-check the process identity and not miss an exit
-// between its check and the arming.
-func waitExit(pid int, cancel <-chan struct{}, armed func()) (exited bool, err error) {
+// so the caller can re-check the process identity; false (not the process it
+// meant) ends the wait as an exit.
+func waitExit(pid int, cancel <-chan struct{}, armed func() bool) (exited bool, err error) {
 	pidfd, err := unix.PidfdOpen(pid, 0)
 	if err != nil {
 		if err == unix.ESRCH {
@@ -25,8 +25,8 @@ func waitExit(pid int, cancel <-chan struct{}, armed func()) (exited bool, err e
 		return false, err
 	}
 	defer unix.Close(wake[0])
-	if armed != nil {
-		armed()
+	if armed != nil && !armed() {
+		return true, nil
 	}
 	defer unix.Close(wake[1])
 	defer stopWaker(cancel, func() { _, _ = unix.Write(wake[1], []byte{1}) })()

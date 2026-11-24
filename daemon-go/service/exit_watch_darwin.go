@@ -10,8 +10,8 @@ import (
 // kqueue EVFILT_PROC/NOTE_EXIT, which works for a non-child pid of the same
 // user. A user event on the same queue wakes it for cancellation. armed runs
 // once the watch is registered, so the caller can re-check the process
-// identity and not miss an exit between its check and the arming.
-func waitExit(pid int, cancel <-chan struct{}, armed func()) (exited bool, err error) {
+// identity; false (not the process it meant) ends the wait as an exit.
+func waitExit(pid int, cancel <-chan struct{}, armed func() bool) (exited bool, err error) {
 	kq, err := unix.Kqueue()
 	if err != nil {
 		return false, err
@@ -28,8 +28,8 @@ func waitExit(pid int, cancel <-chan struct{}, armed func()) (exited bool, err e
 		}
 		return false, err
 	}
-	if armed != nil {
-		armed()
+	if armed != nil && !armed() {
+		return true, nil
 	}
 	defer stopWaker(cancel, func() {
 		_, _ = unix.Kevent(kq, []unix.Kevent_t{{Ident: wake, Filter: unix.EVFILT_USER, Fflags: unix.NOTE_TRIGGER}}, nil, nil)
