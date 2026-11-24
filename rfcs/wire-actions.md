@@ -28,9 +28,21 @@ produce both a reply and a cancellation; delegate refuses this already).
 
 Two actors:
 
-- **Operator** (daemon token, HTTP and CLI) may act on any local ask,
-  protected or not, since it can already read everything. The event
-  records `actor: operator`, because the token is not an identity.
+- **Operator** (HTTP and CLI) may act on any local ask, protected or not,
+  since it can already read everything. The event records
+  `actor: operator`, because the token is not an identity. Operator proof
+  for these mutations is the daemon token, required, with no other way in:
+  the routes do not use `requireAuth`, which also admits every request on a
+  tokenless daemon and any loopback request carrying `Sec-Fetch-Site:
+  same-origin` or a matching `Referer`. A local agent can forge those
+  headers with curl. A daemon without a token refuses the routes.
+  This is as strong as an HTTP credential can be on a machine where agents
+  run as the same user: an agent that can read `~/.repowire/config.yaml`
+  holds the token. So the protected-thread and circle rules bind agents on
+  the MCP path, and the operator routes are only as private as that file. A
+  human-in-the-loop confirmation (for example on Telegram, which a local
+  agent cannot answer) is the later step for actions that must be beyond an
+  agent's reach.
 - **Orchestrator** (MCP, proven identity, `role=orchestrator`, checked per
   call) is refused on protected threads, and every party the ask ever had
   (asker, each holder, each delegator) and the destination must be in the
@@ -39,15 +51,26 @@ Two actors:
   exists every thread is protected, so agents cannot act and only the
   operator can.
 
-## Prerequisite: assignment generations
+## Prerequisite: no way back, and assignment generations
 
-Today a resolution is matched to the holder by peer id. After B to C and
-back to B, B's first, stale completion looks current. Each successful hop
-(delegate or reassign) increments `Ask.Generation`. Every resolution and
-runtime callback (ack, decline, answer, ACP completion, a question's timeout
-default) carries the generation it was issued under, and an older one is
-refused or dropped. Reassign depends on this: it is what makes the former
-holder's late work harmless.
+An agent's resolution (ack, decline, answer) names only the correlation id,
+so the daemon matches it to the holder by peer id. That is sound only if an
+ask never returns to a peer that held it before: after B to C and back to B,
+B's stale reply would look current, and nothing in the tool call could tell
+them apart.
+
+- **No way back.** Delegate and reassign refuse a destination that held the
+  ask before (`Ask.HeldBefore`), as they already refuse the asker. A former
+  holder's replies are refused anyway, so moving the ask back to it would
+  contradict that rule. Peer-id matching then stays sound for agent
+  resolutions.
+- **Generations for the daemon's own callbacks.** Each hand-off that stands
+  increments `Ask.Generation` and stamps it on the hop; `UndoDelegation`
+  restores it. A callback the daemon registered when it delivered an
+  assignment carries that generation, and an older one is dropped: an ACP
+  completion, and any delivery still queued or in flight to the old holder.
+  (A question's timeout default is the asker's, not the holder's, so it
+  needs none.)
 
 ## Reassign
 
@@ -65,7 +88,15 @@ characters), and recorded on the thread.
   delegator. A tracker operation `Reassign(cid, by, to, reason)` shares
   `Delegate`'s mutation and `UndoDelegation`'s rollback, without
   delegate's "the caller must be the holder" rule. It is not `Delegate`
-  with that check cleared, since that would erase who acted.
+  with that check cleared, since that would erase who acted. `Delegation`
+  gains `By` and `Reason`. A reassign counts toward `MaxDelegations`, and it
+  keeps delegate's refusals: a stashed result (`ErrResultWaiting`), a
+  quiesced destination (`ErrQuiesced`), the asker, and any former holder.
+- **H's pending copies go.** Under the claim, before delivering to N, the
+  ask's ACP prompt in flight to H and any queued delivery for H with this
+  correlation id are dropped, the queued rows recorded `dropped` with
+  reason `reassigned`. Otherwise H could still receive the ask after it
+  moved.
 - **The new holder N** receives the ask from the actor, never as the asker:
   `[reassigned by @orch from @H for @asker: reason]`, followed by the ask as
   delegate frames it. That passes the body on, which is why protected
@@ -104,12 +135,17 @@ characters), and recorded on the thread.
 
 `cancel_ask(thread_id, reason)`
 
-- **Ownership.** The ask closes. Under the claim, the tracker commits a
-  result: close reason `cancelled`, the actor, and the reason. Committing
-  is separate from delivering it, so `wait_on_ack` and pull readers see the
+- **Ownership.** The ask closes. Cancel reuses the resolution path
+  (`deliverAskResolution`, `AskTracker.Resolve` with reason `cancelled`, the
+  actor and the reason), so it gets the commit, the stash for an offline
+  asker and `wait_on_ack` for free: `wait_on_ack` and pull readers see the
   committed outcome, and the push to an offline asker uses the reply path's
   stash and redelivery. The promise is one committed outcome, not one
-  delivered frame.
+  delivered frame. Every `close_reason` consumer (the hooks, the channel
+  server, the bridges, `repowire why`) must accept the new value
+  `cancelled`; the implementation checks each.
+- **The holder's pending copies go**, as for reassign (reason
+  `cancelled`).
 - **The asker** receives the outcome on its reply path:
   `[ask #cid cancelled by @orch: reason]`, and `wait_on_ack` returns
   `cancelled`.
@@ -130,9 +166,11 @@ fields.
 
 ## Order of work
 
-1. Assignment generations (a tracker change with its own tests).
-2. The three actions for the operator only (HTTP and CLI). Prass can steer
-   stuck work right away, without waiting for provenance.
+1. No way back to a former holder, and assignment generations (a tracker
+   change with its own tests).
+2. The three actions for the operator only (HTTP and CLI), behind the
+   required token. Prass can steer stuck work right away, without waiting
+   for provenance.
 3. Provenance on `created`, `delegated` and `reassigned` stages, and
    `peer_wire_visibility`.
 4. The MCP tools for orchestrators, behind the protected-thread and circle
@@ -144,4 +182,7 @@ fields.
   reassign does not require the thread to be stuck, and it requires a short
   reason, recorded on the thread.
 - Decided (same): the asker is told on reassign, in one line.
-- Open: is one nudge per 10 minutes per thread the right limit?
+- Decided (same, after review): an ask never returns to a former holder,
+  so agent resolutions stay matched by peer id and generations guard only
+  the daemon's own callbacks.
+- Settled in review: one nudge per 10 minutes per thread.
