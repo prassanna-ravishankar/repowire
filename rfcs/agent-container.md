@@ -126,6 +126,15 @@ type RuntimeIdentity struct {
   unsubscribes its own thread and never touches the shared server. Restart
   keeps its order: reserve, SIGTERM and wait for the pid, then the pane,
   then launch into the reservation.
+- **A Codex TUI peer has two lifetimes.** The TUI runs in a tmux pane,
+  while the peer is a thread on the App Server, and the bridge registers it
+  with a thread id and no agent pid (`codexbridge/bridge.go`;
+  `peer_restart.go` already handles the missing pid). Its handle is the
+  tmux placement plus the thread. The pane's lifetime is the TUI's, and the
+  thread's lifetime is the peer's. Until the codex-thread plug exists (step
+  4), these peers have no bound pid and stay on today's paths, so step 3
+  does not touch them. Restart relaunches the TUI into a reserved pane as
+  now, and the bridge moves the thread to it by the spawn hint.
 - **Watch** is the process exit where there is a process: `pidfd_open` on
   Linux 5.3+ and kqueue `EVFILT_PROC`/`NOTE_EXIT` on macOS, both usable for
   a non-child pid of the same user. Exit status is not part of the
@@ -189,10 +198,10 @@ type RuntimeIdentity struct {
   spawned peers (step 3), a session event no longer offlines them. Until
   then it is unchanged, and the #376 evidence gate stays for hand-started
   peers.
-- **`kill_peer` leaving windows or shells:** `Stop` owns the place it
-  reserved, so it removes the pane and, when the container created the
-  window for it, the window. Restart's leftover-shell cleanup moves into the
-  plug.
+- **`kill_peer` leaving windows or shells:** `Stop` owns the pane it
+  reserved and removes it. tmux closes the window itself when its last pane
+  goes, so a window shared since with a human's or another agent's pane is
+  never removed. Restart's leftover-shell cleanup moves into the plug.
 - **Trust prompts:** gone for non-tmux plugs (non-interactive). They remain
   for TUIs, where a human is present by design.
 - **Pane-proof inference** (#532, #544, #552): the bound runtime identity
@@ -210,9 +219,13 @@ type RuntimeIdentity struct {
    contradiction event), without acting on the watch. This measures whether
    the watch would have avoided the spurious offlines before anything
    depends on it.
-3. **Switch authority for spawned peers.** The exit watch drives offline
-   state and death consequences, and `session_closed` and `pane-exited`
-   become hints. Hand-started peers keep today's paths.
+3. **Switch authority for spawned peers with a bound pid.** The exit
+   watch drives offline state and death consequences. For those peers,
+   `session_closed`, `pane-exited` and reconcile's three `pane_alive=false`
+   strikes (`peer/reconcile.go`, `demoteUnsafeConnectedPeers`) become
+   hints, recorded but not acted on. Otherwise the strikes could still
+   retire a peer whose watch says it is alive. Hand-started peers and
+   peers without a bound pid keep today's paths.
 4. **The ACP plug,** then the **codex-thread plug,** each with its
    restart-survival statement.
 5. **Optional:** `repowire attach <peer>` over every plug that can attach.
