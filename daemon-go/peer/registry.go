@@ -1254,6 +1254,35 @@ func (r *Registry) UpdateStatus(ctx context.Context, id proto.PeerID, status pro
 	return nil
 }
 
+// RestoreConnected undoes a lazy-repair demotion that landed between a peer's
+// registration and the attach of its socket: an Offline peer whose socket is
+// now live reconnects. The WebSocket handler calls it right after attaching;
+// a demotion after that point sees the socket and skips the peer.
+func (r *Registry) RestoreConnected(ctx context.Context, id proto.PeerID) {
+	r.mu.Lock()
+	ps, ok := r.peers[id]
+	if !ok || ps.state != StateOffline || r.transport == nil || !r.transport.IsConnected(id) {
+		r.mu.Unlock()
+		return
+	}
+	next, err := Apply(StateOffline, EventReconnect)
+	if err != nil {
+		r.mu.Unlock()
+		return
+	}
+	now := time.Now().UTC()
+	ps.state = next
+	if s, ok := next.ToStatus(); ok {
+		ps.peer.Status = s
+	}
+	ps.peer.LastSeen = &now
+	name := ps.peer.DisplayName
+	r.mu.Unlock()
+	r.appendEvent(ctx, Event{Type: "peer_status", Timestamp: now, PeerID: id, PeerName: name, SessionID: id,
+		Payload: map[string]any{"status": string(proto.StatusOnline), "reason": "socket_attached"}})
+	r.scheduleRedelivery(ctx, id)
+}
+
 // statusToEvent maps a desired wire status onto the lifecycle event that reaches
 // it from a live state. online->Stop (Busy->Online or Online->Online),
 // busy->UserPromptSubmit, offline->TransportDisconnect.
@@ -1493,7 +1522,9 @@ func (r *Registry) demoteDisconnected(ctx context.Context) {
 	r.mu.Lock()
 	for _, id := range candidates {
 		ps, ok := r.peers[id]
-		if !ok {
+		// Re-check under the lock: the evidence probe ran off it, and a peer
+		// registered just before this pass may have attached its socket since.
+		if !ok || (ps.state != StateOnline && ps.state != StateBusy) || r.transport.IsConnected(id) {
 			continue
 		}
 		r.emitContradictionCode(ctx, ps.peer, ContradictionOnlineButNoWS, severityError,

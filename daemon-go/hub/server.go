@@ -30,6 +30,9 @@ type Hub struct {
 	transport *service.WebSocketTransport
 	router    *service.MessageRouter
 	authToken string
+	// beforeConnect, when set by a test, runs between a peer's registration
+	// and the attach of its socket.
+	beforeConnect func(proto.PeerID)
 
 	// Read-path deps for the HTTP route groups. Optional and nil-safe: the
 	// peer-read handlers degrade gracefully (no inbound-health probe) when these

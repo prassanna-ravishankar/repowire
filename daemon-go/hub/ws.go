@@ -271,6 +271,9 @@ func (h *Hub) HandleWS(w http.ResponseWriter, r *http.Request) {
 	}
 
 	liveSince := time.Now().UTC() // before Connect: items stored from here on are pushed live
+	if h.beforeConnect != nil {
+		h.beforeConnect(peerID)
+	}
 	h.transport.Connect(ctx, &service.ConnectionInfo{
 		SessionID:   peerID,
 		WS:          conn,
@@ -280,6 +283,9 @@ func (h *Hub) HandleWS(w http.ResponseWriter, r *http.Request) {
 		HookVersion: derefInt(cf.HookVersion),
 		AwaitReady:  true,
 	})
+	// The lazy repair this connect started may have demoted the peer before its
+	// socket was attached; now that it is, undo that.
+	h.reg.RestoreConnected(ctx, peerID)
 
 	if err := wsjson.Write(ctx, conn, proto.ConnectedFrame{
 		Type:        proto.FrameConnected,
