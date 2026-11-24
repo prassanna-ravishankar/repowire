@@ -130,7 +130,12 @@ func codexBoolTable(value string) (map[string]bool, bool) {
 	for _, entry := range strings.Split(body, ",") {
 		k, v, ok := strings.Cut(entry, "=")
 		k = strings.TrimSpace(k)
-		if !ok || k == "" || strings.ContainsAny(k, ".{}\"'") || !codexBool(v) {
+		if len(k) >= 2 && (k[0] == '"' || k[0] == '\'') && k[len(k)-1] == k[0] {
+			k = k[1 : len(k)-1] // a quoted key names the same entry
+		} else if strings.Contains(k, ".") {
+			return nil, false // a dotted key nests a table
+		}
+		if !ok || k == "" || strings.ContainsAny(k, "{}\"'\\") || !codexBool(v) {
 			return nil, false
 		}
 		table[k] = strings.TrimSpace(v) == "true"
