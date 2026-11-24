@@ -67,6 +67,9 @@ type WireStuckConfig struct {
 type RetentionConfig struct {
 	ContentDays float64 `yaml:"content_days"`
 	RecordsDays float64 `yaml:"records_days"`
+	// Copies is how many whole-database copies (taken before a schema
+	// migration or the first sweep) to keep next to state.db; 0 keeps all.
+	Copies int `yaml:"copies"`
 }
 
 // Durations is the policy as durations; zero keeps a class forever.
@@ -194,7 +197,7 @@ func Defaults() Config {
 			},
 		},
 		Relay:     RelayConfig{URL: defaultRelayURL},
-		Retention: RetentionConfig{ContentDays: 7, RecordsDays: 180},
+		Retention: RetentionConfig{ContentDays: 7, RecordsDays: 180, Copies: 3},
 		Wire:      WireConfig{Stuck: WireStuckConfig{IgnoredTurns: 3, SlowMinutes: 30, AskerGoneMinutes: 60, UndeliveredMinutes: 10}},
 		Human:     HumanConfig{Name: "human"},
 		Experiments: ExperimentsConfig{RemoteToolApproval: RemoteToolApprovalConfig{
@@ -558,6 +561,7 @@ func applyEnv(cfg *Config) {
 	setIntEnv(&cfg.Daemon.DeliveryQueueMaxPerPeer, "REPOWIRE_DAEMON__DELIVERY_QUEUE_MAX_PER_PEER")
 	setFloatEnv(&cfg.Retention.ContentDays, "REPOWIRE_RETENTION__CONTENT_DAYS")
 	setFloatEnv(&cfg.Retention.RecordsDays, "REPOWIRE_RETENTION__RECORDS_DAYS")
+	setIntEnv(&cfg.Retention.Copies, "REPOWIRE_RETENTION__COPIES")
 	if value := os.Getenv("REPOWIRE_DAEMON__CIRCLE_BOUNDARY"); value != "" {
 		cfg.Daemon.CircleBoundary = proto.CircleBoundary(value)
 	}
@@ -648,6 +652,10 @@ func normalize(cfg *Config) {
 		cfg.Relay.URL = defaultRelayURL
 	}
 	defaults := Defaults().Retention
+	if cfg.Retention.Copies < 0 {
+		cfg.Retention.Copies = defaults.Copies
+		cfg.Warnings = append(cfg.Warnings, "config: retention.copies is ignored: it must be 0 (keep every copy) or a positive number")
+	}
 	for _, days := range []struct {
 		value    *float64
 		fallback float64

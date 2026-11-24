@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"os"
 	"strings"
 	"sync"
 	"time"
@@ -283,7 +282,7 @@ func (s *Store) maybeSweep() {
 		if r.beforeSweep != nil {
 			r.beforeSweep(r.ctx)
 		}
-		path, err := s.backupBeforeFirstSweep(r.ctx, r.policy, now)
+		path, pruned, err := s.backupBeforeFirstSweep(r.ctx, r.policy, now)
 		if err != nil {
 			if r.ctx.Err() == nil {
 				log.Printf("retention: %v; nothing is swept until the backup succeeds", err)
@@ -293,7 +292,11 @@ func (s *Store) maybeSweep() {
 		}
 		if path != "" {
 			log.Printf("retention: backed up the database to %s before its first sweep", path)
-			r.journal(s, "retention_backup", map[string]any{"path": path})
+			payload := map[string]any{"path": path}
+			if len(pruned) > 0 {
+				payload["pruned"] = pruned
+			}
+			r.journal(s, "retention_backup", payload)
 		}
 		counts, err := s.Sweep(r.ctx, r.policy, now)
 		if err != nil && r.ctx.Err() == nil {
@@ -341,40 +344,33 @@ const retentionBackupKey = "retention_backup"
 // copies; it is private (0600) since it holds message text, and the daemon
 // never deletes it. It returns the copy's path, or "" when one was taken
 // before, the policy keeps everything, or the store is in memory.
-func (s *Store) backupBeforeFirstSweep(ctx context.Context, p RetentionPolicy, now time.Time) (string, error) {
+func (s *Store) backupBeforeFirstSweep(ctx context.Context, p RetentionPolicy, now time.Time) (string, []string, error) {
 	if s.path == "" || s.path == ":memory:" || (p.Content == 0 && p.Records == 0) {
-		return "", nil
+		return "", nil, nil
 	}
 	var taken string
 	err := s.db.QueryRowContext(ctx, `SELECT value FROM daemon_meta WHERE key = ?`, retentionBackupKey).Scan(&taken)
 	if err == nil {
-		return "", nil
+		return "", nil, nil // a copy taken before any sweep (this one, or before a migration) covers it
 	}
 	if !errors.Is(err, sql.ErrNoRows) {
-		return "", fmt.Errorf("read the retention backup marker: %w", err)
+		return "", nil, fmt.Errorf("read the retention backup marker: %w", err)
 	}
-	path := s.path + ".pre-retention-" + now.UTC().Format("20060102-150405")
-	_, statErr := os.Stat(path)
-	existed := statErr == nil
+	path := snapshotPath(s.path, "retention", now)
 	ro, err := s.readOnly()
 	if err != nil {
-		return "", err
+		return "", nil, err
 	}
-	_, err = ro.ExecContext(ctx, `VACUUM INTO ?`, path)
+	err = vacuumInto(ctx, ro, path)
 	_ = ro.Close()
 	if err != nil {
-		if info, serr := os.Stat(path); !existed && serr == nil && info.Mode().IsRegular() {
-			_ = os.Remove(path) // a half-written copy is no backup; never remove a file that was already there
-		}
-		return "", fmt.Errorf("back up the database before its first retention sweep: %w", err)
+		return "", nil, fmt.Errorf("back up the database before its first retention sweep: %w", err)
 	}
-	if err := os.Chmod(path, 0o600); err != nil {
-		return "", fmt.Errorf("make the retention backup private: %w", err)
+	pruned, err := s.markSnapshot(ctx, path)
+	if err != nil {
+		return "", nil, err
 	}
-	if _, err := s.db.ExecContext(ctx, `INSERT INTO daemon_meta(key, value) VALUES (?, ?)`, retentionBackupKey, path); err != nil {
-		return "", fmt.Errorf("record the retention backup: %w", err)
-	}
-	return path, nil
+	return path, pruned, nil
 }
 
 // stopRetention cancels a sweep in flight and waits for it; no sweep starts

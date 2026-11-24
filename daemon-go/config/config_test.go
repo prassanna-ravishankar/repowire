@@ -396,10 +396,10 @@ func TestLoadDiagnosticsNeverQuoteRejectedValues(t *testing.T) {
 func TestRetentionDefaultsOverridesAndBadValues(t *testing.T) {
 	t.Setenv("REPOWIRE_RETENTION__CONTENT_DAYS", "")
 	t.Setenv("REPOWIRE_RETENTION__RECORDS_DAYS", "")
-	if cfg := loadYAML(t, "daemon:\n  port: 9100\n"); cfg.Retention != (RetentionConfig{ContentDays: 7, RecordsDays: 180}) {
+	if cfg := loadYAML(t, "daemon:\n  port: 9100\n"); cfg.Retention != (RetentionConfig{ContentDays: 7, RecordsDays: 180, Copies: 3}) {
 		t.Fatalf("defaults = %+v", cfg.Retention)
 	}
-	if cfg := loadYAML(t, "retention:\n  content_days: 30\n  records_days: 0\n"); cfg.Retention != (RetentionConfig{ContentDays: 30, RecordsDays: 0}) {
+	if cfg := loadYAML(t, "retention:\n  content_days: 30\n  records_days: 0\n"); cfg.Retention != (RetentionConfig{ContentDays: 30, RecordsDays: 0, Copies: 3}) {
 		t.Fatalf("file values = %+v", cfg.Retention)
 	}
 	t.Setenv("REPOWIRE_RETENTION__CONTENT_DAYS", "14")
@@ -412,7 +412,7 @@ func TestRetentionDefaultsOverridesAndBadValues(t *testing.T) {
 	if err != nil {
 		t.Fatalf("a bad retention value failed the load: %v", err)
 	}
-	if cfg.Retention != (RetentionConfig{ContentDays: 7, RecordsDays: 180}) {
+	if cfg.Retention != (RetentionConfig{ContentDays: 7, RecordsDays: 180, Copies: 3}) {
 		t.Fatalf("bad values not reset to defaults: %+v", cfg.Retention)
 	}
 	joined := strings.Join(cfg.Warnings, "\n")
@@ -433,6 +433,20 @@ func TestRetentionShorterThanTheAskLifetimeWarns(t *testing.T) {
 	}
 	if cfg := loadYAML(t, "retention:\n  content_days: 2\n"); len(cfg.Warnings) != 0 {
 		t.Fatalf("2 days against a 24-hour ask lifetime warned: %q", cfg.Warnings)
+	}
+}
+
+func TestRetentionCopies(t *testing.T) {
+	t.Setenv("REPOWIRE_RETENTION__COPIES", "")
+	if cfg := loadYAML(t, "retention:\n  copies: 0\n"); cfg.Retention.Copies != 0 || len(cfg.Warnings) != 0 {
+		t.Fatalf("copies 0 (keep all): %+v %q", cfg.Retention, cfg.Warnings)
+	}
+	if cfg := loadYAML(t, "retention:\n  copies: -2\n"); cfg.Retention.Copies != 3 || !strings.Contains(strings.Join(cfg.Warnings, "\n"), "retention.copies") {
+		t.Fatalf("negative copies: %+v %q", cfg.Retention, cfg.Warnings)
+	}
+	t.Setenv("REPOWIRE_RETENTION__COPIES", "5")
+	if cfg := loadYAML(t, "daemon:\n  port: 9100\n"); cfg.Retention.Copies != 5 {
+		t.Fatalf("env copies: %+v", cfg.Retention)
 	}
 }
 
