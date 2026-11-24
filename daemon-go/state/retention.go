@@ -354,6 +354,8 @@ func (s *Store) backupBeforeFirstSweep(ctx context.Context, p RetentionPolicy, n
 		return "", fmt.Errorf("read the retention backup marker: %w", err)
 	}
 	path := s.path + ".pre-retention-" + now.UTC().Format("20060102-150405")
+	_, statErr := os.Stat(path)
+	existed := statErr == nil
 	ro, err := s.readOnly()
 	if err != nil {
 		return "", err
@@ -361,8 +363,8 @@ func (s *Store) backupBeforeFirstSweep(ctx context.Context, p RetentionPolicy, n
 	_, err = ro.ExecContext(ctx, `VACUUM INTO ?`, path)
 	_ = ro.Close()
 	if err != nil {
-		if info, serr := os.Stat(path); serr == nil && info.Mode().IsRegular() {
-			_ = os.Remove(path) // a half-written copy is no backup
+		if info, serr := os.Stat(path); !existed && serr == nil && info.Mode().IsRegular() {
+			_ = os.Remove(path) // a half-written copy is no backup; never remove a file that was already there
 		}
 		return "", fmt.Errorf("back up the database before its first retention sweep: %w", err)
 	}
