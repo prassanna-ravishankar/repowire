@@ -3,12 +3,16 @@ package state
 import (
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 )
+
+// olderSchema is the schema the copy tests migrate from.
+const olderSchema = SchemaVersion - 1
 
 // olderSchemaDB leaves a database at path that looks one schema behind, with
 // one event in it.
@@ -20,7 +24,7 @@ func olderSchemaDB(t *testing.T, path string) {
 	}
 	seedEvent(t, s, "e-history", "chat_turn", ago(day), `{"text":"history"}`)
 	s.mustExec(t, `DELETE FROM daemon_meta WHERE key IN ('last_snapshot', 'retention_backup')`)
-	s.mustExec(t, `PRAGMA user_version = 17`)
+	s.mustExec(t, fmt.Sprintf(`PRAGMA user_version = %d`, olderSchema))
 	if err := s.Close(); err != nil {
 		t.Fatal(err)
 	}
@@ -34,14 +38,14 @@ func TestMigrationCopiesTheOlderDatabaseFirst(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer s.Close()
-	copies, _ := filepath.Glob(path + ".pre-migration-v17-to-v18-*")
+	copies, _ := filepath.Glob(path + fmt.Sprintf(".pre-migration-v%d-to-v%d-*", olderSchema, SchemaVersion))
 	if len(copies) != 1 {
 		t.Fatalf("copies = %v, want one pre-migration copy", copies)
 	}
 	if info, err := os.Stat(copies[0]); err != nil || info.Mode().Perm() != 0o600 {
 		t.Fatalf("copy mode = %v, %v", info.Mode().Perm(), err)
 	}
-	// The copy is the database as it was: still schema 17, history included,
+	// The copy is the database as it was: still the older schema, history included,
 	// so the previous binary can be restored from it.
 	ro, err := OpenReadOnly(copies[0])
 	if err != nil {
@@ -49,7 +53,7 @@ func TestMigrationCopiesTheOlderDatabaseFirst(t *testing.T) {
 	}
 	var version int
 	_ = ro.db.QueryRow(`PRAGMA user_version`).Scan(&version)
-	if version != 17 || ro.count(t, `SELECT COUNT(*) FROM events WHERE event_id = 'e-history'`) != 1 {
+	if version != olderSchema || ro.count(t, `SELECT COUNT(*) FROM events WHERE event_id = 'e-history'`) != 1 {
 		t.Fatalf("copy at schema %d without its history", version)
 	}
 	ro.Close()
@@ -59,7 +63,7 @@ func TestMigrationCopiesTheOlderDatabaseFirst(t *testing.T) {
 	if last != copies[0] || backup != copies[0] {
 		t.Fatalf("markers: last %q, retention backup %q", last, backup)
 	}
-	if n := s.count(t, `SELECT COUNT(*) FROM events WHERE type = 'state_snapshot' AND json_extract(payload_json, '$.from_schema') = 17`); n != 1 {
+	if n := s.count(t, `SELECT COUNT(*) FROM events WHERE type = 'state_snapshot' AND json_extract(payload_json, '$.from_schema') = ?`, olderSchema); n != 1 {
 		t.Fatal("the copy was not journaled")
 	}
 
@@ -166,7 +170,7 @@ func TestFailedMigrationCopyRefusesTheMigration(t *testing.T) {
 	fixed := time.Date(2026, 12, 1, 12, 0, 0, 0, time.UTC)
 	snapshotNow = func() time.Time { return fixed }
 	t.Cleanup(func() { snapshotNow = time.Now })
-	if err := os.Mkdir(snapshotPath(path, "migration-v17-to-v18", fixed), 0o700); err != nil {
+	if err := os.Mkdir(snapshotPath(path, fmt.Sprintf("migration-v%d-to-v%d", olderSchema, SchemaVersion), fixed), 0o700); err != nil {
 		t.Fatal(err) // occupy the copy's path
 	}
 	if _, err := NewStore(path); err == nil || !strings.Contains(err.Error(), SkipMigrationCopyEnv) {
@@ -179,7 +183,7 @@ func TestFailedMigrationCopyRefusesTheMigration(t *testing.T) {
 	var version int
 	_ = ro.db.QueryRow(`PRAGMA user_version`).Scan(&version)
 	ro.Close()
-	if version != 17 {
+	if version != olderSchema {
 		t.Fatalf("the database was migrated to %d without a copy", version)
 	}
 	t.Setenv(SkipMigrationCopyEnv, "1")

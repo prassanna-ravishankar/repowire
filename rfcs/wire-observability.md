@@ -441,6 +441,33 @@ Where it differs from the draft above:
   lookup scans the ledger. Fine at today's volume; a grouped query can
   replace it if `wire_query` shows in profiles.
 
+## Provenance as built
+
+`service.Wire` owns both pieces, in `wire_provenance.go`:
+
+- **Recorded.** The stage that first names a thread's parties (an ask's
+  `created`, a notify's `resolved_peer`, which is where a notify's
+  recipient is known) and every hop (`delegated`: delegator and new
+  holder; `reassigned`: the new holder, and from step 4 the acting
+  orchestrator)
+  carry `provenance` in their detail: per party, `peer_id`, `circle`,
+  `role`, `private`, and `unknown` when the registry did not know it. The
+  hub writes it through `Wire.WithProvenance`; retention strips text keys
+  only, so provenance lives as long as the stage.
+- **Visibility.** `peer_wire_visibility` (schema 19), `visible` or
+  `private`, cached by the view and written through. A peer sets its own
+  with `set_wire_visibility`; the operator with
+  `POST /peers/{name}/wire-visibility` (token only) or
+  `repowire wire visibility`. An unreadable table counts every peer as
+  private.
+- **Protected.** `protected_by` is the first reason found: a party, now or
+  as recorded, is `human`, `service`, `private` or `unknown_party`; or a
+  stage that should carry provenance does not (`no_provenance`). A peer
+  that turns private protects its earlier threads too, and a rolled-back
+  hop's parties still count, since they were offered the thread. The
+  thread exposes the recorded parties as `provenance`, which step 4's
+  circle check reads.
+
 ## Tests (v1)
 
 - Scope: an orchestrator sees threads in every circle; a demoted one is

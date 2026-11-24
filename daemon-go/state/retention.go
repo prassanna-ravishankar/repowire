@@ -80,7 +80,7 @@ type tableRetention struct {
 var tableRetentions = []tableRetention{
 	deliveryTraceRetention, eventRetention, inboxRetention, workRetention, operationRetention,
 	certificateRetention, peerMessageRetention, remoteRetention,
-	peerMessageDeliveryRetention, daemonMetaRetention, scheduleRetention, calendarRetention,
+	peerMessageDeliveryRetention, peerWireVisibilityRetention, daemonMetaRetention, scheduleRetention, calendarRetention,
 	sessionBindingRetention, queuedDeliveryRetention, identityRetention, migrationRetention, legacyImportRetention,
 }
 

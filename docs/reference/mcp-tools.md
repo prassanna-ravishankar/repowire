@@ -320,6 +320,19 @@ session. `pull` sends a one-line nudge instead, and you fetch the body with
 An ask nudge keeps its correlation id and ack hint. The mode is kept per
 `peer_id` across daemon restarts.
 
+### `set_wire_visibility`
+
+```text
+set_wire_visibility(mode: "visible" | "private") -> str
+```
+
+Choose whether orchestrators may act on your threads. `visible` is the
+default. `private` protects every thread you take part in, earlier ones
+included: an orchestrator still sees its envelope in
+[`wire_query`](#wire_query) (who, state, age), never its text, and cannot act
+on it. Kept per `peer_id` across daemon restarts. Only you, or the operator
+(`repowire wire visibility`), can change it.
+
 ## Inspection
 
 ### `list_peers`
@@ -403,7 +416,7 @@ The caller must be a registered peer with a proven identity and `role=orchestrat
 
 - **States** of an ask: `sent`, `queued`, `deferred`, `delivered` (to the current holder), `delegated`, `reply_stashed` (the asker went offline before the reply), a close reason when closed (`acked`, `declined`, `answered`, `cancelled`, `expired`, `send_failed`, ...), or `unknown` when the daemon lost the open ask without recording its close. A notify is `sent`, `queued` (waiting in the delivery queue for an offline recipient), `dequeued` (the queue handed it to the reconnected peer; not a receipt, and a drain is recorded before its response reaches the peer's hook, so a lost response still reads `dequeued`), `expired` or `dropped` (left the queue undelivered: its TTL passed, or the per-peer cap or a peer that cannot take input removed it), `delivered`, `failed`, `remote_<outcome>` across machines, or `unverified` (sent on a transport that returns no receipt, or queued before the queue recorded its outcomes); read state is not tracked yet.
 - **Stuck signals**, computed when read, never on a timer, with thresholds under [`wire.stuck`](configuration.md#wire): `ignored` (the holder is online and took `ignored_turns` turns since the ask was assigned to it), `slow` (no holder turn `slow_minutes` after assignment), `holder_offline`, `asker_gone` (a reply stashed `asker_gone_minutes` ago), and `undelivered` (a notify queued `undelivered_minutes` ago).
-- **`protected`** marks a thread with the human, a surface service, or a peer the daemon no longer knows as a party. Future body reads and interventions will refuse such threads.
+- **`protected`** names why a thread is protected, or `-` when it is not: a party, now or as recorded when the thread was created or moved, is the `human`, a `service` surface, `private` (see [`set_wire_visibility`](#set_wire_visibility)) or unknown to the daemon (`unknown_party`); or the thread was recorded without its parties (`no_provenance`: anything from before provenance was recorded, `/query` asks and `ask_many` children). Future body reads and orchestrator interventions will refuse protected threads. The circles recorded for each party, not the parties' circles today, are what those checks use.
 
 ### `wire_show`
 

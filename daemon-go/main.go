@@ -528,8 +528,9 @@ func runDaemon() {
 		WithMessaging(delivery, store).
 		WithAskLifecycle(asks, delivery, reg).
 		// The orchestrator's read-only wire view over the tracker, the
-		// trace ledger and the registry (rfcs/wire-observability.md).
-		WithWire(service.NewWire(asks, store, reg, cfg.Wire.Stuck)).
+		// trace ledger and the registry, and each peer's wire visibility
+		// (rfcs/wire-observability.md).
+		WithWire(service.NewWire(asks, store, reg, store, cfg.Wire.Stuck)).
 		WithRouting(router).
 		WithSessionRoutes(reg, store).
 		WithSpawn(spawnService, reg, asks, selfMachine, cfg.Daemon.CircleBoundary).

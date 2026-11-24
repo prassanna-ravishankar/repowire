@@ -125,6 +125,10 @@ repowire wire nudge THREAD_ID [--note "any news?"]           # remind the holder
 repowire wire cancel THREAD_ID --reason "no longer needed"   # close it; the asker gets the reason
 ```
 
+```bash
+repowire wire visibility PEER visible|private               # set a peer's wire visibility
+```
+
 These are the operator's actions ([HTTP API](http-api.md)). They need `daemon.auth_token`: the CLI sends it, and the daemon accepts nothing else for them. A reassign tells the old holder and the asker; a cancel tells the holder and gives the asker the reason as the ask's outcome.
 
 ## `repowire peer`

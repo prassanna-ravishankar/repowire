@@ -136,10 +136,10 @@ func (h *Hub) reassignAsk(ctx context.Context, cid, to, reason string) (WireActi
 	if err != nil {
 		return WireActionResult{}, delegateErr(cid, ask, err)
 	}
-	h.traceAsk(ctx, cid, "reassigned", "", moved, map[string]any{
+	h.traceAsk(ctx, cid, "reassigned", "", moved, h.wire.WithProvenance(ctx, map[string]any{
 		"by": operatorActor, "from_peer_id": string(hop.FromPeerID), "to_peer_id": string(hop.ToPeerID),
 		"reason": clipTraceText(reason), "hops": len(moved.Delegations),
-	})
+	}, hop.ToPeerID))
 	text := fmt.Sprintf("[reassigned by the operator from @%s for @%s: %s]\n%s", hop.FromName, moved.FromPeerName, reason, moved.Text)
 	if _, err := h.deliverHop(ctx, claimed, moved, hop, operatorSender, text); err != nil {
 		return WireActionResult{}, err

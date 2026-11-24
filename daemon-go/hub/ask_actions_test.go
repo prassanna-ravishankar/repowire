@@ -137,7 +137,7 @@ func TestWireActionRoutesNeedTheOperatorToken(t *testing.T) {
 	alpha, beta, gamma := alphaPeer(), betaPeer(), gammaPeer()
 	r := newDelegateRig(t, alpha, beta, gamma)
 	cid := r.ask(t, alpha, beta, "review?")
-	r.h.WithWire(service.NewWire(r.asks, r.store, r.reg, config.Defaults().Wire.Stuck))
+	r.h.WithWire(service.NewWire(r.asks, r.store, r.reg, r.store, config.Defaults().Wire.Stuck))
 	r.h.store = r.store
 	route := func(token string) (*httptest.Server, func(headers map[string]string) int) {
 		r.h.authToken = token

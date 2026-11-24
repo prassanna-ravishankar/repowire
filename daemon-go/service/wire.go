@@ -9,6 +9,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/repowire/repowire/daemon-go/config"
@@ -23,9 +24,10 @@ import (
 // It keeps no state of its own. Open asks come from the AskTracker, history
 // from the delivery-trace ledger, whether a notify still waits from the
 // delivery queue, names, circles and liveness from the registry, and holder
-// turns from the chat-turn journal; retention bounds all of them. The envelope never carries message text, delegation notes or
-// reasons. Later pieces (reassign, cancel, bodies) plug in through Resolve
-// and Thread.
+// turns from the chat-turn journal; retention bounds all of them. Its one
+// cache is each peer's chosen visibility (wire_provenance.go). The envelope
+// never carries message text, delegation notes or reasons. Later pieces
+// (reassign, cancel, bodies) plug in through Resolve and Thread.
 // ============================================================================
 
 // WireLedger is the delivery-trace ledger seam; *state.Store satisfies it.
@@ -48,13 +50,18 @@ type Wire struct {
 	asks   *AskTracker
 	ledger WireLedger
 	peers  WirePeers
+	vis    WireVisibilityStore
 	stuck  config.WireStuckConfig
 	now    func() time.Time
+
+	mu      sync.Mutex
+	private map[proto.PeerID]bool // loaded on first use; guarded by mu
 }
 
-// NewWire returns the wire view over the daemon's existing records.
-func NewWire(asks *AskTracker, ledger WireLedger, peers WirePeers, stuck config.WireStuckConfig) *Wire {
-	return &Wire{asks: asks, ledger: ledger, peers: peers, stuck: stuck, now: time.Now}
+// NewWire returns the wire view over the daemon's existing records. vis may
+// be nil (no peer is private, and none can choose to be).
+func NewWire(asks *AskTracker, ledger WireLedger, peers WirePeers, vis WireVisibilityStore, stuck config.WireStuckConfig) *Wire {
+	return &Wire{asks: asks, ledger: ledger, peers: peers, vis: vis, stuck: stuck, now: time.Now}
 }
 
 // WireParty is one party to a thread, as the registry knows it now. Known is
@@ -66,6 +73,8 @@ type WireParty struct {
 	Role   proto.PeerRole    `json:"role"`
 	Status proto.PeerStatus  `json:"status"`
 	Known  bool              `json:"known"`
+	// Private is the peer's chosen wire visibility now.
+	Private bool `json:"private,omitempty"`
 }
 
 // WireStage is one ledger stage, envelope only.
@@ -94,11 +103,16 @@ type WireThread struct {
 	LastAt      time.Time   `json:"last_at"`
 	HolderTurns int         `json:"holder_turns"` // assistant turns since assignment; -1 when not counted
 	Stuck       []string    `json:"stuck,omitempty"`
-	// Protected marks a thread a party of which is the human, a surface
-	// service, or unknown to the registry: bodies and interventions will
-	// refuse it (rfcs/wire-observability.md section 2).
-	Protected bool        `json:"protected"`
-	Stages    []WireStage `json:"stages,omitempty"` // Thread only
+	// Protected marks a thread that bodies and agent interventions refuse
+	// (rfcs/wire-observability.md section 2); ProtectedBy says why: a party
+	// that is (or was, when recorded) human, service, private or unknown, or
+	// no_provenance for a thread recorded without its parties.
+	Protected   bool   `json:"protected"`
+	ProtectedBy string `json:"protected_by,omitempty"`
+	// Provenance is every party as its stage recorded it, oldest first: the
+	// asker and first holder, then each hop's delegator and new holder.
+	Provenance []WireProvenance `json:"provenance,omitempty"`
+	Stages     []WireStage      `json:"stages,omitempty"` // Thread only
 }
 
 // WireFilter narrows Threads. Zero values mean no filter.
@@ -312,10 +326,13 @@ func (w *Wire) reduce(ctx context.Context, traceID, kind string, withStages bool
 	if t.Open && kind == "ask" {
 		w.askStuck(ctx, &t, ask)
 	}
-	parties := append([]WireParty{t.From, t.Holder}, t.Via...)
-	t.Protected = anyParty(parties, func(p WireParty) bool {
-		return !p.Known || p.Role == proto.RoleHuman || p.Role == proto.RoleService
-	})
+	for _, p := range append([]*WireParty{&t.From, &t.Holder}, ptrs(t.Via)...) {
+		p.Private = p.PeerID != "" && w.Private(ctx, p.PeerID)
+	}
+	recorded, complete := threadProvenance(kind, rows)
+	t.Provenance = recorded
+	t.ProtectedBy = protectedBy(append([]WireParty{t.From, t.Holder}, t.Via...), recorded, complete)
+	t.Protected = t.ProtectedBy != ""
 	if withStages {
 		t.Stages = make([]WireStage, 0, len(rows))
 		for _, r := range rows {
@@ -538,6 +555,14 @@ func (w *Wire) party(id proto.PeerID) WireParty {
 		return WireParty{PeerID: p.PeerID, Name: p.DisplayName, Circle: p.Circle, Role: p.Role, Status: p.Status, Known: true}
 	}
 	return WireParty{PeerID: id, Name: proto.DisplayName(id)}
+}
+
+func ptrs(parties []WireParty) []*WireParty {
+	out := make([]*WireParty, len(parties))
+	for i := range parties {
+		out[i] = &parties[i]
+	}
+	return out
 }
 
 func minutes(m float64) time.Duration { return time.Duration(m * float64(time.Minute)) }

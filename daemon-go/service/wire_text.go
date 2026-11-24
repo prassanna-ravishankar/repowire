@@ -61,9 +61,9 @@ func (page WirePage) Text(now time.Time) string {
 		if t.HolderTurns >= 0 {
 			turns = strconv.Itoa(t.HolderTurns)
 		}
-		fmt.Fprintf(&b, "\n%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%t",
+		fmt.Fprintf(&b, "\n%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s",
 			WireCell(t.ID), t.Kind, wireParty(t.From), wireParty(t.Holder), orDash(strings.Join(via, ",")),
-			WireCell(t.State), wireAge(now.Sub(t.CreatedAt)), turns, orDash(strings.Join(t.Stuck, ",")), t.Protected)
+			WireCell(t.State), wireAge(now.Sub(t.CreatedAt)), turns, orDash(strings.Join(t.Stuck, ",")), orDash(t.ProtectedBy))
 	}
 	if len(page.Threads) == 0 {
 		b.WriteString("\n(no threads)")
@@ -83,10 +83,10 @@ func (t WireThread) Text(after int) string {
 	for _, p := range t.Via {
 		via = append(via, wireParty(p))
 	}
-	fmt.Fprintf(&b, "thread\t%s\nkind\t%s\nstate\t%s\nfrom\t%s\t%s\nholder\t%s\t%s\nvia\t%s\ncreated\t%s\nassigned\t%s\nstuck\t%s\nprotected\t%t\n\nseq\tat\tstage\tstatus\tpeer\tclose_reason",
+	fmt.Fprintf(&b, "thread\t%s\nkind\t%s\nstate\t%s\nfrom\t%s\t%s\nholder\t%s\t%s\nvia\t%s\ncreated\t%s\nassigned\t%s\nstuck\t%s\nprotected\t%s\n\nseq\tat\tstage\tstatus\tpeer\tclose_reason",
 		WireCell(t.ID), t.Kind, WireCell(t.State), wireParty(t.From), WireCell(t.From.Circle), wireParty(t.Holder), WireCell(t.Holder.Circle),
 		orDash(strings.Join(via, ",")), t.CreatedAt.Format(time.RFC3339), t.AssignedAt.Format(time.RFC3339),
-		orDash(strings.Join(t.Stuck, ",")), t.Protected)
+		orDash(strings.Join(t.Stuck, ",")), orDash(t.ProtectedBy))
 	for _, st := range t.Stages {
 		if st.Seq <= after {
 			continue

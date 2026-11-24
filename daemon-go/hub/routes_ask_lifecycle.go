@@ -593,7 +593,11 @@ func (h *Hub) openAsk(ctx context.Context, req AskRequest) (AskResponse, error) 
 		h.inbox.RecordOutbound(ctx, cid, target, req.Text, surface, ref)
 	}
 	tracked, _ := h.ask.asks.Get(cid)
-	h.traceAsk(ctx, cid, "created", "", tracked, map[string]any{"to_peer": req.ToPeer, "from_peer": req.FromPeer, "text": clipTraceText(req.Text)})
+	created := map[string]any{"to_peer": req.ToPeer, "from_peer": req.FromPeer, "text": clipTraceText(req.Text)}
+	if tracked != nil {
+		created = h.wire.WithProvenance(ctx, created, tracked.FromPeerID, tracked.ToPeerID)
+	}
+	h.traceAsk(ctx, cid, "created", "", tracked, created)
 	h.traceAsk(ctx, cid, "resolved_peer", "", tracked, nil)
 	h.traceAsk(ctx, cid, "routed", "", tracked, nil)
 

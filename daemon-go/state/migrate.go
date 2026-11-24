@@ -343,6 +343,13 @@ var migrationStatements = []string{
 		mode TEXT NOT NULL,
 		updated_at TEXT NOT NULL
 	)`,
+	// Per-peer wire visibility (v19, rfcs/wire-observability.md section 2):
+	// a private peer's threads keep their bodies from the wire view.
+	`CREATE TABLE IF NOT EXISTS peer_wire_visibility (
+		peer_id TEXT PRIMARY KEY,
+		mode TEXT NOT NULL,
+		updated_at TEXT NOT NULL
+	)`,
 }
 
 // migrationLedger mirrors the schema_migrations rows database.py stamps, so a
@@ -370,6 +377,7 @@ var migrationLedger = []struct {
 	{16, "human inbox items, per-surface push records and rendered refs"},
 	{17, "cross-machine asks: store epoch, inbound and outbound records, fences"},
 	{18, "agent peer messages addressable by id, per-peer delivery mode"},
+	{19, "per-peer wire visibility"},
 }
 
 // migrate applies the idempotent schema and stamps user_version. Safe to run on
