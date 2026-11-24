@@ -376,6 +376,9 @@ func runDaemon() {
 	// it never delays startup; a failure leaves the daemon without a human
 	// peer (phone bridges stay plain service peers) rather than stopping it.
 	inbox := service.NewInbox(store, reg, transport, asks, cfg.Human)
+	// The inbox plugs into the tracker's settle socket: an ask that closes or
+	// moves stops looking answerable on the human's surfaces (#591).
+	asks.SetOnSettled(inbox.AskSettled)
 	if humanID, humanName, err := service.RegisterHumanPeer(ctx, reg, cfg.Human.Name, selfMachine); err != nil {
 		log.Printf("WARNING human peer not registered, inbox disabled: %v", err)
 		inbox.Close()

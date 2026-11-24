@@ -748,3 +748,121 @@ func TestInboxCatchUpBoundHoldsOnTimestampTies(t *testing.T) {
 		t.Fatalf("telegram saw %s, want 2,3 (1 stays out)", got)
 	}
 }
+
+// #591: the inbox plugs into the tracker's settle socket. An ask the human
+// holds stops looking answerable when it moves away or closes, comes back
+// answerable when a failed hand-off is undone, and each change is traced and
+// published.
+func TestInboxItemFollowsItsAsksAnswerability(t *testing.T) {
+	f := newInboxFixture(t, config.HumanConfig{})
+	ctx := context.Background()
+	f.asks.SetOnSettled(f.inbox.AskSettled)
+	cid, _ := f.asks.Register(ctx, RegisterAskParams{FromPeerID: f.alpha.PeerID, ToPeerID: f.human.PeerID, Text: "merge?"})
+	res, err := f.delivery.DeliverAsk(ctx, DeliverAskParams{FromPeer: "alpha", ToPeer: "prass", Text: "merge?", CorrelationID: cid})
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.settle()
+	item, _ := f.store.InboxItem(ctx, res.Inbox.ItemID)
+	if !f.inbox.Answerable(item) {
+		t.Fatal("a fresh ask to the human is not answerable")
+	}
+	updates := func() []map[string]any {
+		f.settle()
+		f.reg.mu.Lock()
+		defer f.reg.mu.Unlock()
+		var out []map[string]any
+		for _, e := range f.reg.events {
+			if e.typ == "inbox_updated" && e.payload["item_id"] == item.ID {
+				out = append(out, e.payload)
+			}
+		}
+		return out
+	}
+
+	// Moved away (a failed hand-off), then back.
+	if _, err := f.asks.Claim(cid); err != nil {
+		t.Fatal(err)
+	}
+	_, hop, err := f.asks.Reassign(ctx, cid, ReassignParams{By: "operator", To: f.beta.PeerID, ToName: f.beta.DisplayName, Reason: "x"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f.inbox.Answerable(item) {
+		t.Fatal("answerable after the ask moved away")
+	}
+	if !f.asks.UndoDelegation(ctx, cid, hop) {
+		t.Fatal("undo refused")
+	}
+	f.asks.Release(cid)
+	// Published in the order the tracker reported them.
+	if got := updates(); len(got) != 2 || got[0]["answerable"] != false || got[0]["reason"] != "moved" || got[1]["answerable"] != true || got[1]["reason"] != "returned" {
+		t.Fatalf("updates after move and undo = %v", got)
+	}
+
+	// Closed by someone other than the human (the operator's cancel).
+	f.asks.Resolve(ctx, cid, "cancelled", nil, nil)
+	if got := updates(); len(got) != 3 || got[2]["answerable"] != false || got[2]["reason"] != "cancelled" {
+		t.Fatalf("updates after cancel = %v", got)
+	}
+	if f.inbox.Answerable(item) {
+		t.Fatal("answerable after the ask closed")
+	}
+	if stages := f.stages(t, cid); stages[len(stages)-1].Stage != "inbox_settled" {
+		t.Fatalf("last stage = %s, want inbox_settled", stages[len(stages)-1].Stage)
+	}
+
+	// An ask the human is not party to changes nothing.
+	other, _ := f.asks.Register(ctx, RegisterAskParams{FromPeerID: f.alpha.PeerID, ToPeerID: f.beta.PeerID, Text: "x"})
+	f.asks.Close(ctx, other, "ack")
+	if got := updates(); len(got) != 3 {
+		t.Fatalf("an unrelated close published %v", got)
+	}
+}
+
+// Events can reach the inbox out of the tracker's order (two goroutines
+// unlocking at once); the older one is ignored, so the newest state stands.
+func TestInboxIgnoresAnOlderSettle(t *testing.T) {
+	f := newInboxFixture(t, config.HumanConfig{})
+	ctx := context.Background()
+	cid, _ := f.asks.Register(ctx, RegisterAskParams{FromPeerID: f.alpha.PeerID, ToPeerID: f.human.PeerID, Text: "merge?"})
+	if _, err := f.delivery.DeliverAsk(ctx, DeliverAskParams{FromPeer: "alpha", ToPeer: "prass", Text: "merge?", CorrelationID: cid}); err != nil {
+		t.Fatal(err)
+	}
+	f.settle()
+	ask, _ := f.asks.Get(cid)
+	moved := *ask
+	moved.ToPeerID, moved.ToPeerName = f.beta.PeerID, f.beta.DisplayName
+	f.inbox.AskSettled(AskSettled{Ask: ask, Reason: "returned", MovedFrom: f.beta.PeerID, Seq: 2})
+	f.inbox.AskSettled(AskSettled{Ask: &moved, Reason: "moved", MovedFrom: f.human.PeerID, Seq: 1})
+	f.settle()
+	f.reg.mu.Lock()
+	defer f.reg.mu.Unlock()
+	var reasons []any
+	for _, e := range f.reg.events {
+		if e.typ == "inbox_updated" {
+			reasons = append(reasons, e.payload["reason"])
+		}
+	}
+	if len(reasons) != 1 || reasons[0] != "returned" {
+		t.Fatalf("published %v, want only the newer returned", reasons)
+	}
+	f.reg.mu.Unlock()
+
+	// After a close, an older move that arrives late is ignored too.
+	closed := *ask
+	closed.Closed, closed.CloseReason = true, "cancelled"
+	f.inbox.AskSettled(AskSettled{Ask: &closed, Reason: "cancelled", Seq: 4})
+	f.inbox.AskSettled(AskSettled{Ask: ask, Reason: "returned", MovedFrom: f.beta.PeerID, Seq: 3})
+	f.settle()
+	f.reg.mu.Lock()
+	var after []any
+	for _, e := range f.reg.events {
+		if e.typ == "inbox_updated" {
+			after = append(after, e.payload["answerable"])
+		}
+	}
+	if len(after) != 2 || after[1] != false {
+		t.Fatalf("answerable published after the close = %v, want [true false]", after)
+	}
+}

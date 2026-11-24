@@ -58,6 +58,7 @@ type InboxStore interface {
 	MarkInboxRead(ctx context.Context, id, surface string) (bool, error)
 	MarkInboxReplied(ctx context.Context, id, surface string) (bool, error)
 	RecordTrace(ctx context.Context, traceID, kind, stage, status, deliveryID, peerID, fromPeerID string, detail map[string]any) error
+	UnrepliedInboxAsks(ctx context.Context, cid string) ([]state.InboxItem, error)
 }
 
 // inboxRegistry is the slice of *peer.Registry the inbox reads and annotates.
@@ -121,6 +122,13 @@ type Inbox struct {
 	wg      sync.WaitGroup
 	closeMu sync.Mutex
 	closed  bool
+
+	// settles are AskSettled events waiting for the one drainer, which
+	// publishes them in the order the tracker reported them.
+	settleMu sync.Mutex
+	settles  []AskSettled
+	draining bool
+	applied  map[string]appliedSettle // per ask, the newest Seq published
 }
 
 // NewInbox wires the inbox. asks may be nil (no thread validation: items never
@@ -282,6 +290,104 @@ func (i *Inbox) MarkRead(ctx context.Context, item *state.InboxItem, surface str
 	i.trace(ctx, item, "inbox_read", "", map[string]any{"item_id": item.ID, "surface": surface})
 	i.reg.AddEvent(ctx, "inbox_updated", map[string]any{"item_id": item.ID, "read": true, "surface": surface})
 	return nil
+}
+
+// Answerable reports whether the human can still answer an item: an ask the
+// tracker holds open with the human as its holder. Anything else (a closed,
+// expired or moved ask, or not an ask) takes a reply as a new message.
+func (i *Inbox) Answerable(item *state.InboxItem) bool {
+	if item == nil || item.Direction != state.InboxIn || item.Kind != InboxAsk || item.CorrelationID == "" || i.asks == nil {
+		return false
+	}
+	human, _ := i.Human()
+	ask, ok := i.asks.Get(item.CorrelationID)
+	return ok && !ask.Closed && ask.ToPeerID == human
+}
+
+// AskSettled is the inbox's plug on the tracker's settle socket: when an ask
+// the human holds closes, moves away from the human, or comes back, the
+// human's unreplied items for it change answerability. Each is traced and
+// published (inbox_updated), so a surface stops offering an answer that the
+// daemon would refuse. One drainer on the inbox's own goroutine publishes the
+// events in the order the tracker reported them, each with the state that
+// event left, so the last update for an item tells the truth.
+func (i *Inbox) AskSettled(ev AskSettled) {
+	human, _ := i.Human()
+	if human == "" || ev.Ask == nil || (ev.Ask.ToPeerID != human && ev.MovedFrom != human) {
+		return
+	}
+	i.settleMu.Lock()
+	i.settles = append(i.settles, ev)
+	start := !i.draining
+	i.draining = true
+	i.settleMu.Unlock()
+	if start && !i.spawn(i.drainSettles) {
+		i.settleMu.Lock()
+		i.settles, i.draining = nil, false // closed: nothing publishes any more
+		i.settleMu.Unlock()
+	}
+}
+
+// appliedSettle is the newest event published for an ask. A closed ask's
+// entry stays briefly as a tombstone, so an older move or return that reaches
+// the inbox after the close cannot publish the ask as answerable again.
+type appliedSettle struct {
+	seq      uint64
+	closedAt time.Time
+}
+
+// settleTombstone is how long a closed ask's entry outlives the close: far
+// longer than two unlocking goroutines can be apart.
+const settleTombstone = time.Minute
+
+func (i *Inbox) drainSettles() {
+	human, _ := i.Human()
+	for {
+		i.settleMu.Lock()
+		if len(i.settles) == 0 {
+			i.draining = false
+			i.settleMu.Unlock()
+			return
+		}
+		ev := i.settles[0]
+		i.settles = i.settles[1:]
+		cid := ev.Ask.CorrelationID
+		now := time.Now()
+		for id, a := range i.applied {
+			if !a.closedAt.IsZero() && now.Sub(a.closedAt) > settleTombstone {
+				delete(i.applied, id)
+			}
+		}
+		stale := ev.Seq <= i.applied[cid].seq
+		if !stale {
+			if i.applied == nil {
+				i.applied = map[string]appliedSettle{}
+			}
+			a := appliedSettle{seq: ev.Seq}
+			if ev.Ask.Closed {
+				a.closedAt = now
+			}
+			i.applied[cid] = a
+		}
+		i.settleMu.Unlock()
+		if stale {
+			continue // a newer state of this ask was already published
+		}
+
+		ctx := i.baseCtx
+		items, err := i.store.UnrepliedInboxAsks(ctx, ev.Ask.CorrelationID)
+		if err != nil {
+			log.Printf("inbox: settle %s: %v", ev.Ask.CorrelationID, err)
+			continue
+		}
+		answerable := !ev.Ask.Closed && ev.Ask.ToPeerID == human
+		for idx := range items {
+			item := &items[idx]
+			detail := map[string]any{"item_id": item.ID, "answerable": answerable, "reason": ev.Reason, "holder": string(ev.Ask.ToPeerName)}
+			i.trace(ctx, item, "inbox_settled", "", detail)
+			i.reg.AddEvent(ctx, "inbox_updated", detail)
+		}
+	}
 }
 
 // MarkReplied records that the human answered the item from surface.

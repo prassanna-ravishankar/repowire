@@ -2,6 +2,7 @@ package hub
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"net/http"
 	"strconv"
@@ -76,7 +77,7 @@ func (h *Hub) handleInboxList(w http.ResponseWriter, r *http.Request) {
 	}
 	out := make([]map[string]any, 0, len(items))
 	for i := range items {
-		out = append(out, inboxItemJSON(&items[i]))
+		out = append(out, h.inboxItemView(&items[i]))
 	}
 	human, name := h.inbox.Human()
 	writeJSON(w, http.StatusOK, map[string]any{"human_peer_id": human, "human": name, "items": out})
@@ -90,7 +91,15 @@ func (h *Hub) handleInboxGet(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	writeJSON(w, http.StatusOK, inboxItemJSON(item))
+	writeJSON(w, http.StatusOK, h.inboxItemView(item))
+}
+
+// inboxItemView is an item as the surfaces read it, with whether the human
+// can still answer it (an ask that closed or moved cannot be).
+func (h *Hub) inboxItemView(item *state.InboxItem) map[string]any {
+	out := inboxItemJSON(item)
+	out["answerable"] = h.inbox.Answerable(item)
+	return out
 }
 
 func (h *Hub) handleInboxRead(w http.ResponseWriter, r *http.Request) {
@@ -157,9 +166,24 @@ func (h *Hub) replyToInboxItem(ctx context.Context, item *state.InboxItem, req I
 	result := map[string]any{"ok": true, "item_id": item.ID}
 
 	if item.Direction == state.InboxIn && item.Kind == "ask" && item.CorrelationID != "" {
+		human, _ := h.inbox.Human()
+		if ask, ok := h.ask.asks.Get(item.CorrelationID); ok && !ask.Closed && ask.ToPeerID != human {
+			// The ask moved away from the human (a delegation or the operator's
+			// reassign): its new holder answers it, so this reply must not
+			// resolve it. Nothing is sent.
+			_ = h.inbox.MarkRead(ctx, item, surface)
+			return nil, routeErr(http.StatusConflict, map[string]any{
+				"error": "ask_moved", "correlation_id": item.CorrelationID, "holder": string(ask.ToPeerName),
+				"hint": fmt.Sprintf("This ask moved to @%s, who answers it now; your reply was not sent.", ask.ToPeerName),
+			})
+		}
 		if ask, ok := h.ask.asks.Get(item.CorrelationID); ok && !ask.Closed {
+			// The human answers as the human, so the resolution's own check
+			// under the claim refuses it if the ask moved meanwhile; the check
+			// above only words the common case.
+			from := string(human)
 			if ask.Question != nil {
-				answer := AnswerRequest{CorrelationID: item.CorrelationID, OptionID: req.OptionID}
+				answer := AnswerRequest{CorrelationID: item.CorrelationID, OptionID: req.OptionID, FromPeer: &from}
 				if req.Text != "" {
 					answer.Text = &req.Text
 				} else if req.OptionID == nil {
@@ -170,7 +194,7 @@ func (h *Hub) replyToInboxItem(ctx context.Context, item *state.InboxItem, req I
 				}
 				result["action"] = "answered"
 			} else {
-				ack := AckRequest{CorrelationID: item.CorrelationID}
+				ack := AckRequest{CorrelationID: item.CorrelationID, FromPeer: &from}
 				if req.Text != "" {
 					ack.Message = &req.Text
 				}

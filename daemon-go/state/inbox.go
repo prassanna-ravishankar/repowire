@@ -322,6 +322,26 @@ func (s *Store) InboxThreadRef(ctx context.Context, cid, surface string) (string
 	return ref.String, nil
 }
 
+// UnrepliedInboxAsks returns the human's unreplied items for ask cid: the
+// ones that change when the ask closes or moves.
+func (s *Store) UnrepliedInboxAsks(ctx context.Context, cid string) ([]InboxItem, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT `+inboxColumns+` FROM inbox_items
+		WHERE correlation_id = ? AND direction = ? AND kind = 'ask' AND replied_at IS NULL`, cid, InboxIn)
+	if err != nil {
+		return nil, fmt.Errorf("unreplied inbox asks %s: %w", cid, err)
+	}
+	defer rows.Close()
+	var out []InboxItem
+	for rows.Next() {
+		item, err := scanInboxItem(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, *item)
+	}
+	return out, rows.Err()
+}
+
 // MarkInboxRead sets read_at once; changed is false when it was already read.
 func (s *Store) MarkInboxRead(ctx context.Context, id, surface string) (changed bool, err error) {
 	res, err := s.db.ExecContext(ctx, `UPDATE inbox_items SET read_at = ?, read_surface = ?
