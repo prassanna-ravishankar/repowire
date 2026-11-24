@@ -3,12 +3,11 @@ package state
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"os"
-	"path/filepath"
 	"regexp"
 	"sort"
-	"strings"
 	"time"
 
 	"github.com/repowire/repowire/daemon-go/peer"
@@ -18,9 +17,10 @@ import (
 // history in a way that cannot be undone: before a schema migration (an older
 // binary refuses a migrated database) and before the first retention sweep.
 // One copy serves both when they coincide. Each lands next to the database as
-// <db>.pre-<reason>-<UTC timestamp>, private (0600), recorded in daemon_meta
-// and journaled; the store keeps the newest keepCopies of them and removes
-// older ones after taking a new one, never on a timer.
+// <db>.pre-<reason>-<UTC timestamp>, private (0600), recorded by exact path in
+// daemon_meta and journaled. The store keeps the newest keepCopies of the
+// copies it recorded and removes older ones after taking a new one, never on
+// a timer and never the retention backup.
 
 // snapshotNow is the snapshot clock (a test seam).
 var snapshotNow = time.Now
@@ -60,42 +60,50 @@ func vacuumInto(ctx context.Context, db *sql.DB, path string) error {
 	return nil
 }
 
-// snapshotName matches only the copies the store names itself
-// (snapshotPath), so pruning never touches a file someone else made, such as
-// a hand-made state.db.pre-retention backup.
-var snapshotName = regexp.MustCompile(`\.pre-(retention|migration-v[0-9]+-to-v[0-9]+)-[0-9]{8}-[0-9]{6}$`)
+// snapshotsKey in daemon_meta lists, as a JSON array, the exact paths of
+// the copies this store took. Pruning considers only those: a file the store
+// did not create and record (a hand-made state.db.pre-anything) is never
+// touched.
+const snapshotsKey = "snapshots"
 
-// pruneSnapshots keeps the newest keep copies of dbPath and removes the rest,
-// returning what it removed. keep <= 0 keeps every copy.
-func pruneSnapshots(dbPath string, keep int) []string {
+// snapshotStamp is the timestamp in a copy's name, which orders copies (a
+// copy or touch can change a file's mtime, not its name).
+var snapshotStamp = regexp.MustCompile(`-([0-9]{8}-[0-9]{6})$`)
+
+// pruneSnapshots keeps the newest keep of the recorded copies, by the
+// timestamp in their names, and removes the rest from disk. protect (the
+// retention backup: the only pre-retention history) is never removed and does
+// not count toward keep. It returns the copies still recorded and those it
+// removed. keep <= 0 keeps every copy.
+func pruneSnapshots(recorded []string, keep int, protect string) (kept, removed []string) {
 	if keep <= 0 {
-		return nil
+		return recorded, nil
 	}
-	var matches []string
-	all, _ := filepath.Glob(dbPath + ".pre-*")
-	for _, m := range all {
-		if snapshotName.MatchString(strings.TrimPrefix(m, dbPath)) {
-			matches = append(matches, m)
+	var candidates []string
+	for _, p := range recorded {
+		if p == protect {
+			kept = append(kept, p)
+			continue
+		}
+		candidates = append(candidates, p)
+	}
+	stamp := func(p string) string {
+		if m := snapshotStamp.FindStringSubmatch(p); m != nil {
+			return m[1]
+		}
+		return ""
+	}
+	sort.SliceStable(candidates, func(i, j int) bool { return stamp(candidates[i]) > stamp(candidates[j]) })
+	cut := min(keep, len(candidates))
+	kept = append(kept, candidates[:cut]...)
+	for _, p := range candidates[cut:] {
+		if err := os.Remove(p); err == nil || os.IsNotExist(err) {
+			removed = append(removed, p)
+		} else {
+			kept = append(kept, p) // could not remove: still ours, try next time
 		}
 	}
-	type copyFile struct {
-		path string
-		mod  time.Time
-	}
-	var copies []copyFile
-	for _, m := range matches {
-		if info, err := os.Stat(m); err == nil && info.Mode().IsRegular() {
-			copies = append(copies, copyFile{m, info.ModTime()})
-		}
-	}
-	sort.Slice(copies, func(i, j int) bool { return copies[i].mod.After(copies[j].mod) })
-	var removed []string
-	for _, c := range copies[min(keep, len(copies)):] {
-		if os.Remove(c.path) == nil {
-			removed = append(removed, c.path)
-		}
-	}
-	return removed
+	return kept, removed
 }
 
 // premigrationCopy copies an existing database at version from before it is
@@ -116,7 +124,14 @@ func premigrationCopy(db *sql.DB, dbPath string, from int, now time.Time) (strin
 
 // markSnapshot records a copy as the last snapshot and, while no sweep has
 // run, as the retention backup too (it holds all the history the first sweep
-// would remove), then prunes old copies. It returns what it pruned.
+// would remove), then prunes old copies, never the retention backup. It
+// returns what it pruned.
+//
+// The retention backup marker is absent only on a database no released
+// binary has swept: no release swept before the marker existed (#566 landed
+// after v0.21.1). A dev build from main between #566 and #595 may have swept
+// without it; there the first copy is labelled the backup though that history
+// was already gone. Nothing more is lost.
 func (s *Store) markSnapshot(ctx context.Context, path string) ([]string, error) {
 	if _, err := s.db.ExecContext(ctx, `INSERT OR REPLACE INTO daemon_meta(key, value) VALUES (?, ?)`, lastSnapshotKey, path); err != nil {
 		return nil, fmt.Errorf("record the snapshot: %w", err)
@@ -124,7 +139,22 @@ func (s *Store) markSnapshot(ctx context.Context, path string) ([]string, error)
 	if _, err := s.db.ExecContext(ctx, `INSERT OR IGNORE INTO daemon_meta(key, value) VALUES (?, ?)`, retentionBackupKey, path); err != nil {
 		return nil, fmt.Errorf("record the snapshot as the retention backup: %w", err)
 	}
-	return pruneSnapshots(s.path, s.keepCopies), nil
+	var backup, raw string
+	_ = s.db.QueryRowContext(ctx, `SELECT value FROM daemon_meta WHERE key = ?`, retentionBackupKey).Scan(&backup)
+	_ = s.db.QueryRowContext(ctx, `SELECT value FROM daemon_meta WHERE key = ?`, snapshotsKey).Scan(&raw)
+	var recorded []string
+	if raw != "" {
+		if err := json.Unmarshal([]byte(raw), &recorded); err != nil {
+			return nil, fmt.Errorf("read the snapshot list: %w", err)
+		}
+	}
+	recorded = append(recorded, path)
+	kept, removed := pruneSnapshots(recorded, s.keepCopies, backup)
+	encoded, _ := json.Marshal(kept)
+	if _, err := s.db.ExecContext(ctx, `INSERT OR REPLACE INTO daemon_meta(key, value) VALUES (?, ?)`, snapshotsKey, string(encoded)); err != nil {
+		return removed, fmt.Errorf("record the snapshot list: %w", err)
+	}
+	return removed, nil
 }
 
 // recordMigrationSnapshot marks and journals the pre-migration copy.

@@ -1,6 +1,8 @@
 package state
 
 import (
+	"database/sql"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -84,34 +86,75 @@ func TestFreshDatabaseIsNotCopied(t *testing.T) {
 	}
 }
 
+// Pruning removes only copies the store recorded, newest by name kept: a
+// user's own backups, even ones named like the store's, are never touched.
 func TestOldCopiesArePrunedToTheNewest(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "state.db")
 	olderSchemaDB(t, path)
-	// A hand-made backup with a similar name is never ours to prune.
-	if err := os.WriteFile(path+".pre-retention", []byte("mine"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	old := time.Now().Add(-24 * time.Hour)
-	_ = os.Chtimes(path+".pre-retention", old, old)
-	for i, name := range []string{"pre-migration-v15-to-v16-20261101-000000", "pre-migration-v16-to-v17-20261102-000000", "pre-retention-20261103-000000"} {
-		old := path + "." + name
-		if err := os.WriteFile(old, []byte("x"), 0o600); err != nil {
+	recorded := []string{path + ".pre-migration-v15-to-v16-20261101-000000", path + ".pre-migration-v16-to-v17-20261102-000000", path + ".pre-retention-20261103-000000"}
+	users := []string{path + ".pre-foo", path + ".pre-retention", path + ".pre-retention-20250101-000000"}
+	for _, p := range append(append([]string{}, recorded...), users...) {
+		if err := os.WriteFile(p, []byte("x"), 0o600); err != nil {
 			t.Fatal(err)
 		}
-		at := time.Now().Add(-time.Duration(3-i) * time.Hour)
-		_ = os.Chtimes(old, at, at)
 	}
-	s, err := NewStoreKeeping(path, 2)
+	// Record the earlier copies as the store records its own.
+	s0, err := OpenReadOnly(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s0.Close()
+	raw, _ := json.Marshal(recorded)
+	rw, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := rw.Exec(`INSERT OR REPLACE INTO daemon_meta(key, value) VALUES ('snapshots', ?), ('retention_backup', ?)`, string(raw), recorded[2]); err != nil {
+		t.Fatal(err)
+	}
+	rw.Close()
+
+	s, err := NewStoreKeeping(path, 1)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer s.Close()
-	left, _ := filepath.Glob(path + ".pre-*")
-	if len(left) != 3 || !slicesHasSuffix(left, ".pre-retention-20261103-000000") || !slicesHasPrefix(left, path+".pre-migration-v17-to-v18-") || !slicesHasSuffix(left, ".pre-retention") {
-		t.Fatalf("kept %v, want the new copy, the newest old one, and the hand-made backup", left)
+	exists := func(p string) bool { _, err := os.Stat(p); return err == nil }
+	for _, p := range users {
+		if !exists(p) {
+			t.Fatalf("a file the store did not record was removed: %s", p)
+		}
+	}
+	if exists(recorded[0]) || exists(recorded[1]) {
+		t.Fatal("older recorded copies were kept beyond retention.copies")
+	}
+	if !exists(recorded[2]) {
+		t.Fatal("the retention backup was pruned")
 	}
 	if n := s.count(t, `SELECT COUNT(*) FROM events WHERE type = 'state_snapshot' AND json_array_length(payload_json, '$.pruned') = 2`); n != 1 {
 		t.Fatal("the pruned copies were not journaled")
+	}
+}
+
+// The retention backup is exempt, and names, not mtimes, order the rest.
+func TestPruningKeepsTheRetentionBackup(t *testing.T) {
+	dir := t.TempDir()
+	backup := filepath.Join(dir, "state.db.pre-retention-20260101-000000")
+	older := filepath.Join(dir, "state.db.pre-migration-v15-to-v16-20260201-000000")
+	newer := filepath.Join(dir, "state.db.pre-migration-v16-to-v17-20260301-000000")
+	for _, p := range []string{backup, older, newer} {
+		if err := os.WriteFile(p, []byte("x"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	_ = os.Chtimes(older, time.Now(), time.Now()) // mtime says newest; the name says older
+	_ = os.Chtimes(newer, time.Now().Add(-48*time.Hour), time.Now().Add(-48*time.Hour))
+	kept, removed := pruneSnapshots([]string{backup, older, newer}, 1, backup)
+	if len(removed) != 1 || removed[0] != older || len(kept) != 2 {
+		t.Fatalf("kept %v removed %v, want only %s removed", kept, removed, older)
+	}
+	if _, err := os.Stat(backup); err != nil {
+		t.Fatal("the retention backup was removed")
 	}
 }
 
@@ -145,22 +188,4 @@ func TestFailedMigrationCopyRefusesTheMigration(t *testing.T) {
 		t.Fatalf("override: %v", err)
 	}
 	s.Close()
-}
-
-func slicesHasSuffix(paths []string, suffix string) bool {
-	for _, p := range paths {
-		if strings.HasSuffix(p, suffix) {
-			return true
-		}
-	}
-	return false
-}
-
-func slicesHasPrefix(paths []string, prefix string) bool {
-	for _, p := range paths {
-		if strings.HasPrefix(p, prefix) {
-			return true
-		}
-	}
-	return false
 }
