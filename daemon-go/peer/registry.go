@@ -1180,9 +1180,31 @@ func (r *Registry) ClosePeer(ctx context.Context, id proto.PeerID, reason string
 	return r.markOffline(ctx, id, true, reason, true)
 }
 
+// MarkOfflineIfRuntime offlines id (non-terminal) only while its record
+// still names agent pid in paneID, checked under the registry lock, so a
+// runtime that re-registered meanwhile is left alone. applied reports whether
+// it acted. The exit watch's authority uses it (rfcs/agent-container.md).
+func (r *Registry) MarkOfflineIfRuntime(ctx context.Context, id proto.PeerID, paneID string, pid int) (applied bool, err error) {
+	_, err = r.markOfflineGuarded(ctx, id, false, "", false, func(p *proto.Peer) bool {
+		applied = p.PaneID != nil && *p.PaneID == paneID && p.AgentPID != nil && *p.AgentPID == pid && p.Status != proto.StatusOffline
+		return applied
+	})
+	return applied, err
+}
+
 func (r *Registry) markOffline(ctx context.Context, id proto.PeerID, terminal bool, reason string, hardRetire bool) (int, error) {
+	return r.markOfflineGuarded(ctx, id, terminal, reason, hardRetire, nil)
+}
+
+// markOfflineGuarded is markOffline that, when guard is set, acts only if
+// guard accepts the live record (checked under r.mu).
+func (r *Registry) markOfflineGuarded(ctx context.Context, id proto.PeerID, terminal bool, reason string, hardRetire bool, guard func(*proto.Peer) bool) (int, error) {
 	r.mu.Lock()
 	ps, ok := r.peers[id]
+	if guard != nil && (!ok || !guard(ps.peer)) {
+		r.mu.Unlock()
+		return 0, nil
+	}
 	if !ok {
 		// Terminal offline for an id already evicted must still retire it, or the
 		// orphan it came from could re-register through a persisted mapping.

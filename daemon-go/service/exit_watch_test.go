@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"fmt"
 	"os/exec"
 	"sync"
 	"testing"
@@ -177,7 +178,7 @@ func TestExitWatchOnExitAndAgentAlive(t *testing.T) {
 	w := newTestExitWatch(rec)
 	defer w.Close()
 	exited := make(chan string, 1)
-	w.OnExit(func(id proto.PeerID, pane string) { exited <- string(id) + " " + pane })
+	w.OnExit(func(id proto.PeerID, pane string, pid int) { exited <- fmt.Sprintf("%s %s %d", id, pane, pid) })
 	agent := startAgent(t)
 	p := watchedPeer(agent.Process.Pid)
 	if _, watched := w.AgentAlive(&p); watched {
@@ -195,7 +196,7 @@ func TestExitWatchOnExitAndAgentAlive(t *testing.T) {
 	_ = agent.Wait()
 	select {
 	case got := <-exited:
-		if got != "repow-w %42" {
+		if got != fmt.Sprintf("repow-w %%42 %d", agent.Process.Pid) {
 			t.Fatalf("OnExit got %q", got)
 		}
 	case <-time.After(10 * time.Second):

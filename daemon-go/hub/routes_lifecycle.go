@@ -119,25 +119,36 @@ func (h *LifecycleHandler) watchedAlive(p *proto.Peer) bool {
 	return watched && alive
 }
 
-// HandleAgentExited offlines the peer whose watched agent exited, as pane
-// death does (non-terminal; transport severed; pane runtime state cleared).
-// The spawn ownership is kept: the pane may still hold a shell, and kill_peer
-// needs the proof to clean it up. A peer that moved to another pane, or is
-// already offline, is left alone.
-func (h *LifecycleHandler) HandleAgentExited(ctx context.Context, id proto.PeerID, paneID string) {
-	p, ok := h.reg.GetPeer(id)
-	if !ok || p == nil || p.PaneID == nil || *p.PaneID != paneID || p.Status == proto.StatusOffline {
-		return
-	}
-	if _, err := h.reg.MarkOffline(ctx, id, false); err != nil {
+// HandleAgentExited offlines the peer whose watched agent (pid, in paneID)
+// exited, as pane death does: non-terminal, transport severed, pane runtime
+// state cleared. It acts only while the record still names that agent in that
+// pane, checked atomically with registration, so a runtime that re-registered
+// meanwhile is left alone; and it clears the pane's runtime files only while
+// they still describe that agent. The spawn ownership is kept: the pane may
+// still hold a shell, and kill_peer needs the proof to clean it up.
+func (h *LifecycleHandler) HandleAgentExited(ctx context.Context, id proto.PeerID, paneID string, pid int) {
+	applied, err := h.reg.MarkOfflineIfRuntime(ctx, id, paneID, pid)
+	if err != nil {
 		log.Printf("agent_exited: mark_offline %s failed: %v", id, err)
 		return
 	}
-	if h.transport != nil {
-		_ = h.transport.Close(id)
+	if !applied {
+		return
 	}
-	h.clearPaneRuntimeState(paneID)
-	log.Printf("agent_exited: %s (%s) marked offline by its exit watch", p.DisplayName, paneID)
+	if h.transport != nil {
+		if p, ok := h.reg.GetPeer(id); ok && p.AgentPID != nil && *p.AgentPID == pid {
+			_ = h.transport.Close(id)
+		}
+	}
+	if meta := clienthooks.ReadPaneRuntimeMetadata(paneID); meta == nil || int(floatValue(meta["agent_pid"])) == pid {
+		h.clearPaneRuntimeState(paneID)
+	}
+	log.Printf("agent_exited: %s (%s) marked offline by its exit watch", id, paneID)
+}
+
+func floatValue(v any) float64 {
+	f, _ := v.(float64)
+	return f
 }
 
 // WithExitWatch checks every tmux offline signal against the agents' exit

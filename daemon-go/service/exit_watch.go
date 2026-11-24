@@ -33,7 +33,7 @@ type ExitWatch struct {
 	wait    func(pid int, cancel <-chan struct{}, armed func() bool) (bool, error)
 
 	// onExit, when set, acts on an observed exit (step 3: the watch decides).
-	onExit func(id proto.PeerID, pane string)
+	onExit func(id proto.PeerID, pane string, pid int)
 
 	mu      sync.Mutex
 	watches map[proto.PeerID]*exitWatch // kept after an exit, until the next bind
@@ -135,13 +135,13 @@ func (w *ExitWatch) run(id proto.PeerID, ew *exitWatch) {
 	}
 	w.emit(context.Background(), EventAgentExitObserved, payload)
 	if w.onExit != nil {
-		w.onExit(id, ew.pane)
+		w.onExit(id, ew.pane, ew.pid)
 	}
 }
 
 // OnExit makes the watch act on what it observes (rfcs/agent-container.md,
 // step 3): fn runs after each recorded exit. Set it once, while wiring.
-func (w *ExitWatch) OnExit(fn func(id proto.PeerID, pane string)) { w.onExit = fn }
+func (w *ExitWatch) OnExit(fn func(id proto.PeerID, pane string, pid int)) { w.onExit = fn }
 
 // AgentAlive reports p's agent as the watch sees it. watched is false when
 // no watch covers p's current agent pid; the caller then keeps its own

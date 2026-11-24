@@ -492,7 +492,9 @@ func runDaemon() {
 		WithExitWatch(exitWatch)
 	if cfg.Experiments.ExitWatchAuthority {
 		lifecycle.WithExitWatchAuthority(exitWatch.AgentAlive)
-		exitWatch.OnExit(func(id proto.PeerID, pane string) { lifecycle.HandleAgentExited(context.Background(), id, pane) })
+		exitWatch.OnExit(func(id proto.PeerID, pane string, pid int) {
+			lifecycle.HandleAgentExited(context.Background(), id, pane, pid)
+		})
 		reg.AgentWatch = exitWatch.AgentAlive
 	}
 	// Bind only once the watch is fully wired, so a watch never starts
