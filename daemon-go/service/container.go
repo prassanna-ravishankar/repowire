@@ -1,5 +1,11 @@
 package service
 
+import (
+	"context"
+
+	"github.com/repowire/repowire/daemon-go/proto"
+)
+
 // Container is the socket that owns a spawned agent's execution: where it
 // runs, how it starts and stops, and the evidence that it is still there
 // (rfcs/agent-container.md). The tmux plug (container_tmux.go) is the
@@ -22,4 +28,19 @@ type Container interface {
 	Stop(placeID string) bool
 	// Probe returns live evidence for a place, or nil when it is gone.
 	Probe(placeID string) *TmuxPaneEvidence
+}
+
+// PeerContainer is a plug that owns some peers outright: their execution has
+// no pane to prove, and the plug stops it by peer (a hosted agent is one).
+// kill_peer asks each in turn; the first that Owns the peer stops it, and the
+// caller then applies the operator close, as for every backend.
+type PeerContainer interface {
+	// Kind names the plug ("hosted").
+	Kind() string
+	// Owns reports whether this plug runs p's execution.
+	Owns(p *proto.Peer) bool
+	// StopPeer ends p's execution for good. It must not change registry
+	// state: the caller closes the peer once StopPeer succeeds, and keeps it
+	// registered when it fails.
+	StopPeer(ctx context.Context, p *proto.Peer) error
 }

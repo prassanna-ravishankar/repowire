@@ -455,6 +455,9 @@ type KillPeerRequest struct {
 type KillResponse struct {
 	OK         bool  `json:"ok"`
 	TmuxKilled *bool `json:"tmux_killed"`
+	// Container names the plug that stopped a peer it owns outright
+	// (rfcs/agent-container.md); empty for pane-backed peers.
+	Container string `json:"container,omitempty"`
 }
 
 func (h *Hub) handleKillPeer(w http.ResponseWriter, r *http.Request) {
@@ -481,6 +484,22 @@ func (h *Hub) killPeer(ctx context.Context, req KillPeerRequest) (KillResponse, 
 	resolved, err := h.resolveStrict(req.PeerIdentifier, req.Circle)
 	if err != nil {
 		return KillResponse{}, err
+	}
+
+	// A plug that owns the peer outright stops it by peer; the operator close
+	// then applies as for every other backend.
+	if plug := h.spawn.svc.PeerContainerFor(resolved); plug != nil {
+		if err := plug.StopPeer(ctx, resolved); err != nil {
+			// Fail loud and keep the peer, as a failed pane stop does.
+			return KillResponse{}, &service.SpawnError{Status: http.StatusInternalServerError, Detail: map[string]any{
+				"error":     "kill_failed",
+				"hint":      "The " + plug.Kind() + " container could not stop the peer; it remains registered so the operator can inspect it.",
+				"container": plug.Kind(),
+				"detail":    err.Error(),
+			}}
+		}
+		h.closeKilledPeer(ctx, resolved.PeerID)
+		return KillResponse{OK: true, Container: plug.Kind()}, nil
 	}
 
 	peerCopy := h.peerWithAdoptedOwnership(resolved)

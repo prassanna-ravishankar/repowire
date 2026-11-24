@@ -184,6 +184,7 @@ Two consequences for the socket's shape:
 - **Watch is optional.** For a plug without a process (hosted), "ended"
   is only what the plug reports (a retire, or a refusal), and the daemon
   never infers death from silence.
+- **Plugs that own peers outright** (hosted) implement `service.PeerContainer`. `kill_peer` asks each one whether it `Owns` the peer. The first that does stops it with `StopPeer` (no pane proof, no registry change), and the caller then applies the same operator close as for every backend: `ClosePeer`, then unregister. A failed `StopPeer` answers `kill_failed` and keeps the peer (#584).
 - **Sleeping is not ending.** A plug reports at most "addressable" and
   "busy". A plug may report an execution as addressable but not running. The registry must keep such a peer
   reachable, not offline. The hosted backend already does this by routing

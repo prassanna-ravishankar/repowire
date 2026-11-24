@@ -107,6 +107,7 @@ func AsSpawnError(err error) (*SpawnError, bool) {
 // yet).
 type SpawnService struct {
 	container     Container
+	peerPlugs     []PeerContainer
 	own           PaneOwnership
 	boundary      proto.CircleBoundary
 	commands      map[proto.AgentType]string
@@ -167,6 +168,24 @@ func (s *SpawnService) Ownership() PaneOwnership { return s.own }
 
 // Container exposes the plug so routes can stop and probe what spawn placed.
 func (s *SpawnService) Container() Container { return s.container }
+
+// WithPeerContainers adds plugs that own peers outright (rfcs/agent-container.md).
+// Call while wiring.
+func (s *SpawnService) WithPeerContainers(plugs ...PeerContainer) *SpawnService {
+	s.peerPlugs = append(s.peerPlugs, plugs...)
+	return s
+}
+
+// PeerContainerFor returns the plug that owns p outright, or nil when p is
+// pane-backed or a peer Repowire does not run.
+func (s *SpawnService) PeerContainerFor(p *proto.Peer) PeerContainer {
+	for _, plug := range s.peerPlugs {
+		if plug.Owns(p) {
+			return plug
+		}
+	}
+	return nil
+}
 
 // Enabled reports whether spawn is configured (commands AND allowed_paths set).
 func (s *SpawnService) Enabled() bool {
