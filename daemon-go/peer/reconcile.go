@@ -407,7 +407,23 @@ func (r *Registry) demoteUnsafeConnectedPeers(ctx context.Context) int {
 			// Inconclusive (hook's tmux/ps shell-out failed): neither strike nor recovery.
 			continue
 		}
-		// alive == false: a contradicted pane death.
+		// alive == false: a contradicted pane death, unless the agent's own
+		// exit watch says it still runs (step 3: the watch decides).
+		if r.AgentWatch != nil {
+			r.mu.RLock()
+			ps, ok := r.peers[id]
+			var watchedPeer *proto.Peer
+			if ok {
+				watchedPeer = clonePeer(ps.peer)
+			}
+			r.mu.RUnlock()
+			if watchedPeer != nil {
+				if alive, watched := r.AgentWatch(watchedPeer); watched && alive {
+					delete(rec.paneStrikes, id)
+					continue
+				}
+			}
+		}
 		strikes := rec.paneStrikes[id] + 1
 		rec.paneStrikes[id] = strikes
 		if strikes < proto.PaneUnsafeStrikeLimit {

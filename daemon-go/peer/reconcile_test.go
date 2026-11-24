@@ -562,3 +562,37 @@ func TestEvictStalePeers_EvidenceGate_SparesLivePeer(t *testing.T) {
 		t.Fatalf("evictStalePeers retired %s; evict must delete without retirement", doomed)
 	}
 }
+
+// Step 3 (rfcs/agent-container.md): while the agent's exit watch says it
+// runs, pane strikes do not count; once the watch says it ended, they do.
+func TestDemoteUnsafeConnectedPeersDefersToTheExitWatch(t *testing.T) {
+	ctx := context.Background()
+	pane, pid := "%42", 9001
+	transport := &pingTransport{connected: map[proto.PeerID]bool{}, pongs: map[proto.PeerID][]map[string]any{}}
+	r, _ := newRegistryWith(t, transport, fakeLive{alive: map[int]bool{9001: true}})
+	r.WithReconciliation(nil, nil, fakeProbe{}, ExperimentsConfig{}, 0, 0)
+	agentRuns := true
+	r.AgentWatch = func(*proto.Peer) (bool, bool) { return agentRuns, true }
+	id, _, err := r.AllocateAndRegister(ctx, AllocateParams{
+		Circle: "alpha", Backend: proto.AgentClaudeCode, Path: ptr("/work/x"), Machine: "m",
+		Role: proto.RoleAgent, PaneID: &pane, AgentPID: &pid,
+	})
+	if err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	transport.connected[id] = true
+	transport.pongs[id] = []map[string]any{{"pane_alive": false}}
+
+	for i := 1; i <= 4; i++ {
+		if n := r.demoteUnsafeConnectedPeers(ctx); n != 0 {
+			t.Fatalf("pass %d with the watched agent running: demoted %d", i, n)
+		}
+	}
+	agentRuns = false
+	for i := 1; i <= 2; i++ {
+		_ = r.demoteUnsafeConnectedPeers(ctx)
+	}
+	if n := r.demoteUnsafeConnectedPeers(ctx); n != 1 {
+		t.Fatalf("third strike after the watch saw the exit: demoted %d, want 1", n)
+	}
+}

@@ -169,3 +169,39 @@ func TestExitWatchDropsAStaleBind(t *testing.T) {
 		t.Fatalf("watching %+v; want the newer agent %d", got, newer.Process.Pid)
 	}
 }
+
+// Step 3: OnExit acts on an observed exit, and AgentAlive reports the watched
+// agent's state from the watch alone.
+func TestExitWatchOnExitAndAgentAlive(t *testing.T) {
+	rec := newRecordedEvents()
+	w := newTestExitWatch(rec)
+	defer w.Close()
+	exited := make(chan string, 1)
+	w.OnExit(func(id proto.PeerID, pane string) { exited <- string(id) + " " + pane })
+	agent := startAgent(t)
+	p := watchedPeer(agent.Process.Pid)
+	if _, watched := w.AgentAlive(&p); watched {
+		t.Fatal("watched before Bind")
+	}
+	w.Bind(p)
+	if alive, watched := w.AgentAlive(&p); !alive || !watched {
+		t.Fatalf("alive=%v watched=%v, want running and watched", alive, watched)
+	}
+	other := 1
+	if _, watched := w.AgentAlive(&proto.Peer{PeerID: p.PeerID, AgentPID: &other}); watched {
+		t.Fatal("a different pid counted as watched")
+	}
+	_ = agent.Process.Kill()
+	_ = agent.Wait()
+	select {
+	case got := <-exited:
+		if got != "repow-w %42" {
+			t.Fatalf("OnExit got %q", got)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("OnExit not called")
+	}
+	if alive, watched := w.AgentAlive(&p); alive || !watched {
+		t.Fatalf("after exit alive=%v watched=%v, want ended and watched", alive, watched)
+	}
+}

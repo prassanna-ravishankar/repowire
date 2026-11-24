@@ -353,3 +353,46 @@ func TestPaneDiedIsCheckedAgainstTheExitWatch(t *testing.T) {
 		t.Fatalf("status %s; the signal still decides", p.Status)
 	}
 }
+
+// Step 3: with the exit watch in authority, pane death leaves a peer whose
+// watched agent still runs online, and the agent's exit offlines it.
+func TestExitWatchAuthorityDecidesPaneBackedLiveness(t *testing.T) {
+	h := newTestHub(t)
+	mux := http.NewServeMux()
+	agentRuns := true
+	lh := NewLifecycleHandler(h.reg, h.transport, fakePaneLister{}, nil, nil, proto.CircleBoundarySession).
+		WithExitWatchAuthority(func(*proto.Peer) (bool, bool) { return agentRuns, true })
+	h.WithLifecycle(lh)
+	h.Routes(mux)
+	id := registerPanePeer(t, h.reg, "default", "%42")
+
+	postLifecycle(t, mux, "/hooks/lifecycle/pane-died", paneDiedRequest{PaneID: "%42"})
+	if p, _ := h.reg.GetPeer(id); p.Status != proto.StatusOnline {
+		t.Fatalf("after pane-died with the agent running: %s, want online", p.Status)
+	}
+
+	lh.HandleAgentExited(context.Background(), id, "%99") // another pane: not this peer's agent
+	if p, _ := h.reg.GetPeer(id); p.Status != proto.StatusOnline {
+		t.Fatalf("an exit for another pane offlined the peer")
+	}
+	agentRuns = false
+	lh.HandleAgentExited(context.Background(), id, "%42")
+	if p, _ := h.reg.GetPeer(id); p.Status != proto.StatusOffline {
+		t.Fatalf("after the agent's exit: %s, want offline", p.Status)
+	}
+}
+
+// Without authority (the default), pane death offlines as before even when
+// the watch says the agent runs.
+func TestPaneDiedStillDecidesWithoutExitWatchAuthority(t *testing.T) {
+	h := newTestHub(t)
+	mux := http.NewServeMux()
+	h.WithLifecycle(NewLifecycleHandler(h.reg, h.transport, fakePaneLister{}, nil, nil, proto.CircleBoundarySession).
+		WithExitWatch(signalRecorder{got: make(chan string, 1)}))
+	h.Routes(mux)
+	id := registerPanePeer(t, h.reg, "default", "%42")
+	postLifecycle(t, mux, "/hooks/lifecycle/pane-died", paneDiedRequest{PaneID: "%42"})
+	if p, _ := h.reg.GetPeer(id); p.Status != proto.StatusOffline {
+		t.Fatalf("status %s, want offline", p.Status)
+	}
+}

@@ -168,6 +168,12 @@ type ExperimentsConfig struct {
 	// GitTrailers enables the repository prepare-commit-msg hook installed by
 	// setup --git-hooks to add Repowire-Thread / Repowire-Session trailers.
 	GitTrailers bool `yaml:"git_trailers"`
+	// ExitWatchAuthority lets a spawned agent's own process exit decide its
+	// peer's liveness (rfcs/agent-container.md, step 3): the exit watch
+	// offlines it, and tmux pane and session signals, and reconcile's
+	// pane strikes, become hints while the watch says the agent runs. Off by
+	// default until the post-rollout soak (`repowire container report`).
+	ExitWatchAuthority bool `yaml:"exit_watch_authority"`
 }
 
 type RemoteToolApprovalConfig struct {

@@ -96,6 +96,48 @@ type LifecycleHandler struct {
 	exitWatch interface {
 		CheckSignal(ctx context.Context, signal string, p *proto.Peer)
 	}
+	// agentAlive, when set, lets the exit watch decide (step 3): a tmux
+	// signal does not offline a peer whose watched agent still runs.
+	agentAlive func(*proto.Peer) (alive, watched bool)
+}
+
+// WithExitWatchAuthority makes the exit watch decide liveness for the peers
+// it watches: tmux pane and session signals become hints while the watched
+// agent runs, and HandleAgentExited offlines the peer when it ends.
+func (h *LifecycleHandler) WithExitWatchAuthority(agentAlive func(*proto.Peer) (alive, watched bool)) *LifecycleHandler {
+	h.agentAlive = agentAlive
+	return h
+}
+
+// watchedAlive reports whether the exit watch has authority over p and says
+// its agent still runs, in which case a tmux signal is only a hint.
+func (h *LifecycleHandler) watchedAlive(p *proto.Peer) bool {
+	if h.agentAlive == nil {
+		return false
+	}
+	alive, watched := h.agentAlive(p)
+	return watched && alive
+}
+
+// HandleAgentExited offlines the peer whose watched agent exited, as pane
+// death does (non-terminal; transport severed; pane runtime state cleared).
+// The spawn ownership is kept: the pane may still hold a shell, and kill_peer
+// needs the proof to clean it up. A peer that moved to another pane, or is
+// already offline, is left alone.
+func (h *LifecycleHandler) HandleAgentExited(ctx context.Context, id proto.PeerID, paneID string) {
+	p, ok := h.reg.GetPeer(id)
+	if !ok || p == nil || p.PaneID == nil || *p.PaneID != paneID || p.Status == proto.StatusOffline {
+		return
+	}
+	if _, err := h.reg.MarkOffline(ctx, id, false); err != nil {
+		log.Printf("agent_exited: mark_offline %s failed: %v", id, err)
+		return
+	}
+	if h.transport != nil {
+		_ = h.transport.Close(id)
+	}
+	h.clearPaneRuntimeState(paneID)
+	log.Printf("agent_exited: %s (%s) marked offline by its exit watch", p.DisplayName, paneID)
 }
 
 // WithExitWatch checks every tmux offline signal against the agents' exit
@@ -169,6 +211,14 @@ func (h *LifecycleHandler) HandlePaneDied(ctx context.Context, paneID string) {
 	}
 
 	h.checkSignal("pane_died", p)
+	if h.watchedAlive(p) {
+		// Step 3: the agent's own process still runs; its exit watch will
+		// offline the peer when it ends.
+		// The pane itself is gone, so its runtime files go as for any dead pane.
+		h.clearPaneRuntimeState(paneID)
+		log.Printf("pane_died: %s (%s) kept online: its watched agent still runs", p.DisplayName, paneID)
+		return
+	}
 	// NON-terminal: pane death does not retire the identity (an orphan ws-hook
 	// reconnecting is legitimate here). MarkOffline(terminal=false) drives the
 	// transport-disconnect FSM event; OnOffline cascades query cancellation.
@@ -254,6 +304,10 @@ func (h *LifecycleHandler) HandleSessionClosed(ctx context.Context, sessionName 
 
 	for _, p := range doomed {
 		h.checkSignal("session_closed", p)
+		if h.watchedAlive(p) {
+			log.Printf("session_closed: %s kept online: its watched agent still runs", p.DisplayName)
+			continue
+		}
 		// NON-terminal: a closed tmux session can be re-created; the identity is
 		// not retired here.
 		if _, err := h.reg.MarkOffline(ctx, p.PeerID, false); err != nil {

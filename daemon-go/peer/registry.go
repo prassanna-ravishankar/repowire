@@ -193,6 +193,10 @@ type Registry struct {
 	// with a snapshot of the peer, after the registry lock is released. The
 	// agent container binds its exit watch here (rfcs/agent-container.md).
 	OnRegistered func(proto.Peer)
+	// AgentWatch, when set, reports a peer's agent as its exit watch sees it
+	// (rfcs/agent-container.md, step 3). While watched and alive, reconcile's
+	// pane strikes do not count against the peer. Called without r.mu held.
+	AgentWatch func(*proto.Peer) (alive, watched bool)
 
 	// OnTerminalOffline observes conclusive executor death after transport
 	// teardown and query cancellation. The daemon wires this to durable-job
