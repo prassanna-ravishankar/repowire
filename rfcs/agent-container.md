@@ -264,3 +264,8 @@ Its P2s are also in:
 - survival is stated per backend.
 
 Its P3, on attach, is also in.
+
+The second round found no P1s. Its three P2s are also in:
+- a Codex TUI peer's two lifetimes;
+- reconcile's three strikes are gated when authority switches;
+- tmux, not the container, closes a window, so a shared window is never removed.
