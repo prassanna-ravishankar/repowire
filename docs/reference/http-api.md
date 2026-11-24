@@ -78,9 +78,9 @@ same-origin browser requests are accepted without exposing the token to JavaScri
 dashboard's **Unregister peer** action and the CLI. It resolves the target to an
 immutable `peer_id`, records a hard retirement tombstone, and removes it from the
 registry. A still-running bridge cannot reclaim that closed identity. A peer
-whose execution a container plug owns is stopped through the plug first, as
-`kill_peer` does; if that stop fails the route answers 500 `kill_failed` and the
-peer stays registered.
+whose execution a container plug owns outright, such as a hosted agent, is
+stopped through that plug first, exactly as `kill_peer` does. If the stop
+fails, the route answers 500 `kill_failed` and keeps the peer registered.
 
 `POST /peer/unregister` is intentionally non-terminal. Transport and service
 clients use it to drop a registration before reconnecting the same session.

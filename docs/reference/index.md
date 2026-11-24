@@ -6,6 +6,7 @@ Stable signatures and exhaustive lists.
 - [CLI](cli.md) — every `repowire` subcommand.
 - [Configuration](configuration.md) — `~/.repowire/config.yaml` keys.
 - [HTTP API](http-api.md) — daemon route groups and auth.
+- [Relay HTTP API](relay-http.md) — relay pages, managed agent and admin routes.
 - [WebSocket events](websocket-events.md) — live delivery and dashboard event families.
 - [Hook payloads](hook-payloads.md) — normalized runtime hook concepts.
 - [Operate: architecture](../operate/architecture.md) — daemon modules, transports, and system boundaries.
