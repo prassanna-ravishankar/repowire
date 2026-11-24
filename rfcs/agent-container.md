@@ -260,6 +260,106 @@ The smallest first slice is step 1. It is the precondition for everything
 else and changes nothing a user sees. Step 2 is the smallest slice that
 produces evidence.
 
+## Claude Code plug options
+
+Claude Code is the main backend still in tmux. tmux was needed because most
+agents had no client/server mode. Codex (App Server), ACP agents and Pi now
+have one. This section records what Claude Code documents today (checked
+2026-11-24) and whether a non-tmux plug with acceptable observability looks
+feasible. Sources are the official docs at code.claude.com.
+
+**What exists**
+
+- **Long-lived headless process.**
+  - `claude -p --input-format stream-json --output-format stream-json`
+    can take several user messages on one process: a message still
+    queued when a turn ends starts a new turn. `--replay-user-messages`
+    echoes stdin turns on stdout. Sources: [CLI reference], [headless].
+  - The exact stdin message schema is not documented in those pages.
+- **Agent SDK** (TypeScript and Python) "runs the Claude Code binary"
+  ([Agent SDK overview]).
+  - Streaming input is an async generator in TypeScript and
+    `ClaudeSDKClient.query()` in Python.
+  - `interrupt()` ends the current response and keeps the session open.
+    `setPermissionMode()` and `close()` are also available.
+  - `canUseTool` approves or denies each tool call that no rule already
+    decided, and it may stay pending indefinitely.
+  - Sources: [streaming input], [SDK permissions], [TypeScript SDK].
+- **Permissions without a TUI.** These are documented for `-p`:
+  `--permission-mode`, `--allowedTools`, `--permission-prompt-tool` (routes
+  prompts to an MCP tool), and `--permission-prompts none`. The workspace
+  trust dialog is not shown in `-p` or SDK sessions ([headless],
+  [permissions]).
+- **Hooks and MCP.** Hook events fire wherever Claude Code runs. Project
+  hooks run under `-p` unless `--bare` is used. `--mcp-config` loads MCP
+  servers in `-p` ([hooks], [headless]). Whether `Notification` fires under
+  `-p` is not stated.
+- **Continuity.**
+  - `--resume <id>`, `--continue` and `--fork-session` are documented, and
+    the SDK lets the caller choose the session id.
+  - A session created by `-p` or the SDK can later be opened interactively
+    with `claude --resume <id>`.
+  - Two processes writing the same session can lose transcript messages,
+    so the docs advise `--fork-session` for each.
+  - Source: [sessions].
+- **Live observation.**
+  - stream-json carries token deltas (`--include-partial-messages`), hook
+    events (`--include-hook-events`), `system/init`, retries and
+    permission denials ([headless]).
+  - Transcripts are JSONL under `~/.claude/projects/`. Their entry format
+    is internal and may change ([sessions]).
+- **Background sessions with attach** (research preview).
+  - `claude --bg` runs a session under Claude Code's own supervisor.
+  - `claude attach <id>` opens a full interactive TUI that a human can
+    type into, and detaching leaves it running.
+  - `claude logs`, `claude stop` and `claude agents --json` (the
+    supported way to read state from outside) round it out.
+  - No control API or socket for an external daemon is documented
+    ([agent view]).
+- **Remote Control.** `claude remote-control` is a server mode reached
+  through Anthropic's service: outbound HTTPS only, and a claude.ai login is
+  required. Its use with `-p` or SDK sessions is not documented
+  ([remote control]).
+- **The inbox socket** Repowire uses today for delivery is not covered in
+  the public docs.
+
+**Assessment**
+
+- A daemon-hosted Claude Code plug is feasible with documented features.
+  - One long-lived stream-json process (or SDK client) per agent can take
+    multiple turns, be interrupted, and resume by id.
+  - Its permissions can go through `canUseTool` or a permission-prompt
+    MCP tool, the human's approval surfaces included.
+  - Its exit is a child exit, like ACP.
+  - stream-json gives the dashboard a live view, and hook events still
+    fire.
+- The gap is a human taking over a live session. The daemon would own the
+  stream, and `claude attach` only reaches sessions under Claude Code's own
+  supervisor. Two writers on one session can lose messages, so takeover
+  would be stop, then `claude --resume <id>` in a TUI, then hand back by
+  resuming headless. That handoff is not documented as a supported flow.
+- Two shapes follow:
+  - **(a) SDK or stream-json plug.** Observe-only live, with takeover by
+    stop-and-resume. It's the right fit for agents nobody steers.
+  - **(b) `claude --bg` as the plug.** Live attach comes for free, but
+    `claude agents --json` is its only state interface, and it is a
+    research preview.
+- Recommendation: (a) for spawned workers once the ACP plug exists, and
+  keep tmux for Claude Code sessions a human wants to steer. Revisit (b) if
+  Claude Code documents a control interface for background sessions.
+
+[CLI reference]: https://code.claude.com/docs/en/cli-reference.md
+[headless]: https://code.claude.com/docs/en/headless.md
+[Agent SDK overview]: https://code.claude.com/docs/en/agent-sdk/overview.md
+[streaming input]: https://code.claude.com/docs/en/agent-sdk/streaming-vs-single-mode.md
+[SDK permissions]: https://code.claude.com/docs/en/agent-sdk/permissions.md
+[TypeScript SDK]: https://code.claude.com/docs/en/agent-sdk/typescript.md
+[permissions]: https://code.claude.com/docs/en/permissions.md
+[hooks]: https://code.claude.com/docs/en/hooks.md
+[sessions]: https://code.claude.com/docs/en/sessions.md
+[agent view]: https://code.claude.com/docs/en/agent-view.md
+[remote control]: https://code.claude.com/docs/en/remote-control.md
+
 ## Open questions
 
 - Linux without pidfd (before 5.3): fall back to the lazy probe on request,
