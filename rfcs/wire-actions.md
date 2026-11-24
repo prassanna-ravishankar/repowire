@@ -51,11 +51,15 @@ holder's late work harmless.
 
 ## Reassign
 
-`reassign(thread_id, to, note?)`
+`reassign(thread_id, to, reason)`
+
+A thread need not be stuck: an orchestrator may move an ask because another
+peer fits it better. The reason is required, short (at most 200
+characters), and recorded on the thread.
 
 - **Ownership.** The holder moves from H to N. The correlation id, the
   asker, the reply path and the reply mode stay as they are. The hop is
-  recorded as `{from: H, to: N, by: actor, note}`, so attribution survives:
+  recorded as `{from: H, to: N, by: actor, reason}`, so attribution survives:
   H did not hand it off; the actor moved it. The generation increments, and
   any later ack, decline or answer from H is refused, as for a former
   delegator. A tracker operation `Reassign(cid, by, to, note)` shares
@@ -63,20 +67,22 @@ holder's late work harmless.
   delegate's "the caller must be the holder" rule. It is not `Delegate`
   with that check cleared, since that would erase who acted.
 - **The new holder N** receives the ask from the actor, never as the asker:
-  `[reassigned by @orch from @H for @asker: note]`, followed by the ask as
+  `[reassigned by @orch from @H for @asker: reason]`, followed by the ask as
   delegate frames it. That passes the body on, which is why protected
   threads are refused for agents.
 - **The former holder H** gets a notify with no body: ask `#cid` moved to
   @N by @orch, and a reply from H will be refused.
-- **The asker** is not messaged, so a routine reassign makes no noise. Its
-  `wait_on_ack`, its pending view and the wire view show the new holder, and
-  N's reply arrives through the usual reply path, attributed to N with the
-  hop chain, as after a delegation.
+- **The asker** gets one line: `your ask #cid moved from @H to @N by @orch:
+  reason`. The asker owns the ask, so it should not first learn of the move
+  from an unexpected reply. N's reply then arrives through the usual reply
+  path, attributed to N with the hop chain, as after a delegation.
 - **On a failed delivery to N**, the hop is undone under the claim, H holds
   the ask again, and the action fails loudly. Neither H nor the asker is
-  told, because nothing changed.
-- **Recorded:** a `reassigned` stage (peer N, detail `by`, `from`) and an
-  `ask_reassigned` event. The wire reducer treats `reassigned` as a hop,
+  told, because nothing changed: both notices go out only after N accepted
+  the ask.
+- **Recorded:** a `reassigned` stage (peer N, detail `by`, `from`, and the
+  reason, which is agent-written text and so counts as a body, not
+  envelope, in the wire view) and an `ask_reassigned` event. The wire reducer treats `reassigned` as a hop,
   like `delegated`.
 
 ## Nudge
@@ -132,11 +138,10 @@ fields.
 4. The MCP tools for orchestrators, behind the protected-thread and circle
    rules.
 
-## Open questions
+## Decisions and open questions
 
-- Should reassign require the thread to be stuck first? This note allows it
-  on any open, local thread that is not refused above, relying on
-  generations to make the former holder's late work harmless.
-- Should the asker be told on reassign? This note says no, keeping it
-  visible in the wire view and in the reply's attribution instead.
-- Is one nudge per 10 minutes per thread the right limit?
+- Decided (orchestrator, 2026-11-24, under Prass's autonomy grant): a
+  reassign does not require the thread to be stuck, and it requires a short
+  reason, recorded on the thread.
+- Decided (same): the asker is told on reassign, in one line.
+- Open: is one nudge per 10 minutes per thread the right limit?
