@@ -41,8 +41,9 @@ type Config struct {
 }
 
 // A retention setting is 0 (keep forever) or minRetentionDays to
-// maxRetentionDays. The floor outlives live state the swept rows back (an
-// open ask's inbox item lives as long as the ask, 24 hours by default); the
+// maxRetentionDays. The floor, raised to the ask lifetime
+// (daemon.prune_max_age_hours) when that is longer, outlives the live state
+// swept rows back: an open ask's inbox item carries the human's reply. The
 // ceiling is what a time.Duration holds with room to spare (100 years).
 const (
 	minRetentionDays = 7
@@ -626,14 +627,18 @@ func normalize(cfg *Config) {
 		cfg.Relay.URL = defaultRelayURL
 	}
 	defaults := Defaults().Retention
+	floor := float64(minRetentionDays)
+	if asks := cfg.Daemon.PruneMaxAgeHours / 24; asks > floor && asks <= maxRetentionDays {
+		floor = asks
+	}
 	for _, days := range []struct {
 		value    *float64
 		fallback float64
 		key      string
 	}{{&cfg.Retention.ContentDays, defaults.ContentDays, "content_days"}, {&cfg.Retention.RecordsDays, defaults.RecordsDays, "records_days"}} {
-		if v := *days.value; v != 0 && !(v >= minRetentionDays && v <= maxRetentionDays) {
-			*days.value = days.fallback
-			cfg.Warnings = append(cfg.Warnings, fmt.Sprintf("config: retention.%s is ignored: it must be 0 (keep forever) or %d to %d days", days.key, minRetentionDays, maxRetentionDays))
+		if v := *days.value; v != 0 && !(v >= floor && v <= maxRetentionDays) {
+			*days.value = max(days.fallback, floor)
+			cfg.Warnings = append(cfg.Warnings, fmt.Sprintf("config: retention.%s is ignored: it must be 0 (keep forever) or %g to %d days", days.key, floor, maxRetentionDays))
 		}
 	}
 	if len(cfg.Experiments.RemoteToolApproval.GatedTools) == 0 {

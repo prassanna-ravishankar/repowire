@@ -23,9 +23,9 @@ retention:
   records_days: 180   # the rows that say who did what, when, and how it ended
 ```
 
-`0` keeps a class forever; otherwise 7 to 36500 days. The 7-day floor
-outlives an open ask (24 hours by default), whose inbox item and refs carry
-the human's reply. Any other value warns and keeps the default.
+`0` keeps a class forever; otherwise 7 to 36500 days, and at least the ask
+lifetime (`daemon.prune_max_age_hours`, 24 hours by default), so an open
+ask's inbox item and refs, which carry the human's reply, outlive it. Any other value warns and keeps the default.
 When `records_days` is shorter, content goes with its record.
 
 | Store | At `content_days` | At `records_days` |
