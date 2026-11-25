@@ -13,17 +13,25 @@ import (
 // one.
 func TestReportedPIDPrefersTheLiveSessionAgent(t *testing.T) {
 	self := os.Getpid()
-	if got := reportedPID(self, 4242); got != self {
+	started, ok := ProcessStartTime(self)
+	if !ok {
+		t.Fatal("no start time for this process")
+	}
+	if got := reportedPID(agentProcess{pid: self, started: started}, 4242); got != self {
 		t.Fatalf("live session pid: reported %d, want %d", got, self)
 	}
 	gone := exec.Command("true")
 	if err := gone.Run(); err != nil {
 		t.Fatal(err)
 	}
-	if got := reportedPID(gone.Process.Pid, self); got != self {
+	if got := reportedPID(agentProcess{pid: gone.Process.Pid}, self); got != self {
 		t.Fatalf("exited session pid: reported %d, want the watched %d", got, self)
 	}
-	if got := reportedPID(0, self); got != self {
+	if got := reportedPID(agentProcess{}, self); got != self {
 		t.Fatalf("no session pid: reported %d, want the watched %d", got, self)
+	}
+	// A live pid whose start time differs is a recycled pid, not the agent.
+	if got := reportedPID(agentProcess{pid: self, started: "Thu Jan  1 00:00:00 1970"}, 4242); got != 4242 {
+		t.Fatalf("recycled session pid: reported %d, want the watched 4242", got)
 	}
 }
