@@ -64,7 +64,7 @@ func TestAskPathsRecordProvenance(t *testing.T) {
 	if th := thread(cid); th.Protected || !same(parties(th), alpha, beta, beta, gamma) {
 		t.Fatalf("delegated: protected %q, provenance %+v", th.ProtectedBy, th.Provenance)
 	}
-	if _, err := r.h.reassignAsk(ctx, cid, "delta", "release owner"); err != nil {
+	if _, err := r.h.reassignAsk(ctx, operator, cid, "delta", "release owner"); err != nil {
 		t.Fatal(err)
 	}
 	if th := thread(cid); th.Protected || !same(parties(th), alpha, beta, beta, gamma, delta) {

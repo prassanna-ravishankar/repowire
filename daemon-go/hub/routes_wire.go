@@ -18,7 +18,10 @@ import (
 
 // Wire view surfaces (rfcs/wire-observability.md): wire_query and wire_show
 // for a proven orchestrator over MCP, and GET /wire/threads[/{id}] for the
-// operator. All read service.Wire; none of them carries message text.
+// operator. All read service.Wire; none of them carries message text. The
+// actions (rfcs/wire-actions.md) are POST routes for the operator and the
+// reassign, nudge and cancel_ask tools for an orchestrator; both reach
+// wireAction (ask_actions.go), which keeps the rules.
 
 // WithWire attaches the wire view.
 func (h *Hub) WithWire(w *service.Wire) *Hub {
@@ -108,24 +111,7 @@ func (h *Hub) handleWireAction(action string) http.HandlerFunc {
 		if !decodeJSON(w, r, &req) {
 			return
 		}
-		cid, ok, err := h.wire.Resolve(r.Context(), r.PathValue("thread_id"))
-		if err != nil {
-			writeJSONError(w, http.StatusInternalServerError, err.Error())
-			return
-		}
-		if !ok {
-			writeJSONError(w, http.StatusNotFound, "No thread: "+r.PathValue("thread_id"))
-			return
-		}
-		var result WireActionResult
-		switch action {
-		case "reassign":
-			result, err = h.reassignAsk(r.Context(), cid, req.To, req.Reason)
-		case "cancel":
-			result, err = h.cancelAsk(r.Context(), cid, req.Reason)
-		default:
-			result, err = h.nudgeAsk(r.Context(), cid, req.Note)
-		}
+		result, err := h.wireAction(r.Context(), operator, action, r.PathValue("thread_id"), req)
 		if err != nil {
 			writeRouteError(w, err)
 			return
@@ -223,6 +209,22 @@ type mcpWireVisibilityArgs struct {
 	Mode string `json:"mode" jsonschema:"visible (default) or private. An orchestrator sees only the envelope of a private peer's threads (who, state, age), never their bodies, and cannot act on them"`
 }
 
+type mcpWireReassignArgs struct {
+	ThreadID string `json:"thread_id" jsonschema:"a thread id from wire_query"`
+	To       string `json:"to" jsonschema:"the new holder, a peer in your circle (display name or peer_id)"`
+	Reason   string `json:"reason" jsonschema:"why, at most 200 characters; the asker, the former holder and the new holder see it"`
+}
+
+type mcpWireNudgeArgs struct {
+	ThreadID string `json:"thread_id" jsonschema:"a thread id from wire_query"`
+	Note     string `json:"note,omitempty" jsonschema:"optional note for the holder, at most 200 characters"`
+}
+
+type mcpWireCancelArgs struct {
+	ThreadID string `json:"thread_id" jsonschema:"a thread id from wire_query"`
+	Reason   string `json:"reason" jsonschema:"why, at most 200 characters; the asker gets it as the ask's outcome"`
+}
+
 type mcpWireShowArgs struct {
 	ThreadID string `json:"thread_id" jsonschema:"a thread id from wire_query"`
 	Cursor   int    `json:"cursor,omitempty" jsonschema:"resume the timeline after this stage seq"`
@@ -232,7 +234,7 @@ type mcpWireShowArgs struct {
 // not depend on wiring order; without a wire view they answer an error.
 func registerWireTools(srv *mcp.Server, h *Hub) {
 	addMCPTool(srv, "wire_query", "Orchestrator only: list ask and notify threads across every circle (who asked whom, who holds it now, its state, and stuck signals). Metadata only, never message text.", func(ctx context.Context, caller string, a mcpWireQueryArgs) (string, error) {
-		if err := h.requireWireCaller(caller, "wire_query"); err != nil {
+		if _, err := h.requireWireCaller(caller, "wire_query"); err != nil {
 			return "", err
 		}
 		limit := ""
@@ -251,7 +253,8 @@ func registerWireTools(srv *mcp.Server, h *Hub) {
 		return page.Text(time.Now()), nil
 	})
 	addMCPTool(srv, "wire_show", "Orchestrator only: one thread's envelope and stage timeline. Metadata only, never message text.", func(ctx context.Context, caller string, a mcpWireShowArgs) (string, error) {
-		if err := h.requireWireCaller(caller, "wire_show"); err != nil {
+		orch, err := h.requireWireCaller(caller, "wire_show")
+		if err != nil {
 			return "", err
 		}
 		h.reg.LazyRepair(ctx)
@@ -262,7 +265,20 @@ func registerWireTools(srv *mcp.Server, h *Hub) {
 		if !ok {
 			return "", fmt.Errorf("no thread %s", service.WireCell(a.ThreadID))
 		}
-		return t.Text(a.Cursor), nil
+		text := t.Text(a.Cursor)
+		if h.wire.OrchestratorMay(ctx, t, orch.Circle, nil) == nil {
+			text += t.ActionsText()
+		}
+		return text, nil
+	})
+	registerWireActionTool(srv, h, "reassign", "reassign", "Orchestrator only: move an open ask to another peer in your circle. Refused on a protected thread or one with a party outside your circle. The new holder gets the ask; the asker and the former holder are told.", func(a mcpWireReassignArgs) (string, WireActionRequest) {
+		return a.ThreadID, WireActionRequest{To: a.To, Reason: a.Reason}
+	})
+	registerWireActionTool(srv, h, "nudge", "nudge", "Orchestrator only: remind an open ask's holder, at most once per 10 minutes per thread. Refused on a protected thread or one with a party outside your circle.", func(a mcpWireNudgeArgs) (string, WireActionRequest) {
+		return a.ThreadID, WireActionRequest{Note: a.Note}
+	})
+	registerWireActionTool(srv, h, "cancel_ask", "cancel", "Orchestrator only: close an open ask. The asker gets the cancellation as its outcome and the holder is told to stop. Refused on a protected thread or one with a party outside your circle.", func(a mcpWireCancelArgs) (string, WireActionRequest) {
+		return a.ThreadID, WireActionRequest{Reason: a.Reason}
 	})
 	addMCPTool(srv, "set_wire_visibility", "Choose whether orchestrators may act on your ask threads: visible (default) or private. Private threads still show their envelope in the wire view.", func(ctx context.Context, caller string, a mcpWireVisibilityArgs) (string, error) {
 		self, err := h.mcpCallerPeer(caller, "set_wire_visibility")
@@ -276,19 +292,36 @@ func registerWireTools(srv *mcp.Server, h *Hub) {
 	})
 }
 
+// registerWireActionTool adapts one wire action to an MCP tool: the caller
+// must be a proven orchestrator, and wireAction applies the thread rules.
+func registerWireActionTool[T any](srv *mcp.Server, h *Hub, tool, action, description string, req func(T) (string, WireActionRequest)) {
+	addMCPTool(srv, tool, description, func(ctx context.Context, caller string, a T) (string, error) {
+		orch, err := h.requireWireCaller(caller, tool)
+		if err != nil {
+			return "", err
+		}
+		threadID, body := req(a)
+		result, err := h.wireAction(ctx, wireActor{peer: orch}, action, threadID, body)
+		if err != nil {
+			return "", err
+		}
+		return jsonResult(result), nil
+	})
+}
+
 // requireWireCaller admits a proven peer holding the orchestrator role, on
 // every call, so a demoted orchestrator loses the view at once. Anonymous
 // HTTP MCP is refused: the view reads other peers' threads.
-func (h *Hub) requireWireCaller(caller, tool string) error {
+func (h *Hub) requireWireCaller(caller, tool string) (*proto.Peer, error) {
 	if h.wire == nil {
-		return fmt.Errorf("%s: the wire view is not available on this daemon", tool)
+		return nil, fmt.Errorf("%s: the wire view is not available on this daemon", tool)
 	}
 	p, err := h.mcpCallerPeer(caller, tool)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if p.Role != proto.RoleOrchestrator {
-		return fmt.Errorf("%s requires the orchestrator role", tool)
+		return nil, fmt.Errorf("%s requires the orchestrator role", tool)
 	}
-	return nil
+	return p, nil
 }

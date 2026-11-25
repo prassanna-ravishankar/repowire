@@ -1,6 +1,7 @@
 package service
 
 import (
+	"encoding/json"
 	"fmt"
 	"strconv"
 	"strings"
@@ -97,6 +98,30 @@ func (t WireThread) Text(after int) string {
 			break
 		}
 		b.WriteString(line)
+	}
+	return b.String()
+}
+
+// ActionsText lists the actions an orchestrator may take on t, each as a
+// tool name and its JSON arguments, so no field is spliced into text. Angle
+// brackets mark the values the caller fills in.
+func (t WireThread) ActionsText() string {
+	var b strings.Builder
+	b.WriteString("\n\naction\targuments")
+	for _, a := range []struct {
+		tool string
+		args map[string]string
+	}{
+		{"reassign", map[string]string{"thread_id": t.ID, "to": "<peer>", "reason": "<why, at most 200 characters>"}},
+		{"nudge", map[string]string{"thread_id": t.ID, "note": "<optional>"}},
+		{"cancel_ask", map[string]string{"thread_id": t.ID, "reason": "<why, at most 200 characters>"}},
+	} {
+		// Not json.Marshal, which would escape the angle brackets.
+		var raw strings.Builder
+		enc := json.NewEncoder(&raw)
+		enc.SetEscapeHTML(false)
+		_ = enc.Encode(a.args)
+		fmt.Fprintf(&b, "\n%s\t%s", a.tool, strings.TrimSuffix(raw.String(), "\n"))
 	}
 	return b.String()
 }
