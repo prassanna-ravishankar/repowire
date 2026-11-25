@@ -139,11 +139,21 @@ func TestSwarmRestoreAppliesThePlanInASandbox(t *testing.T) {
 		t.Fatalf("apply exit %d", code)
 	}
 
-	out, err := srv.Run("list-panes", "-s", "-t", "work", "-F", "#{window_index}\t#{window_name}\t#{pane_index}\t#{pane_current_command}\t#{pane_id}")
-	if err != nil {
-		t.Fatal(err)
+	// A fresh pane's process may not have exec'd its command yet (on Linux
+	// it reads "tmux" for a moment): wait, bounded, for both agents to run.
+	var out string
+	var lines []string
+	for deadline := time.Now().Add(5 * time.Second); ; {
+		var err error
+		if out, err = srv.Run("list-panes", "-s", "-t", "work", "-F", "#{window_index}\t#{window_name}\t#{pane_index}\t#{pane_current_command}\t#{pane_id}"); err != nil {
+			t.Fatal(err)
+		}
+		lines = strings.Split(out, "\n")
+		if len(lines) == 4 && strings.Contains(lines[0], "\tsleep\t") && strings.Contains(lines[1], "\tsleep\t") || !time.Now().Before(deadline) {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
 	}
-	lines := strings.Split(out, "\n")
 	if len(lines) != 4 {
 		t.Fatalf("panes:\n%s", out)
 	}
