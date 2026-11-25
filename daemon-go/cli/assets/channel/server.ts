@@ -76,6 +76,12 @@ session.connect(async (msg) => {
       meta,
     },
   });
+}, async (notice) => {
+  // The daemon closed this peer for good: say so in the session itself.
+  await mcp.notification({
+    method: "notifications/claude/channel",
+    params: { content: notice, meta: { from_peer: "repowire:operator", msg_type: "system" } },
+  });
 });
 
 function formatInboundContent(msg: { fromPeer: string; fromRole?: string; type: string; correlationId?: string; messageId?: string; content: string }): string {

@@ -127,6 +127,9 @@ export interface InboundMessage {
 
 export type MessageHandler = (msg: InboundMessage) => void | Promise<void>;
 
+/** Called once when the daemon closes this peer for good and the session stops reconnecting. */
+export type StopHandler = (notice: string) => void | Promise<void>;
+
 function attachmentText(attachments: unknown): string {
   if (!Array.isArray(attachments) || attachments.length === 0) return "";
   const lines = ["", "Attachments:"];
@@ -148,6 +151,15 @@ export class DaemonSession {
   private stopped = false;
   private readonly pendingCorrelations = new Map<string, string>(); // correlation_id -> from_peer
   private onMessage: MessageHandler = () => {};
+  private onStop: StopHandler = () => {};
+  private readonly daemonUrl: string;
+  private readonly reconnectMs: number;
+
+  /** daemonUrl and reconnectMs default to the environment and 2s; tests set them. */
+  constructor(opts: { daemonUrl?: string; reconnectMs?: number } = {}) {
+    this.daemonUrl = opts.daemonUrl ?? DAEMON_URL;
+    this.reconnectMs = opts.reconnectMs ?? 2000;
+  }
 
   /** The canonical display_name assigned by the daemon (proposed name until connected). */
   get name(): string {
@@ -158,14 +170,20 @@ export class DaemonSession {
     return this.ws?.readyState === WebSocket.OPEN;
   }
 
-  connect(onMessage: MessageHandler): void {
+  /**
+   * Connects and keeps reconnecting. onStop hears when an operator close
+   * ends that (#628): the session has left the mesh and should be told so
+   * where it reads, not only on stderr.
+   */
+  connect(onMessage: MessageHandler, onStop?: StopHandler): void {
     this.onMessage = onMessage;
+    if (onStop) this.onStop = onStop;
     void this.open();
   }
 
   private async open(): Promise<void> {
     const placement = await tmuxPlacement();
-    const url = `${DAEMON_URL.replace("http://", "ws://").replace("https://", "wss://")}/ws`;
+    const url = `${this.daemonUrl.replace("http://", "ws://").replace("https://", "wss://")}/ws`;
 
     this.ws = new WebSocket(url);
 
@@ -187,6 +205,17 @@ export class DaemonSession {
         if (next === "stop") {
           this.stopped = true;
           console.error(`repowire: peer ${this.sessionId} was closed by the operator; not reconnecting`);
+          const notice =
+            `Repowire closed this session's peer (${this.displayName}, ${this.sessionId}) at an operator's request. ` +
+            "It has left the mesh and will not reconnect: peers can no longer reach it, and its repowire tools will fail. " +
+            "Restart the session to rejoin as a new peer.";
+          // A failing hook (stdio already gone) must not reject inside the ws
+          // listener: an unhandled rejection would exit the channel process.
+          try {
+            await this.onStop(notice);
+          } catch (err) {
+            console.error(`repowire: could not tell the session it left the mesh: ${err instanceof Error ? err.message : String(err)}`);
+          }
         } else if (next === "forget") {
           console.error(`repowire: peer ${this.sessionId} is retired; registering afresh`);
           this.sessionId = null;
@@ -234,7 +263,7 @@ export class DaemonSession {
     });
 
     this.ws.on("close", () => {
-      console.error("repowire: daemon connection closed, reconnecting...");
+      console.error(`repowire: daemon connection closed${this.stopped ? "" : ", reconnecting..."}`);
       this.ws = null;
       this.scheduleReconnect();
     });
@@ -249,7 +278,7 @@ export class DaemonSession {
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null;
       void this.open();
-    }, 2000);
+    }, this.reconnectMs);
   }
 
   /** Send a query reply back to the daemon. Returns false if not connected. */
