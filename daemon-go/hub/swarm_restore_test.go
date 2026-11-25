@@ -302,3 +302,44 @@ func TestSwarmRestoreRoutesFollowTheExperiment(t *testing.T) {
 		t.Fatalf("an unknown schema: %d", rec.Code)
 	}
 }
+
+// The manifest is a file the user can edit; it decides only where panes go
+// and which peer goes in each. A launch acts on the daemon's own records: an
+// entry whose backend, path or session disagrees with them, or whose peer the
+// daemon does not know, is not relaunched, even when a session file exists
+// for what the manifest says.
+func TestSwarmPlanTrustsTheDaemonNotTheManifest(t *testing.T) {
+	r := newSwarmRig(t)
+	edit := r.register("edit", "", proto.RoleAgent, "")
+	r.offline(edit)
+	r.sessionFile("edit")
+	r.sessionFile("other") // a session file for the forged path and session exists too
+	forgedPath := agentFor(edit, "edit", proto.RoleAgent)
+	forgedPath.Path = "/work/other"
+	forgedSession := agentFor(edit, "edit", proto.RoleAgent)
+	forgedSession.RuntimeSessionID = "sess-other"
+	forgedBackend := agentFor(edit, "edit", proto.RoleAgent)
+	forgedBackend.Backend = "codex"
+	stranger := agentFor("repow-work-stranger", "stranger", proto.RoleAgent)
+	geo := func(i int) service.PaneGeometry {
+		return service.PaneGeometry{Session: "work", WindowIndex: 1, WindowName: "w", PaneIndex: i, PaneID: "%" + string(rune('1'+i))}
+	}
+	plan, err := r.h.swarmPlan(r.ctx, SwarmManifest{Schema: SwarmSchema, Panes: []SwarmPane{
+		{PaneGeometry: geo(0), Agent: forgedPath},
+		{PaneGeometry: geo(1), Agent: forgedSession},
+		{PaneGeometry: geo(2), Agent: forgedBackend},
+		{PaneGeometry: geo(3), Agent: stranger},
+		{PaneGeometry: geo(4), Agent: agentFor(edit, "edit", proto.RoleAgent)},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, want := range []string{"path", "session", "backend", "unknown to this daemon"} {
+		if p := plan.Panes[i]; p.Action != SwarmShell || !strings.Contains(p.Skip, want) {
+			t.Errorf("pane %d = action %s skip %q, want a shell skipped for %q", i, p.Action, p.Skip, want)
+		}
+	}
+	if p := plan.Panes[4]; p.Action != SwarmLaunch || p.CWD != "/work/edit" || !strings.Contains(p.Command, "sess-edit") {
+		t.Fatalf("the faithful entry = %+v", p)
+	}
+}

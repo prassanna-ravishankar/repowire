@@ -18,10 +18,11 @@ import (
 // fakeRestoreDaemon answers /swarm/plan with plan and records what restore
 // tells it, in order.
 type fakeRestoreDaemon struct {
-	mu     sync.Mutex
-	plan   restorePlan
-	events []string
-	placed []placedPane
+	mu           sync.Mutex
+	refusePlaced bool
+	plan         restorePlan
+	events       []string
+	placed       []placedPane
 }
 
 func (f *fakeRestoreDaemon) serve(t *testing.T) *client {
@@ -35,6 +36,11 @@ func (f *fakeRestoreDaemon) serve(t *testing.T) *client {
 		case "/swarm/placed":
 			var pl placedPane
 			_ = json.NewDecoder(r.Body).Decode(&pl)
+			if f.refusePlaced {
+				w.WriteHeader(http.StatusUnprocessableEntity)
+				_, _ = w.Write([]byte(`{"detail":"no current plan"}`))
+				return
+			}
 			f.placed = append(f.placed, pl)
 			f.events = append(f.events, "placed "+pl.PeerID)
 			_, _ = w.Write([]byte(`{"ok":true}`))
@@ -227,4 +233,18 @@ func layoutGeometry(layout string) string {
 		layout = rest
 	}
 	return regexp.MustCompile(`(\d+x\d+,\d+,\d+),\d+`).ReplaceAllString(layout, "$1")
+}
+
+// A launch the daemon would not record has no ownership proof (kill_peer and
+// restart cannot act on its pane): restore reports it and fails.
+func TestSwarmRestoreFailsWhenALaunchIsNotRecorded(t *testing.T) {
+	srv := tmuxtest.New(t, tmuxtest.FollowEnv())
+	f := &fakeRestoreDaemon{refusePlaced: true, plan: restorePlan{Schema: 1, PlanID: "plan-1", Panes: []restorePane{
+		{Session: "work", WindowIndex: 0, WindowName: "a", Action: "launch", CWD: "/tmp", PeerID: "repow-a", Command: "sleep 300"},
+	}}}
+	opts := fastRestore
+	opts.socket = srv.Socket
+	if code := runRestore(f.serve(t), writeManifest(t), opts); code == 0 {
+		t.Fatal("a launch the daemon did not record passed as restored")
+	}
 }

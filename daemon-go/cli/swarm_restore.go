@@ -111,7 +111,7 @@ func runRestore(c *client, file string, opts restoreOptions) int {
 	if err := t.refuseExisting(plan); err != nil {
 		return fatal(err)
 	}
-	placed, err := applyPlan(c, t, plan, opts)
+	placed, unrecorded, err := applyPlan(c, t, plan, opts)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "repowire: restore stopped:", err)
 	}
@@ -123,7 +123,12 @@ func runRestore(c *client, file string, opts restoreOptions) int {
 		}
 		fmt.Println(line)
 	}
-	if err != nil {
+	// A launch the daemon did not record has no ownership proof, so
+	// kill_peer and restart cannot act on its pane: say so, and fail.
+	for _, u := range unrecorded {
+		fmt.Printf("%-18s %s in %s (no ownership record: kill_peer and restart cannot act on this pane)\n", "unrecorded", u.PeerID, u.PaneID)
+	}
+	if err != nil || len(unrecorded) > 0 {
 		return 1
 	}
 	return 0
@@ -268,7 +273,7 @@ func planSessions(plan restorePlan) []string {
 // agent whose path an earlier launch shares waits for that one to register
 // first (Codex: its process start), so two sessions in one folder never race
 // into twins. Returns what it placed.
-func applyPlan(c *client, t tmuxAt, plan restorePlan, opts restoreOptions) ([]placedPane, error) {
+func applyPlan(c *client, t tmuxAt, plan restorePlan, opts restoreOptions) ([]placedPane, []placedPane, error) {
 	panes := append([]restorePane(nil), plan.Panes...)
 	sort.SliceStable(panes, func(i, j int) bool {
 		a, b := panes[i], panes[j]
@@ -280,13 +285,15 @@ func applyPlan(c *client, t tmuxAt, plan restorePlan, opts restoreOptions) ([]pl
 		}
 		return a.PaneIndex < b.PaneIndex
 	})
-	var placed []placedPane
+	var placed, unrecorded []placedPane
 	lastAt := map[string]placedPane{} // path → the last agent launched there
 	layouts := map[string]string{}
 	created := map[string]bool{}
 	lastPane := map[string]string{} // window → its newest pane, split next so panes keep their order
 	for _, p := range panes {
-		window := p.Session + ":" + strconv.Itoa(p.WindowIndex)
+		// "=" makes tmux match the session name exactly, never a prefix of
+		// another session's name.
+		window := "=" + p.Session + ":" + strconv.Itoa(p.WindowIndex)
 		cmd := ""
 		if p.Action == "launch" {
 			cmd = p.Command
@@ -296,7 +303,7 @@ func applyPlan(c *client, t tmuxAt, plan restorePlan, opts restoreOptions) ([]pl
 		}
 		paneID, err := t.place(p, window, created, lastPane[window], cmd)
 		if err != nil {
-			return placed, err
+			return placed, unrecorded, err
 		}
 		lastPane[window] = paneID
 		layouts[window] = p.WindowLayout
@@ -304,6 +311,7 @@ func applyPlan(c *client, t tmuxAt, plan restorePlan, opts restoreOptions) ([]pl
 			pl := placedPane{PlanID: plan.PlanID, PaneID: paneID, PeerID: p.PeerID, TmuxSession: p.Session}
 			if _, err := c.request(http.MethodPost, "/swarm/placed", pl); err != nil {
 				fmt.Fprintf(os.Stderr, "repowire: %s launched in %s, but the daemon did not record it: %v\n", p.PeerID, paneID, err)
+				unrecorded = append(unrecorded, pl)
 			}
 			placed = append(placed, pl)
 			lastAt[p.CWD] = pl
@@ -317,7 +325,7 @@ func applyPlan(c *client, t tmuxAt, plan restorePlan, opts restoreOptions) ([]pl
 			fmt.Fprintf(os.Stderr, "repowire: %s keeps tmux's default layout: %v\n", window, err)
 		}
 	}
-	return placed, nil
+	return placed, unrecorded, nil
 }
 
 func sessionOrder(plan restorePlan, name string) int {
@@ -356,7 +364,7 @@ func (t tmuxAt) place(p restorePane, window string, created map[string]bool, aft
 		// new-session numbers its first window from base-index; move it to
 		// the recorded index (the session was created just now, so this
 		// moves nothing that existed).
-		if _, err := t.run("move-window", "-s", p.Session+":"+index, "-t", window); err != nil {
+		if _, err := t.run("move-window", "-s", "="+p.Session+":"+index, "-t", window); err != nil {
 			return "", err
 		}
 	}
