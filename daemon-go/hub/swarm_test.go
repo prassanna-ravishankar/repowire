@@ -20,10 +20,10 @@ type layoutTmux struct {
 
 func (l *layoutTmux) Describe() ([]service.PaneGeometry, error) { return l.panes, nil }
 
-// argvProc answers one live pid's argv.
+// argvProc answers one live pid's argv, running in the pane rooted at root.
 type argvProc struct {
-	pid  int
-	argv []string
+	pid, root int
+	argv      []string
 }
 
 func (p argvProc) Args(pid int) ([]string, bool) {
@@ -32,9 +32,9 @@ func (p argvProc) Args(pid int) ([]string, bool) {
 	}
 	return nil, false
 }
-func (p argvProc) Alive(pid int) bool { return pid == p.pid }
-func (argvProc) InTree(int, int) bool { return false }
-func (argvProc) Terminate(int) error  { return nil }
+func (p argvProc) Alive(pid int) bool        { return pid == p.pid }
+func (p argvProc) InTree(pid, root int) bool { return pid == p.pid && root == p.root }
+func (argvProc) Terminate(int) error         { return nil }
 
 // A snapshot (#505) records each pane's place, and for a pane that runs an
 // agent: its identity, registered path, runtime session, whether that
@@ -63,16 +63,26 @@ func TestSwarmSnapshotRecordsLayoutAndAgents(t *testing.T) {
 	}
 	alpha := register("/work/alpha", "%1", proto.RoleAgent, 4242, "sess-alpha")
 	orch := register("/work/orch", "%2", proto.RoleOrchestrator, 0, "sess-orch")
+	// The user quit this agent: its pane lives on with a shell, its peer is
+	// offline, its process gone.
+	quit := register("/work/quit", "%4", proto.RoleAgent, 5555, "sess-quit")
+	if _, err := reg.MarkOffline(ctx, quit, false); err != nil {
+		t.Fatal(err)
+	}
 
 	layout := "c1a2,160x48,0,0{80x48,0,0,1,79x48,81,0,2}"
 	tmux := &layoutTmux{panes: []service.PaneGeometry{
 		{Session: "work", WindowIndex: 1, WindowName: "agents", WindowLayout: layout, PaneIndex: 0, PaneID: "%1", CWD: "/work/alpha/sub"},
 		{Session: "work", WindowIndex: 1, WindowName: "agents", WindowLayout: layout, PaneIndex: 1, PaneID: "%2", CWD: "/work/orch"},
 		{Session: "work", WindowIndex: 4, WindowName: "shell", WindowLayout: "bb62,80x24,0,0,3", PaneIndex: 0, PaneID: "%3", CWD: "/tmp"},
-	}}
+		{Session: "work", WindowIndex: 5, WindowName: "quit", WindowLayout: "bb63,80x24,0,0,4", PaneIndex: 0, PaneID: "%4", CWD: "/work/quit"},
+	}, fakeTmux: fakeTmux{evidence: map[string]*service.TmuxPaneEvidence{
+		"%1": {PaneID: "%1", PanePID: "100"},
+		"%4": {PaneID: "%4", PanePID: "200"},
+	}}}
 	h := NewHubWithTransport(reg, service.NewWebSocketTransport(), "")
 	h.WithSpawn(service.NewSpawnService(tmux, service.NewFileOwnership("test-host", tmux.Probe), nil, nil), reg, nil, "test-host", proto.CircleBoundarySession)
-	h.spawn.proc = argvProc{pid: 4242, argv: []string{"claude", "--permission-mode", "plan"}}
+	h.spawn.proc = argvProc{pid: 4242, root: 100, argv: []string{"claude", "--permission-mode", "plan"}}
 
 	get := func(enabled bool) *httptest.ResponseRecorder {
 		h.WithSwarmSnapshot(enabled)
@@ -93,7 +103,7 @@ func TestSwarmSnapshotRecordsLayoutAndAgents(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &m); err != nil {
 		t.Fatal(err)
 	}
-	if m.Schema != SwarmSchema || m.Machine != "test-host" || m.TakenAt == "" || len(m.Panes) != 3 {
+	if m.Schema != SwarmSchema || m.Machine != "test-host" || m.TakenAt == "" || len(m.Panes) != 4 {
 		t.Fatalf("manifest = %+v", m)
 	}
 	if m.Panes[0].WindowLayout != layout || m.Panes[2].WindowIndex != 4 || m.Panes[2].CWD != "/tmp" {
@@ -101,7 +111,7 @@ func TestSwarmSnapshotRecordsLayoutAndAgents(t *testing.T) {
 	}
 
 	a := m.Panes[0].Agent
-	if a == nil || a.PeerID != alpha || a.Backend != "claude-code" || a.Circle != "work" || a.RuntimeSessionID != "sess-alpha" || a.Exclude != "" {
+	if a == nil || a.PeerID != alpha || a.Backend != "claude-code" || a.Circle != "work" || a.RuntimeSessionID != "sess-alpha" || a.Exclude != "" || !a.Running {
 		t.Fatalf("agent pane = %+v", a)
 	}
 	// The registered path, not the pane's cwd: the session binding checks it.
@@ -119,5 +129,10 @@ func TestSwarmSnapshotRecordsLayoutAndAgents(t *testing.T) {
 	}
 	if m.Panes[2].Agent != nil {
 		t.Fatalf("a shell pane carries an agent: %+v", m.Panes[2].Agent)
+	}
+	// A quit agent's pane maps to its offline peer, but nothing of it runs
+	// there: recorded, not running, excluded, so a restore leaves a shell.
+	if q := m.Panes[3].Agent; q == nil || q.PeerID != quit || q.Running || q.Exclude == "" {
+		t.Fatalf("quit agent pane = %+v", q)
 	}
 }

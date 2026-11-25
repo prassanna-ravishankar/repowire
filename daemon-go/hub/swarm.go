@@ -45,13 +45,17 @@ type SwarmPane struct {
 // is no process to read. Exclude names why a restore leaves the pane a
 // plain shell, for agents another path owns.
 type SwarmAgent struct {
-	PeerID           proto.PeerID     `json:"peer_id"`
-	DisplayName      string           `json:"display_name"`
-	Circle           string           `json:"circle"`
-	Role             string           `json:"role"`
-	Backend          string           `json:"backend"`
-	Path             string           `json:"path"`
-	Status           string           `json:"status"`
+	PeerID      proto.PeerID `json:"peer_id"`
+	DisplayName string       `json:"display_name"`
+	Circle      string       `json:"circle"`
+	Role        string       `json:"role"`
+	Backend     string       `json:"backend"`
+	Path        string       `json:"path"`
+	Status      string       `json:"status"`
+	// Running is whether the agent ran in this pane when the snapshot was
+	// taken (its process in the pane's tree). A pane whose agent was quit
+	// still maps to its offline peer; restoring that would resurrect it.
+	Running          bool             `json:"running"`
 	RuntimeSessionID string           `json:"runtime_session_id,omitempty"`
 	ResumeOK         bool             `json:"resume_ok"`
 	Model            string           `json:"model,omitempty"`
@@ -94,6 +98,11 @@ func (h *Hub) swarmSnapshot(ctx context.Context) (SwarmManifest, error) {
 		pane := SwarmPane{PaneGeometry: g}
 		if p, ok := h.spawn.reg.GetPeerByPane(g.PaneID); ok && p != nil && !proto.IsRemotePeerID(p.PeerID) {
 			pane.Agent = h.swarmAgent(ctx, p)
+			ev := h.spawn.svc.Container().Probe(g.PaneID)
+			pane.Agent.Running = ev != nil && service.PaneRunsPeer(h.spawn.proc, ev, p)
+			if !pane.Agent.Running && pane.Agent.Exclude == "" {
+				pane.Agent.Exclude = "not running: the agent had left its pane when the snapshot was taken"
+			}
 		}
 		m.Panes = append(m.Panes, pane)
 	}
@@ -130,7 +139,7 @@ func (h *Hub) registerSwarmRoutes(mux *http.ServeMux) {
 	}
 	mux.HandleFunc("GET /swarm/snapshot", h.requireAuth(func(w http.ResponseWriter, r *http.Request) {
 		if !h.swarmEnabled {
-			writeError(w, http.StatusNotFound, "swarm snapshot is an experiment: set experiments.swarm_snapshot: true and restart the daemon")
+			writeError(w, http.StatusNotFound, "swarm snapshot is an experiment: set experiments.swarm_snapshot: true in ~/.repowire/config.yaml, then run `repowire service restart`")
 			return
 		}
 		m, err := h.swarmSnapshot(r.Context())

@@ -2,6 +2,7 @@ package cli
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -49,16 +50,12 @@ func swarmCommand(c *client, argv []string) int {
 }
 
 // writeSnapshot writes the manifest owner-only (it names paths and session
-// ids), refusing to replace an existing file unless force.
+// ids). Without force it refuses an existing file, atomically: the finished
+// temp file is hard-linked into place, which fails if the name exists.
 func writeSnapshot(path string, manifest map[string]any, force bool) error {
 	raw, err := json.MarshalIndent(manifest, "", "  ")
 	if err != nil {
 		return err
-	}
-	if !force {
-		if _, err := os.Stat(path); err == nil {
-			return fmt.Errorf("%s exists; pass --force to replace it", path)
-		}
 	}
 	tmp, err := os.CreateTemp(filepath.Dir(path), ".swarm-snapshot-*")
 	if err != nil {
@@ -76,5 +73,14 @@ func writeSnapshot(path string, manifest map[string]any, force bool) error {
 	if err := tmp.Close(); err != nil {
 		return err
 	}
-	return os.Rename(tmp.Name(), path)
+	if force {
+		return os.Rename(tmp.Name(), path)
+	}
+	if err := os.Link(tmp.Name(), path); err != nil {
+		if errors.Is(err, os.ErrExist) {
+			return fmt.Errorf("%s exists; pass --force to replace it", path)
+		}
+		return err
+	}
+	return nil
 }

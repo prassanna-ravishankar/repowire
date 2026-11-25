@@ -26,8 +26,10 @@ type LayoutDescriber interface {
 
 const paneGeometryFormat = "#{session_name}\t#{window_index}\t#{window_name}\t#{window_layout}\t#{pane_index}\t#{pane_id}\t#{pane_current_path}"
 
-// Describe lists every pane of the server the daemon reaches, in tmux's own
-// order (session, window, pane).
+// Describe lists every pane of the tmux server the daemon reaches (its own
+// environment's default socket), in tmux's own order (session, window,
+// pane). Panes on another server, such as one started with -L or -S, are not
+// seen.
 func (tmuxContainer) Describe() ([]PaneGeometry, error) {
 	cmd, cancel := TmuxCommand("list-panes", "-a", "-F", paneGeometryFormat)
 	defer cancel()

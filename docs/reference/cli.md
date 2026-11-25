@@ -253,7 +253,7 @@ Experimental (`experiments.swarm_snapshot`, see [#505](https://github.com/prassa
 repowire swarm snapshot [-o FILE] [--force]
 ```
 
-`snapshot` records every pane of the daemon's tmux server and the agent in each. It only reads; nothing is created, changed or stopped. With `-o` it writes the manifest owner-only (0600) and refuses to replace an existing file unless `--force`; otherwise it prints the JSON.
+`snapshot` records every pane of the tmux server the daemon reaches (its default socket; panes on a server started with `-L` or `-S` are not seen) and the agent in each. It only reads; nothing is created, changed or stopped. With `-o` it writes the manifest owner-only (0600) and refuses to replace an existing file unless `--force`; otherwise it prints the JSON.
 
 For each pane the manifest records its session, window index, name and layout (`#{window_layout}`), its pane index and its cwd. For a pane that runs an agent it also records:
 - identity and placement: `peer_id`, display name, circle, role, backend and status;
@@ -261,7 +261,7 @@ For each pane the manifest records its session, window index, name and layout (`
 - the current runtime session id, and `resume_ok`: whether that session's file exists now;
 - the model, the spawn profile, and the permission mode read from the live process (`permission.source` is `argv`, `hook` or `backend_default`), since after a reboot there is no process to read.
 
-The orchestrator, the human and service peers, and sub-agents are recorded with an `exclude` reason: a restore leaves those panes as plain shells. The manifest never holds message content, credentials, certificates, metadata, environment or a shell's command. Restore is a later step.
+Each agent also records `running`: whether its process was in the pane when the snapshot was taken. An agent the user quit leaves its pane mapped to an offline peer; it is recorded as not running and excluded. The orchestrator, the human and service peers, and sub-agents are recorded with an `exclude` reason too: a restore leaves those panes as plain shells. The manifest never holds message content, credentials, certificates, metadata, environment or a shell's command. Restore is a later step.
 
 ## `repowire session`
 
