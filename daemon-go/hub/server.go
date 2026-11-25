@@ -13,6 +13,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/repowire/repowire/daemon-go/peer"
@@ -59,6 +60,9 @@ type Hub struct {
 	attachmentRetention state.RetentionPolicy
 	// swarmEnabled mounts the swarm snapshot route (experiments.swarm_snapshot).
 	swarmEnabled bool
+	// swarmPlans are the restore plans this daemon issued (swarm_restore.go).
+	swarmPlans     *issuedPlans
+	swarmPlansOnce sync.Once
 	// attachmentRefs lists the attachments stored messages still name, so
 	// expiry keeps a file in use (WithRetention). nil → none are.
 	attachmentRefs attachmentReferrer

@@ -131,7 +131,10 @@ func (h *Hub) swarmAgent(ctx context.Context, p *proto.Peer) *SwarmAgent {
 	return a
 }
 
-// registerSwarmRoutes mounts GET /swarm/snapshot. With the experiment off it
+// swarmOffHint answers every swarm route while the experiment is off.
+const swarmOffHint = "swarm snapshot is an experiment: set experiments.swarm_snapshot: true in ~/.repowire/config.yaml, then run `repowire service restart`"
+
+// registerSwarmRoutes mounts GET /swarm/snapshot and the restore routes. With the experiment off it
 // answers 404 and names the setting, so the CLI can say what to turn on.
 func (h *Hub) registerSwarmRoutes(mux *http.ServeMux) {
 	if h.spawn == nil {
@@ -139,7 +142,7 @@ func (h *Hub) registerSwarmRoutes(mux *http.ServeMux) {
 	}
 	mux.HandleFunc("GET /swarm/snapshot", h.requireAuth(func(w http.ResponseWriter, r *http.Request) {
 		if !h.swarmEnabled {
-			writeError(w, http.StatusNotFound, "swarm snapshot is an experiment: set experiments.swarm_snapshot: true in ~/.repowire/config.yaml, then run `repowire service restart`")
+			writeError(w, http.StatusNotFound, swarmOffHint)
 			return
 		}
 		m, err := h.swarmSnapshot(r.Context())
@@ -149,6 +152,7 @@ func (h *Hub) registerSwarmRoutes(mux *http.ServeMux) {
 		}
 		writeJSON(w, http.StatusOK, m)
 	}))
+	h.registerSwarmRestoreRoutes(mux)
 }
 
 // WithSwarmSnapshot turns on the swarm snapshot route

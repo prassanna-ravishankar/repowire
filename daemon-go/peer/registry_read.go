@@ -210,3 +210,11 @@ func (r *Registry) GetOrchestrator(circle string) (*proto.Peer, bool) {
 	}
 	return clonePeer(best), true // snapshot for the off-lock route reader
 }
+
+// Retirement is id's retirement: "none", "soft" or "hard" (an operator close,
+// final for every client).
+func (r *Registry) Retirement(id proto.PeerID) string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.retirementLocked(id)
+}
