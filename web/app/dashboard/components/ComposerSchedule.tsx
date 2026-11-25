@@ -175,6 +175,7 @@ export function PeerSchedules({ peer, apiBase, refresh }: { peer: Peer; apiBase:
   if (schedules.length === 0) return null;
   return (
     <ul className="mt-2 flex flex-col gap-1" aria-label="scheduled sends">
+      <li className="font-mono text-[9px] uppercase tracking-[0.14em] text-outline">scheduled from the dashboard</li>
       {schedules.map((s) => (
         <li
           key={s.schedule_id}
