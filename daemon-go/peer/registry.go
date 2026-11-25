@@ -211,6 +211,14 @@ type Registry struct {
 	// bridges) resolve to it in CheckAccess, so "telegram" stays a working
 	// address and a message typed on the phone comes from the human.
 	human proto.PeerID
+
+	// runID names this registry's run (one daemon run), so the journal's
+	// registration records show restart boundaries; decisionSeq orders the
+	// run's registrations; deciding is the registration in progress, under
+	// r.mu (registration_decision.go).
+	runID       string
+	decisionSeq int64
+	deciding    *registrationDecision
 }
 
 const (
@@ -238,6 +246,7 @@ func NewRegistry(ctx context.Context, store Store, live Liveness, transport Tran
 			contraEmitted: make(map[contraKey]struct{}),
 		},
 		evlog: &eventBuffer{},
+		runID: "run-" + uuid.NewString()[:12],
 	}
 
 	mappings, err := store.LoadMappings(ctx)
@@ -281,16 +290,22 @@ func (r *Registry) AllocateAndRegister(ctx context.Context, params AllocateParam
 	return id, name, err
 }
 
-func (r *Registry) allocateAndRegister(ctx context.Context, params AllocateParams) (proto.PeerID, proto.DisplayName, error) {
-	if params.ClaimedPeerID != nil && proto.IsRemotePeerID(*params.ClaimedPeerID) {
-		return "", "", ErrReservedPeerID
-	}
+func (r *Registry) allocateAndRegister(ctx context.Context, params AllocateParams) (id proto.PeerID, name proto.DisplayName, err error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	now := time.Now().UTC()
 	recoveredRetirement := false
 	claimPath := ""
 	if params.Path != nil {
 		claimPath = *params.Path
+	}
+	// Every registration, refused or not, is journaled with the evidence it
+	// carried and each step's verdict (#493).
+	r.beginDecisionLocked(params, claimPath, now)
+	defer func() { r.finishDecisionLocked(ctx, id, name, err) }()
+	if params.ClaimedPeerID != nil && proto.IsRemotePeerID(*params.ClaimedPeerID) {
+		r.noteLocked(stepRetirementGuard, "refused", *params.ClaimedPeerID, "reserved_remote_peer_id")
+		return "", "", ErrReservedPeerID
 	}
 	holder := r.liveRuntimeHolderLocked(params, claimPath)
 
@@ -302,18 +317,23 @@ func (r *Registry) allocateAndRegister(ctx context.Context, params AllocateParam
 	if params.ClaimedPeerID != nil && (holder == nil || holder.peer.PeerID == *params.ClaimedPeerID) {
 		if retirement, isRetired := r.retired[*params.ClaimedPeerID]; isRetired {
 			if retirement.Hard {
+				r.noteLocked(stepRetirementGuard, "refused", *params.ClaimedPeerID, "hard_retired")
 				return "", "", ErrPeerClosed
 			}
-			livePID := params.AgentPID != nil && r.live.PIDAlive(*params.AgentPID)
+			livePID := params.AgentPID != nil && r.pidAliveLocked(*params.AgentPID)
 			if !livePID && !params.RuntimeIdentityVerified {
+				r.noteLocked(stepRetirementGuard, "refused", *params.ClaimedPeerID, "soft_retired_without_proof")
 				return "", "", ErrPeerRetired
 			}
+			proof := "live_agent_pid"
+			if !livePID {
+				proof = "verified_runtime_identity"
+			}
+			r.noteLocked(stepRetirementGuard, "unretired", *params.ClaimedPeerID, proof)
 			r.unretireLocked(ctx, *params.ClaimedPeerID)
 			recoveredRetirement = true
 		}
 	}
-
-	now := time.Now().UTC()
 
 	displayName := r.buildDisplayName(params, false)
 
@@ -324,19 +344,28 @@ func (r *Registry) allocateAndRegister(ctx context.Context, params AllocateParam
 	// pid is the strongest evidence a registrant carries, so it wins over a
 	// stale peer_id claim. Session-scoped runtimes (one process, many sessions)
 	// additionally need the runtime session id to agree.
-	var id proto.PeerID
-	if holder != nil {
+	switch {
+	case holder != nil:
 		id = holder.peer.PeerID
 		if bound, ok := r.placeholderYieldsLocked(ctx, params, holder, claimPath); ok {
 			id = bound
+			r.noteLocked(stepRuntimePID, "selected", id, "session_bound_peer_takes_back_its_process")
 			if _, isRetired := r.retired[id]; isRetired {
 				r.unretireLocked(ctx, id)
 				recoveredRetirement = true
 			}
-		} else if params.ClaimedPeerID != nil && *params.ClaimedPeerID != id {
-			log.Printf("repowire: runtime pid %d already registered as %s (%s); ignoring peer_id claim %s",
-				*params.AgentPID, holder.peer.DisplayName, id, *params.ClaimedPeerID)
+		} else {
+			r.noteLocked(stepRuntimePID, "selected", id, "live_runtime_pid_holder")
+			if params.ClaimedPeerID != nil && *params.ClaimedPeerID != id {
+				r.noteLocked(stepClaim, "rejected", *params.ClaimedPeerID, "pid_held_by_another_peer")
+				log.Printf("repowire: runtime pid %d already registered as %s (%s); ignoring peer_id claim %s",
+					*params.AgentPID, holder.peer.DisplayName, id, *params.ClaimedPeerID)
+			}
 		}
+	case params.AgentPID == nil || *params.AgentPID <= 0:
+		r.noteLocked(stepRuntimePID, "skipped", "", "no_agent_pid")
+	default:
+		r.noteLocked(stepRuntimePID, "skipped", "", "no_peer_holds_the_pid")
 	}
 
 	// (b) Name-collision reclaim: reuse an existing identity when the runtime
@@ -352,6 +381,7 @@ func (r *Registry) allocateAndRegister(ctx context.Context, params AllocateParam
 		// reclaim/mint.
 		if ps, ok := r.peers[cid]; ok {
 			if !claimMatchesIdentity(ps.peer.Backend, ps.peer.Path, params.Backend, claimPath) {
+				r.noteLocked(stepClaim, "rejected", cid, "stale_claim_backend_or_path")
 				log.Printf("repowire: ignoring stale peer_id claim %s (existing=%s backend=%s/%s path=%q/%q)",
 					cid, ps.peer.DisplayName, ps.peer.Backend, params.Backend, ps.peer.Path, claimPath)
 			} else if params.AgentPID != nil && r.liveElsewhereLocked(ps, params) {
@@ -359,12 +389,14 @@ func (r *Registry) allocateAndRegister(ctx context.Context, params AllocateParam
 				// reconnect. Reusing it would flip the peer between the two panes on
 				// every reconnect; the twin gets its own id and rewrites its pane
 				// metadata, which separates the pair for good.
+				r.noteLocked(stepClaim, "rejected", cid, "fork_live_in_another_process")
 				log.Printf("repowire: peer_id claim %s from pid %d refused; held by live pid %d",
 					cid, *params.AgentPID, *ps.peer.AgentPID)
 				r.appendEvent(ctx, Event{Type: "peer_id_claim_rejected", Timestamp: now, PeerID: cid, PeerName: ps.peer.DisplayName, SessionID: cid,
 					Payload: map[string]any{"holder_pid": *ps.peer.AgentPID, "claimant_pid": *params.AgentPID, "claimant_pane": params.PaneID}})
 			} else {
 				id = cid
+				r.noteLocked(stepClaim, "selected", cid, "claimed_registered_peer")
 			}
 		} else if m, ok := r.mappings[cid]; ok {
 			mPath := ""
@@ -373,11 +405,17 @@ func (r *Registry) allocateAndRegister(ctx context.Context, params AllocateParam
 			}
 			if claimMatchesIdentity(m.Backend, mPath, params.Backend, claimPath) {
 				id = cid
+				r.noteLocked(stepClaim, "selected", cid, "claimed_durable_mapping")
 			} else {
+				r.noteLocked(stepClaim, "rejected", cid, "stale_claim_backend_or_path")
 				log.Printf("repowire: ignoring stale persisted peer_id claim %s (mapping=%s backend=%s/%s path=%q/%q)",
 					cid, m.DisplayName, m.Backend, params.Backend, mPath, claimPath)
 			}
+		} else {
+			r.noteLocked(stepClaim, "skipped", cid, "unknown_peer_id")
 		}
+	} else if id == "" {
+		r.noteLocked(stepClaim, "skipped", "", "no_claim")
 	}
 
 	// (b1) Runtime-session binding: the peer the reported runtime session is
@@ -386,8 +424,15 @@ func (r *Registry) allocateAndRegister(ctx context.Context, params AllocateParam
 	// workspace apart. A soft retirement is lifted: the binding matches the
 	// same backend/session/path facts a birth certificate certifies.
 	if id == "" {
-		if bound, ok := r.sessionBoundPeerLocked(ctx, params, claimPath); ok {
+		bound, why := r.sessionBoundPeerLocked(ctx, params, claimPath)
+		switch {
+		case bound == "":
+			r.noteLocked(stepSessionBinding, "skipped", "", why)
+		case why != "":
+			r.noteLocked(stepSessionBinding, "rejected", bound, why)
+		default:
 			id = bound
+			r.noteLocked(stepSessionBinding, "selected", id, "runtime_session_binding")
 			if _, isRetired := r.retired[id]; isRetired {
 				r.unretireLocked(ctx, id)
 				recoveredRetirement = true
@@ -409,6 +454,7 @@ func (r *Registry) allocateAndRegister(ctx context.Context, params AllocateParam
 	// shares its address with an identity it declined to reclaim.
 	if id == "" {
 		id = proto.PeerID(fmt.Sprintf("repow-%s-%s", params.Circle, uuid.NewString()[:8]))
+		r.noteLocked(stepMint, "selected", id, "minted")
 		if r.nameHeldLocked(displayName, params.Circle) {
 			displayName = r.buildDisplayName(params, true)
 		}
@@ -516,7 +562,8 @@ func (r *Registry) allocateAndRegister(ctx context.Context, params AllocateParam
 		if r.rec != nil {
 			r.rec.clearSpared(id)
 		}
-		r.appendEvent(ctx, Event{Type: "peer_online", Timestamp: now, PeerID: id, PeerName: existing.peer.DisplayName, SessionID: id})
+		r.deciding.kind = "reconnect"
+		r.appendEvent(ctx, Event{Type: "peer_online", Timestamp: now, PeerID: id, PeerName: existing.peer.DisplayName, SessionID: id, Payload: r.decisionRefLocked()})
 		r.scheduleRedelivery(ctx, id)
 		return id, existing.peer.DisplayName, nil
 	}
@@ -543,6 +590,7 @@ func (r *Registry) allocateAndRegister(ctx context.Context, params AllocateParam
 				if !recentlySeen(ps.peer, now) && !connected {
 					continue
 				}
+				r.noteLocked(stepPane, "refused", ps.peer.PeerID, "claimant_is_a_child_of_the_pane_holder")
 				r.appendEvent(ctx, Event{Type: "pane_claim_rejected", Timestamp: now, PeerID: ps.peer.PeerID, PeerName: ps.peer.DisplayName, SessionID: ps.peer.PeerID,
 					Payload: map[string]any{"pane_id": pane, "holder_peer_id": string(ps.peer.PeerID), "claimant_parent_pid": *params.ParentPID, "holder_agent_pid": *ps.peer.AgentPID, "outcome": "registration_rejected"}})
 				return "", "", fmt.Errorf("%w: pane %s held by %s (%s); claimant parent_pid=%d matches holder agent_pid=%d",
@@ -562,8 +610,11 @@ func (r *Registry) allocateAndRegister(ctx context.Context, params AllocateParam
 				if params.TurnState != nil {
 					h.peer.TurnState = *params.TurnState
 				}
+				r.noteLocked(stepPane, "selected", h.peer.PeerID, "sticky_orchestrator_pane")
+				r.deciding.kind = "sticky_orchestrator"
 				return h.peer.PeerID, h.peer.DisplayName, nil
 			}
+			r.noteLocked(stepPane, "rejected", h.peer.PeerID, "sticky_orchestrator_holds_the_pane")
 			log.Printf("repowire: sticky orchestrator %s (%s) holds pane %s; registering claimant pane-less",
 				h.peer.DisplayName, h.peer.PeerID, pane)
 			effectivePane = nil
@@ -574,6 +625,7 @@ func (r *Registry) allocateAndRegister(ctx context.Context, params AllocateParam
 		pane := *effectivePane
 		if holder := r.livePaneHolderLocked(pane, now); holder != nil {
 			if proven, why := r.paneClaimProvenLocked(pane, holder.peer, params.AgentPID); !proven {
+				r.noteLocked(stepPane, "rejected", holder.peer.PeerID, why)
 				log.Printf("repowire: rejecting pane claim for %s: held by live %s (%s); %s — registering pane-less",
 					pane, holder.peer.DisplayName, holder.peer.PeerID, why)
 				r.appendEvent(ctx, Event{Type: "pane_claim_rejected", Timestamp: now, PeerID: holder.peer.PeerID, PeerName: holder.peer.DisplayName, SessionID: holder.peer.PeerID,
@@ -663,7 +715,8 @@ func (r *Registry) allocateAndRegister(ctx context.Context, params AllocateParam
 	}
 	r.markMappingsDirtyLocked()
 
-	r.appendEvent(ctx, Event{Type: "peer_online", Timestamp: now, PeerID: id, PeerName: displayName, SessionID: id})
+	r.deciding.kind = "registered"
+	r.appendEvent(ctx, Event{Type: "peer_online", Timestamp: now, PeerID: id, PeerName: displayName, SessionID: id, Payload: r.decisionRefLocked()})
 	r.scheduleRedelivery(ctx, id)
 	return id, displayName, nil
 }
@@ -847,7 +900,7 @@ func (r *Registry) livePaneHolderLocked(paneID string, now time.Time) *peerState
 		if ps.peer.Status != proto.StatusOnline && ps.peer.Status != proto.StatusBusy {
 			continue
 		}
-		if ps.peer.AgentPID == nil || !r.live.PIDAlive(*ps.peer.AgentPID) {
+		if ps.peer.AgentPID == nil || !r.pidAliveLocked(*ps.peer.AgentPID) {
 			continue
 		}
 		connected := r.transport != nil && r.transport.IsConnected(ps.peer.PeerID)
@@ -960,16 +1013,9 @@ func (r *Registry) releasePaneLocked(ctx context.Context, paneID string, newID p
 // minted id) treats every holder, offline peer or durable mapping, as a
 // blocker. Must hold lock.
 func (r *Registry) buildDisplayName(params AllocateParams, strict bool) proto.DisplayName {
-	folder := "peer"
-	if params.Path != nil && *params.Path != "" {
-		folder = baseFolder(*params.Path)
-	}
-	base := fmt.Sprintf("%s-%s", folder, params.Backend)
-	preferred := false
-	if params.PreferredDisplayName != nil && *params.PreferredDisplayName != "" {
-		base = string(*params.PreferredDisplayName)
-		preferred = true
-	}
+	folder := nameFolder(params)
+	base := string(baseDisplayName(params))
+	preferred := params.PreferredDisplayName != nil && *params.PreferredDisplayName != ""
 	incomingSession := runtimeSessionID(params.Metadata)
 
 	candidate := base
@@ -1006,6 +1052,23 @@ func (r *Registry) buildDisplayName(params AllocateParams, strict bool) proto.Di
 			candidate = fmt.Sprintf("%s-%d-%s", folder, suffix, params.Backend)
 		}
 	}
+}
+
+// nameFolder is the folder part of a derived display name.
+func nameFolder(params AllocateParams) string {
+	if params.Path != nil && *params.Path != "" {
+		return baseFolder(*params.Path)
+	}
+	return "peer"
+}
+
+// baseDisplayName is the name a registration proposes before any suffix: the
+// preferred name when given, else {folder}-{backend}.
+func baseDisplayName(params AllocateParams) proto.DisplayName {
+	if params.PreferredDisplayName != nil && *params.PreferredDisplayName != "" {
+		return *params.PreferredDisplayName
+	}
+	return proto.DisplayName(fmt.Sprintf("%s-%s", nameFolder(params), params.Backend))
 }
 
 // runtimeSessionID extracts the runtime (hook) session id from a peer's
@@ -1052,7 +1115,7 @@ func (r *Registry) liveElsewhereLocked(ps *peerState, params AllocateParams) boo
 	if params.AgentPID != nil && *params.AgentPID == *ps.peer.AgentPID {
 		return false
 	}
-	return r.live.PIDAlive(*ps.peer.AgentPID)
+	return r.pidAliveLocked(*ps.peer.AgentPID)
 }
 
 // sessionBoundPeerLocked returns the peer the registrant's runtime session is
@@ -1060,37 +1123,45 @@ func (r *Registry) liveElsewhereLocked(ps *peerState, params AllocateParams) boo
 // one: same backend, compatible path, not hard-retired, not live in another
 // process (a fork shares its parent's session id briefly), and, for
 // session-scoped backends, not since moved on to another session (older
-// bindings can point several threads at one peer). Must hold r.mu.
-func (r *Registry) sessionBoundPeerLocked(ctx context.Context, params AllocateParams, claimPath string) (proto.PeerID, bool) {
+// bindings can point several threads at one peer). It returns the bound
+// peer and "" when the binding holds; otherwise why not, with the bound peer
+// when there is one. Must hold r.mu.
+func (r *Registry) sessionBoundPeerLocked(ctx context.Context, params AllocateParams, claimPath string) (proto.PeerID, string) {
 	session := runtimeSessionID(params.Metadata)
-	if r.sessions == nil || session == "" {
-		return "", false
+	switch {
+	case session == "":
+		return "", "no_runtime_session"
+	case r.sessions == nil:
+		return "", "no_session_index"
 	}
 	id, boundPath, err := r.sessions.PeerForRuntimeSession(ctx, params.Backend, session)
 	if err != nil {
 		log.Printf("repowire: session binding lookup for %s session %s failed: %v", params.Backend, session, err)
-		return "", false
+		return "", "binding_lookup_failed"
 	}
-	if id == "" || !claimMatchesIdentity(params.Backend, boundPath, params.Backend, claimPath) {
-		return "", false
+	if id == "" {
+		return "", "session_not_bound"
+	}
+	if !claimMatchesIdentity(params.Backend, boundPath, params.Backend, claimPath) {
+		return id, "bound_path_mismatch"
 	}
 	if retirement, ok := r.retired[id]; ok && retirement.Hard {
-		return "", false
+		return id, "hard_retired"
 	}
 	if r.otherSessionLocked(ctx, params, id) {
-		return "", false
+		return id, "bound_peer_runs_another_session"
 	}
 	if ps, ok := r.peers[id]; ok {
 		if !claimMatchesIdentity(ps.peer.Backend, ps.peer.Path, params.Backend, claimPath) {
-			return "", false
+			return id, "bound_peer_backend_or_path_mismatch"
 		}
 		if r.liveElsewhereLocked(ps, params) {
 			log.Printf("repowire: session %s is bound to %s, live in pid %d; registering the fork separately",
 				session, id, *ps.peer.AgentPID)
-			return "", false
+			return id, "fork_live_in_another_process"
 		}
 	}
-	return id, true
+	return id, ""
 }
 
 // placeholderYieldsLocked handles a by-hand resume (#474). The MCP stdio
@@ -1109,11 +1180,12 @@ func (r *Registry) placeholderYieldsLocked(ctx context.Context, params AllocateP
 	if runtimeSessionID(params.Metadata) == "" || runtimeSessionID(holder.peer.Metadata) != "" {
 		return "", false
 	}
-	bound, ok := r.sessionBoundPeerLocked(ctx, params, claimPath)
-	if !ok || bound == holder.peer.PeerID {
+	bound, why := r.sessionBoundPeerLocked(ctx, params, claimPath)
+	if bound == "" || why != "" || bound == holder.peer.PeerID {
 		return "", false
 	}
 	placeholder := holder.peer.PeerID
+	r.noteLocked(stepRuntimePID, "yielded", placeholder, "placeholder_without_session")
 	log.Printf("repowire: runtime pid %d registered as %s (%s) before its session; session %s is bound to %s, which takes it back",
 		*params.AgentPID, holder.peer.DisplayName, placeholder, runtimeSessionID(params.Metadata), bound)
 	delete(r.peers, placeholder)
@@ -1161,31 +1233,74 @@ func (r *Registry) otherSessionLocked(ctx context.Context, params AllocateParams
 // candidates known to run another session (session-scoped backends), and
 // candidates live in another process are skipped. When more than one remains it returns them
 // all and no id: the tuple cannot tell which runtime this is. Must hold r.mu.
+// Every same-name candidate it passes over is noted with the reason.
 func (r *Registry) reclaimByTupleLocked(ctx context.Context, params AllocateParams, name proto.DisplayName, claimPath string) (proto.PeerID, []proto.PeerID) {
 	var offline []proto.PeerID
-	for id, ps := range r.peers {
-		if ps.state == StateOffline && ps.peer.DisplayName == name && ps.peer.Circle == params.Circle &&
-			claimMatchesIdentity(ps.peer.Backend, ps.peer.Path, params.Backend, claimPath) &&
-			!r.liveElsewhereLocked(ps, params) && !r.otherSessionLocked(ctx, params, id) {
-			offline = append(offline, id)
+	for _, id := range slices.Sorted(maps.Keys(r.peers)) {
+		ps := r.peers[id]
+		if ps.state != StateOffline || ps.peer.DisplayName != name || ps.peer.Circle != params.Circle {
+			continue
 		}
+		if why := r.tupleRejectionLocked(ctx, params, id, ps.peer.Backend, ps.peer.Path, claimPath); why != "" {
+			r.noteLocked(stepNameTuple, "rejected", id, why)
+			continue
+		}
+		offline = append(offline, id)
 	}
 	if len(offline) > 0 {
-		return uniqueCandidate(offline)
+		return r.uniqueTupleCandidateLocked(offline, "offline_peer")
 	}
 	var mapped []proto.PeerID
-	for id, m := range r.mappings {
+	for _, id := range slices.Sorted(maps.Keys(r.mappings)) {
+		m := r.mappings[id]
+		if m.DisplayName != name || m.Circle != params.Circle {
+			continue
+		}
 		mappingPath := ""
 		if m.Path != nil {
 			mappingPath = *m.Path
 		}
-		if m.DisplayName == name && m.Circle == params.Circle &&
-			claimMatchesIdentity(m.Backend, mappingPath, params.Backend, claimPath) &&
-			!r.isRetiredLocked(id) && !r.liveElsewhereLocked(r.peers[id], params) && !r.otherSessionLocked(ctx, params, id) {
-			mapped = append(mapped, id)
+		// A retired mapping is passed over before any process or session probe.
+		why := "retired"
+		if !claimMatchesIdentity(m.Backend, mappingPath, params.Backend, claimPath) || !r.isRetiredLocked(id) {
+			why = r.tupleRejectionLocked(ctx, params, id, m.Backend, mappingPath, claimPath)
 		}
+		if why != "" {
+			r.noteLocked(stepNameTuple, "rejected", id, why)
+			continue
+		}
+		mapped = append(mapped, id)
 	}
-	return uniqueCandidate(mapped)
+	return r.uniqueTupleCandidateLocked(mapped, "durable_mapping")
+}
+
+// tupleRejectionLocked is why a same-name candidate may not be reclaimed by
+// the tuple, or "". Must hold r.mu.
+func (r *Registry) tupleRejectionLocked(ctx context.Context, params AllocateParams, id proto.PeerID, backend proto.AgentType, path, claimPath string) string {
+	switch {
+	case !claimMatchesIdentity(backend, path, params.Backend, claimPath):
+		return "backend_or_path_mismatch"
+	case r.liveElsewhereLocked(r.peers[id], params):
+		return "fork_live_in_another_process"
+	case r.otherSessionLocked(ctx, params, id):
+		return "runs_another_session"
+	}
+	return ""
+}
+
+// uniqueTupleCandidateLocked is uniqueCandidate, noted: the one candidate is
+// selected, several are ambiguous, none skips the step. Must hold r.mu.
+func (r *Registry) uniqueTupleCandidateLocked(ids []proto.PeerID, kind string) (proto.PeerID, []proto.PeerID) {
+	id, ambiguous := uniqueCandidate(ids)
+	switch {
+	case id != "":
+		r.noteLocked(stepNameTuple, "selected", id, kind)
+	case len(ambiguous) > 0:
+		r.noteLocked(stepNameTuple, "ambiguous", "", "several_"+kind+"s", ambiguous...)
+	default:
+		r.noteLocked(stepNameTuple, "skipped", "", "no_candidate")
+	}
+	return id, ambiguous
 }
 
 func (r *Registry) isRetiredLocked(id proto.PeerID) bool {

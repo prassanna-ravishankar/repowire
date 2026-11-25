@@ -73,6 +73,23 @@ Orchestrator reconnects get one additional bounded repair path because they are 
 
 Session-native runtimes such as Codex, OpenCode, and Pi can also recover an exact softly retired identity by presenting an unexpired daemon-minted birth certificate whose backend, runtime session, and project path all validate. This supports native threads that do not have a distinct agent PID; OpenCode and Pi additionally report their live runtime PID on registration and reconnect. Hard operator retirement is never cleared by certificate recovery.
 
+### Registration decision record
+
+Every registration journals one `registration_decision` event, whether it went through or was refused. The record holds what the registrant proposed and proved, and what each rule concluded. An offline reader can replay the identity rules from the journal alone, without the mapping and session-binding tables, which hold only final state. The payload:
+
+- `rules` is the version of the rule set that decided (`peer.RegistrationRules`). `run_id` names the daemon run, so restarts show as a new id. `seq` orders that run's registrations. `observed_at` is the decision time.
+- `inputs`: `backend`, `path`, and `path_key`, an opaque hash of the path for analysis that must not carry it. Also `base_name`, the name proposed before any suffix, plus `preferred_display_name`, `circle`, `circle_source`, `role` and `machine`.
+- `evidence`: `agent_pid`, `parent_pid`, `runtime_session_id`, `claimed_peer_id`, `runtime_identity_verified` and `pane_id`. Absent evidence is `null`. A claim the daemon did not verify is the claim with `runtime_identity_verified: false`.
+- `steps`: one verdict per step and candidate, in order. Each has `step`, `outcome`, `peer_id`, `reason` and the candidate's `retirement` (`none`, `soft` or `hard`) at that moment. An ambiguous tuple also lists its `candidates`.
+  - Steps are `a` (retirement guard), `a2` (live runtime pid), `b` (claimed `peer_id`), `b1` (session binding), `b2` (name tuple), `c` (mint) and `pane` (pane-claim gates and the sticky orchestrator).
+  - Outcomes are `selected`, `rejected`, `skipped`, `refused`, `ambiguous`, `unretired` and `yielded`.
+- `pid_checks` lists every liveness answer the rules consulted.
+- `outcome` is `registered`, `reconnect`, `sticky_orchestrator` or `refused`.
+  - On success, `selected` gives the `peer_id`, `display_name` and `circle`, and the `step` that chose the id.
+  - On refusal, `error` gives the reason, and the event is filed under the claimed id.
+
+The `peer_online` event a registration writes carries the same `run_id` and `decision_seq`. The record never holds birth-certificate nonces, tokens, metadata or message bodies. Like other journal rows, it is kept for `retention.records_days`.
+
 ## Linking an orphan pane (link vs spawn)
 
 When an agent is already running in a local tmux pane but never registered — hooks or MCP did not fire — the daemon cannot see it. `GET /panes/orphans` lists every unregistered local pane (with a display-only backend hint), and `repowire link --pane %NN --backend X` adopts one intentionally.
