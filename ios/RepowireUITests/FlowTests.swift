@@ -32,10 +32,24 @@ final class FlowTests: XCTestCase {
         app.launch()
 
         let card = app.element("question.ask-backend-1").waitToAppear()
-        XCTAssertEqual(app.tabBars.buttons["Inbox"].value as? String, "2 items")
+        // Two open questions plus the unread infra notice.
+        XCTAssertEqual(app.tabBars.buttons["Inbox"].value as? String, "3 items")
         card.buttons["question.allow"].tap()
         card.waitToDisappear()
         XCTAssertTrue(app.element("question.ask-docs-1").exists, "Only the answered question closes")
+    }
+
+    func testOpeningAMessageMarksItRead() {
+        let app = XCUIApplication.fixtures()
+        app.launch()
+
+        app.element("question.ask-backend-1").waitToAppear()
+        let row = app.element("inbox.item.inb-1")
+        XCTAssertTrue(row.exists, "The infra notice lists under Messages")
+        XCTAssertEqual(app.tabBars.buttons["Inbox"].value as? String, "3 items")
+        row.tap()
+        app.navigationBars.element.buttons.firstMatch.tap()
+        XCTAssertEqual(app.tabBars.buttons["Inbox"].value as? String, "2 items", "Reading the message clears it from the badge")
     }
 
     func testDenyingAToolCallClearsIt() {
