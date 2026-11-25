@@ -1326,11 +1326,70 @@ describe("PeerView composer modes (ask | notify)", () => {
           ? new Response(JSON.stringify({ error: "offline" }), { status: 503 })
           : new Response(JSON.stringify({ delivered: true }), { status: 200 });
       }
+      if (url === "/schedules" && init?.method === "POST") {
+        return new Response(JSON.stringify({ schedule_id: "sched-1", fire_at: "2026-11-26T09:00:00Z", kind: (body as { kind: string }).kind }), { status: 200 });
+      }
       return new Promise<Response>(() => {});
     });
     vi.stubGlobal("fetch", fetchMock);
     return calls;
   }
+
+  // A scheduled send (#433) goes to /schedules with the composer's mode as
+  // its kind, never to /notify or /ask, and the composer returns to "now".
+  it("a repeat schedules the send instead of sending it", async () => {
+    const calls = mockEndpoints();
+    render(<PeerView peer={PEER} events={[]} apiBase="" onClose={() => {}} onSent={() => {}} />);
+    fireEvent.click(screen.getByTestId("mode-notify"));
+    fireEvent.click(screen.getByTestId("when-repeat"));
+    fireEvent.change(screen.getByLabelText("cron (UTC)"), { target: { value: "0 9 * * 1-5" } });
+    fireEvent.change(textarea(), { target: { value: "standup reminder" } });
+    fireEvent.click(screen.getByLabelText("Schedule notify"));
+
+    await waitFor(() => expect(calls.some((c) => c.url === "/schedules")).toBe(true));
+    const scheduled = calls.find((c) => c.url === "/schedules")!.body as Record<string, unknown>;
+    expect(scheduled).toEqual({ from_peer: "dashboard", to_peer: PEER.peer_id, text: "standup reminder", kind: "notify", cron: "0 9 * * 1-5" });
+    expect(calls.every((c) => c.url !== "/notify" && c.url !== "/ask")).toBe(true);
+    expect((await screen.findByTestId("notify-status")).textContent).toContain("scheduled");
+    expect(screen.getByTestId("when-now").getAttribute("aria-pressed")).toBe("true");
+  });
+
+  // A schedule reply that lands after a switch to another peer must not turn
+  // that peer's "later" back into "now" (it would then send immediately).
+  it("a late schedule reply never resets another peer's timing", async () => {
+    let release: (r: Response) => void = () => {};
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+        if (String(input) === "/schedules" && init?.method === "POST") {
+          return new Promise<Response>((resolve) => (release = resolve));
+        }
+        return new Promise<Response>(() => {});
+      }),
+    );
+    const { rerender } = render(<PeerView peer={PEER} events={[]} apiBase="" onClose={() => {}} onSent={() => {}} />);
+    fireEvent.click(screen.getByTestId("when-repeat"));
+    fireEvent.change(textarea(), { target: { value: "for A" } });
+    fireEvent.click(screen.getByLabelText("Schedule ask"));
+    rerender(<PeerView peer={OTHER} events={[]} apiBase="" onClose={() => {}} onSent={() => {}} />);
+    fireEvent.click(screen.getByTestId("when-at"));
+    await act(async () => {
+      release(new Response(JSON.stringify({ schedule_id: "s", fire_at: "2026-11-26T09:00:00Z" }), { status: 200 }));
+    });
+    expect(screen.getByTestId("when-at").getAttribute("aria-pressed")).toBe("true");
+  });
+
+  it("an attachment cannot be scheduled", async () => {
+    const calls = mockEndpoints();
+    const { container } = render(<PeerView peer={PEER} events={[]} apiBase="" onClose={() => {}} onSent={() => {}} />);
+    fireEvent.click(screen.getByTestId("when-repeat"));
+    const input = container.querySelector('input[type="file"]') as HTMLInputElement;
+    fireEvent.change(input, { target: { files: [new File(["x"], "shot.png", { type: "image/png" })] } });
+    fireEvent.change(textarea(), { target: { value: "see attached" } });
+    fireEvent.click(screen.getByLabelText("Schedule ask"));
+    expect(await screen.findByText(/Attachments can't be scheduled/)).toBeInTheDocument();
+    expect(calls.every((c) => c.url !== "/schedules" && c.url !== "/attachments")).toBe(true);
+  });
 
   it("notify mode posts /notify and creates no pending ask", async () => {
     const calls = mockEndpoints();

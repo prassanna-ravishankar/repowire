@@ -1,5 +1,5 @@
 import Image from "next/image";
-import { BriefcaseBusiness, Inbox, Plus, RefreshCw, Settings } from "lucide-react";
+import { BriefcaseBusiness, Inbox, Megaphone, Plus, RefreshCw, Settings } from "lucide-react";
 import { cn } from "../lib/utils";
 import type { ConnectionState } from "../lib/useEventStream";
 import { Button, IconButton, ThemeToggle } from "../../ui";
@@ -15,6 +15,7 @@ export function TopBar({
   onInbox,
   onJobs,
   onSpawn,
+  onBroadcast,
   onSettings,
 }: {
   counts: Record<"online" | "busy" | "offline", number>;
@@ -27,6 +28,7 @@ export function TopBar({
   onInbox: () => void;
   onJobs: () => void;
   onSpawn: () => void;
+  onBroadcast: () => void;
   onSettings: () => void;
 }) {
   const badge = connectionBadge(connection);
@@ -102,6 +104,10 @@ export function TopBar({
         <Plus aria-hidden className="h-3.5 w-3.5" />
         <span className="hidden md:inline">Spawn peer</span>
       </Button>
+      {/* Mesh-wide, so it lives here and never in a peer's composer (#453). */}
+      <IconButton label="Broadcast to the mesh" variant="secondary" onClick={onBroadcast} className="shrink-0">
+        <Megaphone aria-hidden className="h-3.5 w-3.5" />
+      </IconButton>
       <IconButton label="Refresh" variant="secondary" onClick={onRefresh} className="hidden shrink-0 md:inline-flex">
         <RefreshCw aria-hidden className={cn("h-3.5 w-3.5", isRefreshing && "animate-spin")} />
       </IconButton>

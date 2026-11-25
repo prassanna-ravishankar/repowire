@@ -5,6 +5,7 @@ import { cn } from "./lib/utils";
 import { useEventStream } from "./lib/useEventStream";
 import { useInbox } from "./lib/useInbox";
 import { activeRuntimeCircles } from "./lib/orchestrators";
+import { BroadcastDialog } from "./components/BroadcastDialog";
 import { SettingsDialog, SpawnDialog } from "./components/DashboardDialogs";
 import { InboxView } from "./components/InboxView";
 import { JobsView } from "./components/JobsView";
@@ -52,6 +53,7 @@ function DashboardInner() {
   const [inboxSignal, setInboxSignal] = useState(0);
   const inbox = useInbox(API_BASE, inboxSignal + refreshSignal);
   const [showSpawn, setShowSpawn] = useState(false);
+  const [showBroadcast, setShowBroadcast] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const eventIdsRef = useRef<Set<string>>(new Set());
   const lastSeenIdRef = useRef<string | null>(null);
@@ -270,6 +272,7 @@ function DashboardInner() {
           onInbox={openInbox}
           onJobs={openJobs}
           onSpawn={() => setShowSpawn(true)}
+          onBroadcast={() => setShowBroadcast(true)}
           onSettings={() => setShowSettings(true)}
         />
 
@@ -345,6 +348,7 @@ function DashboardInner() {
         )}
       </div>
 
+      {showBroadcast && <BroadcastDialog apiBase={API_BASE} peers={peers} onClose={() => setShowBroadcast(false)} />}
       {showSpawn && (
         <SpawnDialog
           apiBase={API_BASE}

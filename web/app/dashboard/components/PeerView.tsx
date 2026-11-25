@@ -14,6 +14,7 @@ import {
 } from "../lib/templates";
 import type { AttachmentRef, Event, Peer } from "../types";
 import { peerLabel } from "../types";
+import { CRON_PRESETS, formatFire, PeerSchedules, scheduleBody, ScheduleControls, type ScheduleChoice } from "./ComposerSchedule";
 import { PeerMessages } from "./PeerMessages";
 import { formatTime, StatusLabel } from "./status";
 
@@ -1222,9 +1223,17 @@ function ComposeBar({
   const [notifyStatus, setNotifyStatus] = useState<{ ok: boolean; text: string } | null>(null);
   // Reset to the safe default on peer switch — the component may not remount on
   // a peer prop change, and a sticky "notify" would be a surprise-send footgun.
+  // When the send goes out (#433): now, later, or on a repeat. Reset with the
+  // mode on a peer switch, for the same reason: a sticky "later" would
+  // silently schedule what the user meant to send now.
+  const [schedule, setSchedule] = useState<ScheduleChoice>({ when: "now", at: "", cron: CRON_PRESETS[0].cron });
+  const [scheduleRefresh, setScheduleRefresh] = useState(0);
+  const composerPeer = useRef(peer.peer_id); // the peer this composer shows now
   useEffect(() => {
+    composerPeer.current = peer.peer_id;
     setMode("ask");
     setNotifyStatus(null);
+    setSchedule((c) => ({ ...c, when: "now" }));
   }, [peer.peer_id]);
 
   // Insert a template into the draft: into an empty composer as-is, else
@@ -1318,6 +1327,45 @@ function ComposeBar({
       let msg = text.trim();
       let attachments: AttachmentRef[] = [];
       const hint = "\n(from @dashboard - reply naturally, dashboard sees your response automatically)";
+
+      if (schedule.when !== "now") {
+        const sentTo = peer.peer_id;
+        // A scheduled send goes through /schedules, which carries text only.
+        if (file) {
+          setError("Attachments can't be scheduled: send now, or remove the file");
+          return;
+        }
+        const built = scheduleBody(schedule, { to_peer: peer.peer_id, text: mode === "ask" ? msg + hint : msg, kind: mode });
+        if ("error" in built) {
+          setError(built.error);
+          return;
+        }
+        const res = await fetch(`${apiBase}/schedules`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          credentials: "include",
+          body: JSON.stringify(built.body),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok || data.error) {
+          setError(data.error || data.detail || `Error ${res.status}`);
+          return;
+        }
+        pushHistory(sentTo, text);
+        clearDraft(sentTo);
+        // The reply can land after a switch to another peer: only the
+        // composer that sent it is reset, so a "later" chosen for the new
+        // peer is never turned back into "now".
+        if (composerPeer.current === sentTo) {
+          setNotifyStatus({ ok: true, text: `scheduled · ${formatFire(data.fire_at)}` });
+          historyIdx.current = null;
+          setHistoryTick((t) => t + 1);
+          setScheduleRefresh((n) => n + 1);
+          setSchedule((c) => ({ ...c, when: "now" }));
+        }
+        onSent?.();
+        return;
+      }
       if (file) {
         const attachment = await uploadFile(file);
         if (!attachment) {
@@ -1539,6 +1587,8 @@ function ComposeBar({
         )}
       </div>
 
+      <ScheduleControls choice={schedule} onChange={setSchedule} mode={mode} peer={peer} />
+
       {file && (
         <div className="mb-2 flex items-center gap-2 border border-border-faint bg-surface-container-lowest px-2 py-1.5 font-mono text-xs text-on-surface-variant">
           <Paperclip className="h-3.5 w-3.5" />
@@ -1597,7 +1647,7 @@ function ComposeBar({
         <button
           onClick={submit}
           disabled={(!text.trim() && !file) || isPending}
-          aria-label={mode === "notify" ? "Notify peer" : "Ask peer"}
+          aria-label={schedule.when !== "now" ? `Schedule ${mode}` : mode === "notify" ? "Notify peer" : "Ask peer"}
           aria-busy={isPending}
           className={cn(
             "flex h-10 w-10 shrink-0 items-center justify-center rounded transition-[filter,transform] active:scale-[0.98]",
@@ -1615,6 +1665,8 @@ function ComposeBar({
           <button onClick={submit} className="border border-error/30 px-2 py-0.5 text-[10px] uppercase">Retry</button>
         </div>
       )}
+
+      <PeerSchedules key={peer.peer_id} peer={peer} apiBase={apiBase} refresh={scheduleRefresh} />
 
       {visibleAsks.length > 0 && (
         <div className="mt-2 flex flex-col gap-1.5">
