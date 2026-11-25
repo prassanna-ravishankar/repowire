@@ -267,7 +267,7 @@ func registerWireTools(srv *mcp.Server, h *Hub) {
 		}
 		text := t.Text(a.Cursor)
 		if h.wire.OrchestratorMay(ctx, t, orch.Circle, nil) == nil {
-			text += t.ActionsText()
+			text += t.ActionsText(orch.Circle)
 		}
 		return text, nil
 	})

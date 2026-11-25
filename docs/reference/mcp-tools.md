@@ -446,10 +446,10 @@ Orchestrator only, with the same caller check as `wire_query`. They act on an op
 An orchestrator, unlike the operator, is refused (`wire_refused`, with the reason) when:
 
 - the thread is protected (see `protected` under [`wire_query`](#wire_query));
-- any party the ask ever had (asker, each holder, each delegator, and an orchestrator that moved it) was recorded in a circle other than yours. A peer registered without a circle counts as `default`;
+- any party the ask ever had (asker, each holder, each delegator, and an orchestrator that moved it) was recorded in a circle other than yours, or the asker, the holder or an earlier holder is in another circle now. A party with no circle matches none;
 - a reassign's `to` is outside your circle now, the human or a service surface, or private.
 
-The check runs under the ask's claim, so no hand-off can add a party between the check and the action. A reassign records you as a party, so an orchestrator of another circle cannot act on the thread afterwards. Every action also refuses a closed ask, a cross-machine ask, a job's dispatch ask (use the job tools) and an ask whose reply waits for an offline asker.
+The check runs under the ask's claim, so no hand-off can add a party between the check and the action; a party's circle, role or visibility is read at that moment. A reassign records you as a party, so an orchestrator of another circle cannot act on the thread afterwards. As a recorded party only, your own later visibility does not protect the thread; your recorded one does. Every action also refuses a closed ask, a cross-machine ask, a job's dispatch ask (use the job tools) and an ask whose reply waits for an offline asker.
 
 ## Lifecycle
 

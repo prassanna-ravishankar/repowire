@@ -187,16 +187,20 @@ fields.
   the notices' wording; nothing else differs.
 - **The rule lives in the wire view.** `service.Wire.OrchestratorMay`
   decides from the thread as reduced: an open ask, not protected, every
-  recorded party in the orchestrator's circle, and for a reassign a
-  destination that is in that circle now, not human or service, and not
-  private. A circle of `""` counts as `default`. `AuthorizeOrchestrator`
-  runs it on the thread as recorded at the moment of the action, under
-  the ask's claim, so a concurrent delegate cannot add a party between the
-  check and the move.
+  party in the orchestrator's circle both as recorded and as the registry
+  knows it now (a peer can change circle under the same `peer_id`, so
+  either side failing refuses), and for a reassign a destination that is
+  in that circle now, not human or service, and not private. A circle of
+  `""` is a missing one, as at registration, and matches nothing.
+  `AuthorizeOrchestrator` runs it at the moment of the action, under the
+  ask's claim, so a concurrent delegate cannot add a party between the
+  check and the move. The claim does not cover the registry: a circle,
+  role or visibility change can still land after the check.
 - **The acting orchestrator is a recorded party.** A reassign's stage
   records the new holder and the orchestrator, so the thread carries the
-  circle it passed through. The operator is not a peer and records
-  nothing.
+  circle it passed through. It is not among the thread's live parties, so
+  only its recorded circle and visibility count. Nudge and cancel add no
+  party. The operator is not a peer and records nothing.
 - **`wire_show`** ends with an `action`/`arguments` table, each row the
   tool name and its arguments encoded as JSON, only when `OrchestratorMay`
   admits the caller.

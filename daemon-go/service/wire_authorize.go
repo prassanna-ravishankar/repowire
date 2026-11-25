@@ -22,21 +22,32 @@ type WireRefusal struct {
 
 func (r WireRefusal) Error() string { return "wire action refused: " + r.Reason }
 
-// wireCircle treats a peer registered without a circle as in default.
-func wireCircle(c string) string {
+// inCircle reports whether c is circle. An empty circle is a missing one,
+// as everywhere else in the daemon (registration refuses it), so it matches
+// nothing: a record or a peer without a circle fails closed.
+func inCircle(c, circle string) bool {
+	return c != "" && c == circle
+}
+
+func circleName(c string) string {
 	if c == "" {
-		return "default"
+		return "(none)"
 	}
 	return c
 }
 
 // OrchestratorMay reports why an orchestrator holding circle may not act on
-// t, or nil when it may. dest, when not nil, is where a reassign would move
-// the ask: it must be in circle now, an agent or an orchestrator, and not
-// private, since it becomes a party.
+// t, or nil when it may. Every party must be in circle both as its stage
+// recorded it and as the registry knows it now, so a party that moved circle
+// since fails closed either way. The recorded parties include an
+// orchestrator that reassigned the ask; it is not among From, Holder and Via,
+// so only its recorded circle and visibility count. dest, when not nil, is
+// where a reassign would move the ask: it must be in circle now, an agent or
+// an orchestrator, and not private, since it becomes a party.
 func (w *Wire) OrchestratorMay(ctx context.Context, t WireThread, circle string, dest *proto.Peer) error {
-	circle = wireCircle(circle)
 	switch {
+	case circle == "":
+		return WireRefusal{"the orchestrator has no circle"}
 	case t.Kind != "ask":
 		return WireRefusal{"only an ask can be acted on"}
 	case !t.Open:
@@ -45,16 +56,22 @@ func (w *Wire) OrchestratorMay(ctx context.Context, t WireThread, circle string,
 		return WireRefusal{"the thread is protected (" + t.ProtectedBy + ")"}
 	}
 	for _, r := range t.Provenance {
-		if wireCircle(r.Circle) != circle {
-			return WireRefusal{fmt.Sprintf("party %s was in circle %s, not %s", r.PeerID, wireCircle(r.Circle), circle)}
+		if !inCircle(r.Circle, circle) {
+			return WireRefusal{fmt.Sprintf("party %s was in circle %s, not %s", r.PeerID, circleName(r.Circle), circle)}
+		}
+	}
+	for _, p := range append([]WireParty{t.From, t.Holder}, t.Via...) {
+		// Protected already refuses an unknown or missing asker or holder.
+		if p.Known && !inCircle(p.Circle, circle) {
+			return WireRefusal{fmt.Sprintf("party %s is in circle %s now, not %s", p.PeerID, circleName(p.Circle), circle)}
 		}
 	}
 	if dest == nil {
 		return nil
 	}
 	switch {
-	case wireCircle(dest.Circle) != circle:
-		return WireRefusal{fmt.Sprintf("%s is in circle %s, not %s", dest.DisplayName, wireCircle(dest.Circle), circle)}
+	case !inCircle(dest.Circle, circle):
+		return WireRefusal{fmt.Sprintf("%s is in circle %s, not %s", dest.DisplayName, circleName(dest.Circle), circle)}
 	case dest.Role == proto.RoleHuman || dest.Role == proto.RoleService:
 		return WireRefusal{fmt.Sprintf("%s is a %s peer", dest.DisplayName, dest.Role)}
 	case w.Private(ctx, dest.PeerID):
@@ -63,9 +80,11 @@ func (w *Wire) OrchestratorMay(ctx context.Context, t WireThread, circle string,
 	return nil
 }
 
-// AuthorizeOrchestrator is OrchestratorMay for the thread cid as the records
-// stand now. Callers hold the ask's claim, so no hand-off can add a party
-// between this check and the action.
+// AuthorizeOrchestrator is OrchestratorMay for the thread cid as it stands
+// now. Callers hold the ask's claim, so no hand-off can add a party between
+// this check and the action. A party's circle, role or visibility can still
+// change meanwhile, since the claim does not cover the registry; the check
+// reads them at the moment of the action, which is as late as it can.
 func (w *Wire) AuthorizeOrchestrator(ctx context.Context, cid, circle string, dest *proto.Peer) error {
 	t, ok, err := w.Thread(ctx, cid)
 	if err != nil {

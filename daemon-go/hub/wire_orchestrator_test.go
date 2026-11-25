@@ -18,14 +18,16 @@ func TestOrchestratorActionsFollowTheThreadRecords(t *testing.T) {
 	alpha, beta, gamma, delta := alphaPeer(), betaPeer(), gammaPeer(), deltaPeer()
 	orch := peerWith("repow-default-oooo", "orch", "default", proto.StatusOnline)
 	orch.Role = proto.RoleOrchestrator
-	// A peer registered without a circle is in default.
-	gamma.Circle = ""
+	// A circle of "" is a missing one, not default.
+	zeta := peerWith("repow-x-zzzz", "zeta", "", proto.StatusOnline)
+	rootless := peerWith("repow-x-rrrr", "rootless", "", proto.StatusOnline)
+	rootless.Role = proto.RoleOrchestrator
 	outsider := peerWith("repow-ops-pppp", "ops-orch", "ops", proto.StatusOnline)
 	outsider.Role = proto.RoleOrchestrator
 	epsilon := peerWith("repow-ops-eeee", "epsilon", "ops", proto.StatusOnline)
 	human := peerWith("repow-default-hhhh", "prass", "default", proto.StatusOnline)
 	human.Role = proto.RoleHuman
-	r := newDelegateRig(t, alpha, beta, gamma, delta, orch, outsider, epsilon, human)
+	r := newDelegateRig(t, alpha, beta, gamma, delta, orch, outsider, epsilon, human, zeta, rootless)
 	r.h.deliveryTraces = r.store
 	w := service.NewWire(r.asks, r.store, r.reg, r.store, config.Defaults().Wire.Stuck)
 	r.h.WithWire(w)
@@ -44,6 +46,10 @@ func TestOrchestratorActionsFollowTheThreadRecords(t *testing.T) {
 	refused("a destination outside the circle", err, "epsilon is in circle ops")
 	_, err = r.h.reassignAsk(ctx, by(orch), cid, "prass", "x")
 	refused("a human destination", err, "human")
+	_, err = r.h.reassignAsk(ctx, by(orch), cid, "zeta", "x")
+	refused("a destination without a circle", err, "zeta is in circle (none)")
+	_, err = r.h.wireAction(ctx, by(rootless), "nudge", cid, WireActionRequest{})
+	refused("an orchestrator without a circle", err, "has no circle")
 
 	if _, err := r.h.wireAction(ctx, by(orch), "nudge", cid, WireActionRequest{Note: "any news?"}); err != nil {
 		t.Fatal(err)
@@ -68,9 +74,26 @@ func TestOrchestratorActionsFollowTheThreadRecords(t *testing.T) {
 	if th.Protected || th.Provenance[len(th.Provenance)-1].PeerID != orch.PeerID {
 		t.Fatalf("the acting orchestrator is not recorded: %q %+v", th.ProtectedBy, th.Provenance)
 	}
-	if !strings.Contains(th.ActionsText(), `cancel_ask	{"reason":"<why, at most 200 characters>","thread_id":"`+cid+`"}`) {
-		t.Fatalf("actions:%s", th.ActionsText())
+	if a := th.ActionsText("default"); !strings.Contains(a, `cancel_ask	{"reason":"<why, at most 200 characters>","thread_id":"`+cid+`"}`) ||
+		!strings.Contains(a, `"to":"<an agent in circle default, not private>"`) {
+		t.Fatalf("actions:%s", a)
 	}
+
+	// A party's circle as the registry knows it now counts too: beta, a
+	// former holder, moves to ops under the same peer_id.
+	setCircle := func(p *proto.Peer, c string) {
+		r.reg.mu.Lock()
+		p.Circle = c
+		r.reg.mu.Unlock()
+	}
+	setCircle(beta, "ops")
+	_, err = r.h.wireAction(ctx, by(orch), "nudge", cid, WireActionRequest{})
+	refused("a party that moved circle", err, "is in circle ops now")
+	// Nor does the move admit the other circle's orchestrator: the records
+	// still say default.
+	_, err = r.h.wireAction(ctx, by(outsider), "nudge", cid, WireActionRequest{})
+	refused("the moved party's new orchestrator", err, "was in circle")
+	setCircle(beta, "default")
 
 	if _, err := r.h.setWireVisibility(ctx, "delta", service.WirePrivate); err != nil {
 		t.Fatal(err)
@@ -84,6 +107,19 @@ func TestOrchestratorActionsFollowTheThreadRecords(t *testing.T) {
 	if !hasPrefixed(frameTexts(r.wire.received(alpha.PeerID)), "[ask #"+cid+" cancelled by @orch] no longer needed") {
 		t.Fatalf("alpha received %q", frameTexts(r.wire.received(alpha.PeerID)))
 	}
+	closed, _, _ := w.Thread(ctx, cid)
+	if err := w.OrchestratorMay(ctx, closed, "default", nil); err == nil || !strings.Contains(err.Error(), "closed") {
+		t.Fatalf("a closed thread: %v", err)
+	}
+
+	// A party recorded without a circle fails closed: the operator may move
+	// an ask to zeta, after which no orchestrator may act on it.
+	moved := r.ask(t, alpha, beta, "release notes?")
+	if _, err := r.h.reassignAsk(ctx, operator, moved, "zeta", "operator's call"); err != nil {
+		t.Fatal(err)
+	}
+	_, err = r.h.wireAction(ctx, by(orch), "nudge", moved, WireActionRequest{})
+	refused("a party recorded without a circle", err, "was in circle (none)")
 
 	// A private party protects the thread from every orchestrator action.
 	private := r.ask(t, alpha, delta, "and the changelog?")
