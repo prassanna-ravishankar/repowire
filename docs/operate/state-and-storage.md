@@ -16,7 +16,7 @@ Schema version 16 adds the [human inbox](../concepts/human-inbox.md): `inbox_ite
 
 Schema version 17 adds [cross-machine circles](../concepts/peers-and-circles.md#circles-across-machines): `daemon_meta` (the database's `store_epoch`, so another machine can tell a replaced database from one that lost nothing), `remote_inbound` and `remote_fences` (requests other machines sent here, and ids read before they arrived), and `remote_outbound` (requests sent from here, with their immutable text and sender). Rows are deleted 7 days after creation: they are protocol state, so this window is fixed.
 
-Schema version 19 adds `peer_wire_visibility`: each peer's chosen [wire visibility](../reference/mcp-tools.md#set_wire_visibility), kept like its message delivery mode and exempt from retention. From this version the stages that name a thread's parties (an ask's `created`, `delegated` and `reassigned`, a notify's `resolved_peer`) carry a `provenance` detail: each party's circle, role and visibility at that moment. Retention strips message text from trace details, never provenance.
+Schema version 19 adds `peer_wire_visibility`: each peer's chosen [wire visibility](../reference/mcp-tools.md#set_wire_visibility), kept like its message delivery mode: exempt from retention, and deleted with the delivery mode when the peer's id is closed for good (a hard retirement). From this version the stages that name a thread's parties (an ask's `created`, `delegated` and `reassigned`, a notify's `resolved_peer`) carry a `provenance` detail: each party's circle, role and visibility at that moment. Retention strips message text from trace details, never provenance.
 
 ## Attachments
 

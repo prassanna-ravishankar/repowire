@@ -36,5 +36,5 @@ func (s *Store) PeerWireVisibilities(ctx context.Context) (map[string]string, er
 }
 
 // peerWireVisibilityRetention: a peer's visibility is its live choice, not
-// history.
-var peerWireVisibilityRetention = tableRetention{tables: []string{"peer_wire_visibility"}, exempt: "a peer's wire visibility is live configuration"}
+// history, and goes when the peer is closed for good.
+var peerWireVisibilityRetention = tableRetention{tables: []string{"peer_wire_visibility"}, exempt: "a peer's wire visibility is live configuration", closedWithPeer: true}
