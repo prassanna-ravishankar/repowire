@@ -16,6 +16,7 @@ import (
 	"errors"
 	"io"
 	"log"
+	"math"
 	"net/http"
 	"net/url"
 	"strings"
@@ -31,8 +32,12 @@ const (
 	maxBackoff     = 30 * time.Second
 	pingInterval   = 20 * time.Second // WS-level keepalive (Python ping_interval)
 	dialTimeout    = 10 * time.Second // Python open_timeout
-	tunnelTimeout  = 30 * time.Second // Python HTTP_TUNNEL_TIMEOUT
-	readLimit      = 16 << 20         // 16 MiB; matches Python max_size (attachments)
+	tunnelTimeout  = 30 * time.Second // a tunneled request that names no deadline (Python HTTP_TUNNEL_TIMEOUT)
+	// maxTunnelTimeout caps the deadline a relay asks for in timeout_ms,
+	// matching relayserver's cap (#437): a relay can let a long-poll route
+	// finish, never hold a local connection open indefinitely.
+	maxTunnelTimeout = 90 * time.Second
+	readLimit        = 16 << 20 // 16 MiB; matches Python max_size (attachments)
 )
 
 // strippedForwardHeaders are proxy headers removed before forwarding a tunneled
@@ -172,7 +177,9 @@ func NewClient(relayURL, apiKey, daemonID, localBaseURL string) *Client {
 		apiKey:       apiKey,
 		daemonID:     daemonID,
 		localBaseURL: strings.TrimRight(localBaseURL, "/"),
-		httpc:        &http.Client{Timeout: tunnelTimeout},
+		// Each request carries its own deadline (tunnelDeadline); this is
+		// only the backstop.
+		httpc: &http.Client{Timeout: maxTunnelTimeout},
 	}
 }
 
@@ -428,7 +435,9 @@ func (c *Client) handleHTTPRequest(ctx context.Context, session *relaySession, m
 	if b, ok := msg["body"].(string); ok && b != "" {
 		body, _ = base64.StdEncoding.DecodeString(b)
 	}
-	req, err := c.localRequest(ctx, msg, bytes.NewReader(body))
+	reqCtx, cancel := context.WithTimeout(ctx, tunnelDeadline(msg))
+	defer cancel()
+	req, err := c.localRequest(reqCtx, msg, bytes.NewReader(body))
 	if err != nil {
 		c.sendHTTPResponse(ctx, session, reqID, http.StatusBadGateway, nil, []byte(err.Error()))
 		return
@@ -443,6 +452,20 @@ func (c *Client) handleHTTPRequest(ctx context.Context, session *relaySession, m
 	defer resp.Body.Close()
 	respBody, _ := io.ReadAll(resp.Body)
 	c.sendHTTPResponse(ctx, session, reqID, resp.StatusCode, responseHeaders(resp.Header), respBody)
+}
+
+// tunnelDeadline is how long the local request may take: the relay's
+// timeout_ms (the caller's deadline, #437), capped at maxTunnelTimeout, or
+// tunnelTimeout from a relay that sends none.
+func tunnelDeadline(msg map[string]any) time.Duration {
+	ms, ok := msg["timeout_ms"].(float64)
+	if !ok || math.IsNaN(ms) || ms <= 0 {
+		return tunnelTimeout
+	}
+	if ms >= float64(maxTunnelTimeout.Milliseconds()) { // compared as a float: a huge value cannot wrap
+		return maxTunnelTimeout
+	}
+	return time.Duration(ms * float64(time.Millisecond))
 }
 
 func (c *Client) sendHTTPResponse(ctx context.Context, session *relaySession, reqID string, status int, headers map[string]any, body []byte) {
