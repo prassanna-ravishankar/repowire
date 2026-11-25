@@ -486,11 +486,19 @@ func panePID(paneID string) (int, bool) {
 	return pid, err == nil
 }
 
-// paneGone reports a conclusive "this pane no longer exists": tmux answered
-// and does not have it. An inconclusive probe (tmux could not run) is not gone.
+// paneGone reports that tmux, reached, does not have the pane. tmux 3.5
+// answers a missing target with exit 0 and an empty echo; older versions say
+// "can't find pane". Any failure to reach tmux at all (no server, a refused or
+// would-block socket, a socket path too long) exits 1 too, but says nothing
+// about the pane, so it is never "gone": unlike panePID, which counts every
+// exit error as an answer and is only read behind a strike limit.
 func paneGone(paneID string) bool {
-	root, ok := panePID(paneID)
-	return ok && root <= 0
+	out, err := exec.Command("tmux", "display-message", "-t", paneID, "-p", "#{pane_id}").Output()
+	if err == nil {
+		return strings.TrimSpace(string(out)) != paneID
+	}
+	var exit *exec.ExitError
+	return errors.As(err, &exit) && strings.Contains(string(exit.Stderr), "can't find pane")
 }
 
 func commandIsShell(pid int) (bool, bool) {

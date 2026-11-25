@@ -82,3 +82,47 @@ func TestWSHookExitsWhenItsPaneGoesWhileTheDaemonIsUnreachable(t *testing.T) {
 		t.Fatal("the hook kept retrying after its pane was gone")
 	}
 }
+
+// Only tmux reached and the pane absent is "gone". A tmux that cannot be
+// reached (no server, a socket path too long) exits 1 too, and must not make
+// a hook retire a live peer.
+func TestPaneGoneNeedsTmuxToAnswer(t *testing.T) {
+	if _, err := exec.LookPath("tmux"); err != nil {
+		t.Skip("tmux not installed")
+	}
+	dir := shortTempDir(t)
+	sock := filepath.Join(dir, "sock")
+	tm := func(args ...string) (string, error) {
+		out, err := exec.Command("tmux", append([]string{"-S", sock}, args...)...).CombinedOutput()
+		return strings.TrimSpace(string(out)), err
+	}
+	if out, err := tm("new-session", "-d", "-s", "probe", "sleep 60"); err != nil {
+		t.Skipf("cannot start a tmux server: %v %s", err, out)
+	}
+	t.Cleanup(func() { _, _ = tm("kill-server") })
+	live, err := tm("display-message", "-p", "-t", "probe:", "#{pane_id}")
+	if err != nil {
+		t.Fatal(err)
+	}
+	server, err := tm("display-message", "-p", "-t", "probe:", "#{socket_path},#{pid},0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("TMUX_TMPDIR", dir)
+	t.Setenv("TMUX", server)
+	if paneGone(live) {
+		t.Fatal("a live pane reads as gone")
+	}
+	if !paneGone("%9999") {
+		t.Fatal("a pane the server does not have reads as present")
+	}
+	for name, socket := range map[string]string{
+		"no server":            filepath.Join(dir, "none"),
+		"socket path too long": "/tmp/" + strings.Repeat("x", 120) + "/sock",
+	} {
+		t.Setenv("TMUX", socket+",1,0")
+		if paneGone(live) || paneGone("%9999") {
+			t.Fatalf("%s: an unreachable tmux read as an answer", name)
+		}
+	}
+}
