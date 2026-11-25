@@ -18,8 +18,9 @@ package routing
 //     last_exchange_with_sender_at is when the orchestrator last delegated to
 //     it earlier in the file. So recent ("the previous delegate"),
 //     majority-past ("the most frequent delegate so far") and the recency
-//     stratum compute exactly as on the mesh (#462). Time thresholds then read
-//     as delegation counts: novelty's 600 seconds is 600 lines.
+//     stratum compute exactly as on the mesh (#462). The pool has no arrivals
+//     (every model is there from the first line, with no last_seen), so
+//     hybrid-arrival reduces to majority-past and newest has nothing to rank.
 //
 // The label is therefore agreement with the orchestrator, the same quantity
 // our static track measures against a human sender. DecisionBench's own
