@@ -1101,7 +1101,10 @@ func (r *Registry) sessionBoundPeerLocked(ctx context.Context, params AllocatePa
 // session is bound to another peer. The bound peer takes the process back, and
 // the placeholder is dissolved: removed and closed for good, so its cached
 // certificate cannot revive it. A holder that already carries a session keeps
-// the process (a /clear stays on one peer). Must hold r.mu.
+// the process (a /clear stays on one peer). Asks the placeholder sent or held
+// are not handed on: it exists only from the proxy's first request
+// (initialize) until SessionStart, a startup window. Its settings rows go with
+// the hard close (Store.Retire). Must hold r.mu.
 func (r *Registry) placeholderYieldsLocked(ctx context.Context, params AllocateParams, holder *peerState, claimPath string) (proto.PeerID, bool) {
 	if runtimeSessionID(params.Metadata) == "" || runtimeSessionID(holder.peer.Metadata) != "" {
 		return "", false
