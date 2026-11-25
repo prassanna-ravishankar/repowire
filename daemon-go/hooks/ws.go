@@ -193,7 +193,16 @@ func RunWS() int {
 	}
 	displayName := getDisplayName()
 	backend := firstNonempty(os.Getenv("REPOWIRE_BACKEND"), "claude-code")
-	agentPID, _ := strconv.Atoi(os.Getenv("REPOWIRE_AGENT_PID"))
+	// Two pids (#542). sessionPID is the agent SessionStart registered; the
+	// hook reports it while it lives, so the daemon sees one pid per agent.
+	// agentPID is the pid watched for exit: the pane's first non-shell
+	// process, which under a wrapper (op run, time) is the wrapper.
+	sessionPID, _ := strconv.Atoi(os.Getenv("REPOWIRE_AGENT_PID"))
+	session := agentProcess{pid: sessionPID}
+	if started, ok := ProcessStartTime(sessionPID); ok {
+		session.started = started
+	}
+	agentPID := sessionPID
 	cwd, _ := os.Getwd()
 	peerID := os.Getenv("REPOWIRE_PEER_ID")
 	lastPeerID := peerID
@@ -253,8 +262,8 @@ func RunWS() int {
 		if peerID != "" {
 			connect["peer_id"] = peerID
 		}
-		if agentPID > 0 {
-			connect["agent_pid"] = agentPID
+		if pid := reportedPID(session, agentPID); pid > 0 {
+			connect["agent_pid"] = pid
 		}
 		if model := os.Getenv("REPOWIRE_MODEL"); model != "" {
 			connect["model"] = model
@@ -295,8 +304,8 @@ func RunWS() int {
 		peerID, displayName = confirmedIdentity(peerID, displayName, response)
 		meta := ReadPaneRuntimeMetadata(paneID)
 		meta["backend"], meta["cwd"], meta["display_name"], meta["peer_id"] = backend, cwd, firstNonempty(stringValue(response, "display_name"), displayName), lastPeerID
-		if agentPID > 0 {
-			meta["agent_pid"] = agentPID
+		if pid := reportedPID(session, agentPID); pid > 0 {
+			meta["agent_pid"] = pid
 		}
 		_ = writeMetadata(paneID, meta)
 
@@ -331,6 +340,36 @@ func RunWS() int {
 		}
 		time.Sleep(2 * time.Second)
 	}
+}
+
+// agentProcess is a pid and the start time it had when the hook began, so a
+// recycled pid is not mistaken for it (hooks live for weeks).
+type agentProcess struct {
+	pid     int
+	started string
+}
+
+// running reports whether a is still the process the hook started with.
+func (a agentProcess) running() bool {
+	if a.pid <= 0 || !pidAlive(a.pid) {
+		return false
+	}
+	if a.started == "" {
+		return true
+	}
+	now, ok := ProcessStartTime(a.pid)
+	return ok && now == a.started
+}
+
+// reportedPID is the agent pid the hook tells the daemon: the one SessionStart
+// registered while that same process runs, else the watched one. Reporting a
+// wrapper's pid made the daemon refuse the hook's claim as a twin, since
+// SessionStart had registered the agent itself, which is also alive.
+func reportedPID(session agentProcess, watched int) int {
+	if session.running() {
+		return session.pid
+	}
+	return watched
 }
 
 func watchAgent(ctx context.Context, conn *websocket.Conn, paneID string, agentPID int, expectedCommand string, exited chan<- bool) {
