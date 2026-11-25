@@ -126,3 +126,19 @@ func TestPaneGoneNeedsTmuxToAnswer(t *testing.T) {
 		}
 	}
 }
+
+// One gone answer is not enough to end a hook, and any other answer resets
+// the count: a terminal offline retires the peer.
+func TestGoneNeedsTwoAnswersInARow(t *testing.T) {
+	n, done := nextGoneStrikes(0, true)
+	if done {
+		t.Fatal("one gone answer ended the hook")
+	}
+	if n, done = nextGoneStrikes(n, false); done || n != 0 {
+		t.Fatalf("a present answer did not reset the count: %d %v", n, done)
+	}
+	n, _ = nextGoneStrikes(n, true)
+	if _, done = nextGoneStrikes(n, true); !done {
+		t.Fatal("two gone answers in a row did not end the hook")
+	}
+}

@@ -217,12 +217,8 @@ func RunWS() int {
 		// retrying forever. Only tmux reached and the pane absent counts, on
 		// two retries in a row: a terminal offline retires the peer, and
 		// every hook reconnects at once after a daemon restart.
-		if paneGone(paneID) {
-			goneStrikes++
-		} else {
-			goneStrikes = 0
-		}
-		if goneStrikes >= 2 {
+		var gone bool
+		if goneStrikes, gone = nextGoneStrikes(goneStrikes, paneGone(paneID)); gone {
 			markOffline(lastPeerID, "pane_gone", "ws_hook", fmt.Sprintf("pane %s is gone", paneID), paneID, agentPID)
 			ClearPaneRuntimeState(paneID)
 			return 0
@@ -536,6 +532,18 @@ func formatAttachments(value any) string {
 // FormatAttachments renders delivery attachment provenance for transports that
 // may additionally pass supported files through their native input API.
 func FormatAttachments(value any) string { return formatAttachments(value) }
+
+// goneStrikeLimit is how many consecutive "pane gone" answers end a hook.
+const goneStrikeLimit = 2
+
+// nextGoneStrikes counts consecutive gone answers; any other answer resets
+// the count, so a single bad probe never adds up across a long run.
+func nextGoneStrikes(prev int, gone bool) (int, bool) {
+	if !gone {
+		return 0, false
+	}
+	return prev + 1, prev+1 >= goneStrikeLimit
+}
 
 func backoff(failures int) time.Duration {
 	seconds := 1
