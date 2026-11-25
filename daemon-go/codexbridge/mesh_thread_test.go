@@ -7,7 +7,6 @@ import (
 	"strings"
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/coder/websocket"
 	"github.com/coder/websocket/wsjson"
@@ -69,21 +68,38 @@ func TestOnlyConversationThreadsBecomePeers(t *testing.T) {
 	legacy := map[string]any{"id": "thread-legacy", "cwd": "/missing/legacy", "status": map[string]any{"type": "idle"}}
 	b, reads := startThreadReads(t, ctx, map[string]map[string]any{})
 
+	other := map[string]any{"id": "thread-helper", "cwd": "/missing/helper", "threadSource": "memory_consolidation", "status": map[string]any{"type": "idle"}}
+	reads.mu.Lock()
+	reads.threads["thread-helper"] = other
+	reads.mu.Unlock()
+
+	// thread/started, and discovery through a read (thread/loaded/list and
+	// status rediscovery both reach loadThread).
 	for _, thread := range []map[string]any{title, system} {
 		b.handleNotification("thread/started", map[string]any{"thread": thread})
-		id := stringValue(thread, "id")
-		if b.thread(id) != nil {
-			t.Fatalf("%s thread %s became a peer", thread["threadSource"], id)
-		}
-		b.handleNotification("thread/status/changed", map[string]any{"threadId": id, "status": map[string]any{"type": "active"}})
-		b.handleNotification("thread/status/changed", map[string]any{"threadId": id, "status": map[string]any{"type": "idle"}})
 	}
-	time.Sleep(200 * time.Millisecond)
-	if got := reads.recorded(); len(got) != 0 {
-		t.Fatalf("helper threads were read again: %v", got)
+	if err := b.loadThread(ctx, "thread-helper", false); err != nil {
+		t.Fatal(err)
+	}
+	for _, thread := range []map[string]any{title, system, other} {
+		id := stringValue(thread, "id")
+		if b.thread(id) != nil || !b.isInternal(id) {
+			t.Fatalf("%s thread %s became a peer or was not remembered", thread["threadSource"], id)
+		}
+		// Later status changes and resumed-thread rediscovery read nothing.
+		if err := b.loadThread(ctx, id, false); err != nil {
+			t.Fatal(err)
+		}
+		if err := b.loadThread(ctx, id, true); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := reads.recorded(); len(got) != 1 {
+		t.Fatalf("reads = %v; want only the first discovery of thread-helper", got)
 	}
 
-	for _, thread := range []map[string]any{user, legacy} {
+	subagent := loadThreadFixture(t, "thread_subagent_denied.json")
+	for _, thread := range []map[string]any{user, subagent, legacy} {
 		b.handleNotification("thread/started", map[string]any{"thread": thread})
 		if b.thread(stringValue(thread, "id")) == nil {
 			t.Fatalf("conversation thread %v did not become a peer", thread["id"])
@@ -115,6 +131,9 @@ func TestReconcileReadsTurnsOnlyForPersistedThreads(t *testing.T) {
 
 	b.captureCompletedTurn(stringValue(ephemeral, "id"))
 	b.captureCompletedTurn(stringValue(persisted, "id"))
+	// A thread closed before its reconcile runs is not read at all.
+	b.closeThread(stringValue(ephemeral, "id"))
+	b.captureCompletedTurn(stringValue(ephemeral, "id"))
 	got := reads.recorded()
 	if len(got) != 2 {
 		t.Fatalf("reads = %v", got)

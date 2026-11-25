@@ -407,14 +407,16 @@ func (b *Bridge) handleNotification(method string, params map[string]any) {
 func (b *Bridge) captureCompletedTurn(threadID string) {
 	ctx, cancel := context.WithTimeout(b.ctx, 5*time.Second)
 	defer cancel()
-	// The App Server keeps no turns for an ephemeral thread and refuses
-	// includeTurns (-32600); its turns arrive only as turn/completed.
-	ephemeral := false
-	if p := b.thread(threadID); p != nil {
-		p.mu.Lock()
-		ephemeral = p.provenance.Ephemeral
-		p.mu.Unlock()
+	// Only a peer is reconciled. The App Server keeps no turns for an
+	// ephemeral thread and refuses includeTurns (-32600); its turns arrive
+	// only as turn/completed.
+	peer := b.thread(threadID)
+	if peer == nil {
+		return
 	}
+	peer.mu.Lock()
+	ephemeral := peer.provenance.Ephemeral
+	peer.mu.Unlock()
 	raw, err := b.call(ctx, "thread/read", map[string]any{"threadId": threadID, "includeTurns": !ephemeral})
 	if err != nil {
 		log.Printf("codex bridge: reconcile completed turn for %s: %v", threadID, err)
