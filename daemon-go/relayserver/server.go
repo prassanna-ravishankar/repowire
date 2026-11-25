@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -25,8 +26,43 @@ import (
 
 const (
 	defaultTunnelTimeout = 30 * time.Second
-	streamStartTimeout   = 10 * time.Second
+	// maxTunnelTimeout caps how long a tunneled request may hold a caller and
+	// a daemon connection, whatever it asks for. The daemon's long-poll routes
+	// cap their own waits below it (asks/{cid}/wait at 50s, ask-blocking at
+	// 55s), and proxies in front of a hosted relay commonly drop requests
+	// idle for 100s. relay/client.go enforces the same cap on its side.
+	maxTunnelTimeout   = 90 * time.Second
+	streamStartTimeout = 10 * time.Second
 )
+
+// TunnelTimeoutHeader is how a caller that long-polls through the tunnel
+// says how long to wait for the daemon, in seconds (#437). The request owns
+// its deadline, since only it knows it called a route that waits; the relay
+// caps it at maxTunnelTimeout and defaults to defaultTunnelTimeout, so an
+// ordinary request still fails fast on a hung daemon. The deadline travels
+// to the daemon in the http_request frame as timeout_ms.
+const TunnelTimeoutHeader = "X-Repowire-Timeout"
+
+// tunnelWaitMargin is added to a route's own wait, so the tunnel outlasts it
+// and the route's answer (not a 504) reaches the caller.
+const tunnelWaitMargin = 10 * time.Second
+
+// tunnelDeadline is how long the tunnel waits for r: the caller's
+// TunnelTimeoutHeader, capped, else the server's default.
+func (s *Server) tunnelDeadline(r *http.Request) time.Duration {
+	raw := strings.TrimSpace(r.Header.Get(TunnelTimeoutHeader))
+	if raw == "" {
+		return s.timeout
+	}
+	secs, err := strconv.ParseFloat(raw, 64)
+	if err != nil || math.IsNaN(secs) || secs <= 0 {
+		return s.timeout
+	}
+	if secs >= maxTunnelTimeout.Seconds() { // compared as a float: a huge value cannot wrap
+		return maxTunnelTimeout
+	}
+	return time.Duration(secs * float64(time.Second))
+}
 
 var tunnelRoots = []string{
 	"/ack", "/acp", "/answer", "/ask", "/ask-many", "/asks", "/attachments",
@@ -548,7 +584,11 @@ func (s *Server) tunnel(w http.ResponseWriter, r *http.Request, conn *daemonConn
 		}
 		headers[name] = strings.Join(values, ", ")
 	}
-	msg := map[string]any{"type": "http_request", "request_id": id, "method": r.Method, "path": path, "headers": headers, "query_string": r.URL.RawQuery}
+	deadline := s.tunnelDeadline(r)
+	msg := map[string]any{"type": "http_request", "request_id": id, "method": r.Method, "path": path, "headers": headers, "query_string": r.URL.RawQuery,
+		// The daemon's relay client bounds its local request by this, so both
+		// ends give up together (an older client ignores it and keeps 30s).
+		"timeout_ms": deadline.Milliseconds()}
 	if len(body) > 0 {
 		msg["body"] = base64.StdEncoding.EncodeToString(body)
 	}
@@ -556,7 +596,7 @@ func (s *Server) tunnel(w http.ResponseWriter, r *http.Request, conn *daemonConn
 		writeError(w, http.StatusBadGateway, "Failed to reach daemon")
 		return
 	}
-	timer := time.NewTimer(s.timeout)
+	timer := time.NewTimer(deadline)
 	defer timer.Stop()
 	select {
 	case response := <-ch:

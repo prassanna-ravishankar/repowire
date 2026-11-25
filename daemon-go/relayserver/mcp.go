@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -156,7 +157,7 @@ func (s *Server) registerRelayMCP() {
 		if a.WaitSeconds < 0 || a.WaitSeconds > 20 || a.RequestID == "" || len(a.RequestID) > 256 || strings.ContainsAny(a.RequestID, "/?#%\\") {
 			return nil, nil, fmt.Errorf("request_id is required and wait_seconds must be 0–20")
 		}
-		data, err := s.mcpDaemonCall(ctx, g, a.DaemonID, http.MethodPost, "/asks/"+url.PathEscape(a.RequestID)+"/wait", nil, map[string]any{"peer_id": relaySender(g), "timeout_seconds": a.WaitSeconds})
+		data, err := s.mcpDaemonCall(ctx, g, a.DaemonID, http.MethodPost, "/asks/"+url.PathEscape(a.RequestID)+"/wait", nil, map[string]any{"peer_id": relaySender(g), "timeout_seconds": a.WaitSeconds}, time.Duration(a.WaitSeconds)*time.Second)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -221,7 +222,10 @@ func (s *Server) validateMessage(ctx context.Context, g oauthGrant, a messageArg
 
 // The relay is only an adapter. No routing logic or local HTTP credentials live
 // here: the existing authenticated outbound tunnel and daemon own delivery.
-func (s *Server) mcpDaemonCall(ctx context.Context, g oauthGrant, daemonID, method, path string, query url.Values, body any) (map[string]any, error) {
+// mcpDaemonCall tunnels one daemon request for an MCP tool. A tool that asks
+// the daemon to wait passes it as wait; the tunnel then holds the request
+// for that long plus a margin rather than its default (#437).
+func (s *Server) mcpDaemonCall(ctx context.Context, g oauthGrant, daemonID, method, path string, query url.Values, body any, wait ...time.Duration) (map[string]any, error) {
 	if daemonID == "" {
 		return nil, fmt.Errorf("daemon_id is required; use list_machines")
 	}
@@ -239,6 +243,9 @@ func (s *Server) mcpDaemonCall(ctx context.Context, g oauthGrant, daemonID, meth
 	}
 	r.URL.RawQuery = query.Encode()
 	r.Header.Set("Content-Type", "application/json")
+	if len(wait) > 0 && wait[0] > 0 {
+		r.Header.Set(TunnelTimeoutHeader, strconv.FormatFloat((wait[0]+tunnelWaitMargin).Seconds(), 'f', -1, 64))
+	}
 	w := httptest.NewRecorder()
 	s.tunnel(w, r, conn, path)
 	if w.Code < 200 || w.Code >= 300 {

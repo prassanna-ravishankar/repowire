@@ -16,6 +16,7 @@ import (
 	"errors"
 	"io"
 	"log"
+	"math"
 	"net/http"
 	"net/url"
 	"strings"
@@ -31,8 +32,12 @@ const (
 	maxBackoff     = 30 * time.Second
 	pingInterval   = 20 * time.Second // WS-level keepalive (Python ping_interval)
 	dialTimeout    = 10 * time.Second // Python open_timeout
-	tunnelTimeout  = 30 * time.Second // Python HTTP_TUNNEL_TIMEOUT
-	readLimit      = 16 << 20         // 16 MiB; matches Python max_size (attachments)
+	tunnelTimeout  = 30 * time.Second // a tunneled request that names no deadline (Python HTTP_TUNNEL_TIMEOUT)
+	// maxTunnelTimeout caps the deadline a relay asks for in timeout_ms,
+	// matching relayserver's cap (#437): a relay can let a long-poll route
+	// finish, never hold a local connection open indefinitely.
+	maxTunnelTimeout = 90 * time.Second
+	readLimit        = 16 << 20 // 16 MiB; matches Python max_size (attachments)
 )
 
 // strippedForwardHeaders are proxy headers removed before forwarding a tunneled
@@ -79,12 +84,16 @@ type relaySession struct {
 	machines   map[string]chan machineResponse
 	httpWork   chan map[string]any
 	remoteWork chan map[string]any
+	// longPolls bounds the tunneled requests holding a worker past the
+	// default deadline, so long-polls cannot take every worker (#437).
+	longPolls chan struct{}
 }
 
 func newRelaySession(conn *websocket.Conn) *relaySession {
 	return &relaySession{
 		conn: conn, streams: map[string]context.CancelFunc{}, machines: map[string]chan machineResponse{},
 		httpWork: make(chan map[string]any, remoteQueue), remoteWork: make(chan map[string]any, remoteQueue),
+		longPolls: make(chan struct{}, maxLongPolls),
 	}
 }
 
@@ -172,7 +181,9 @@ func NewClient(relayURL, apiKey, daemonID, localBaseURL string) *Client {
 		apiKey:       apiKey,
 		daemonID:     daemonID,
 		localBaseURL: strings.TrimRight(localBaseURL, "/"),
-		httpc:        &http.Client{Timeout: tunnelTimeout},
+		// Each request carries its own deadline (tunnelDeadline); this is
+		// only the backstop.
+		httpc: &http.Client{Timeout: maxTunnelTimeout},
 	}
 }
 
@@ -398,6 +409,12 @@ func (c *Client) handleMessage(ctx context.Context, session *relaySession, msg m
 	case "http_request":
 		// Off the reader, so a tunneled request that itself waits on the
 		// relay (a cross-machine ask) can still receive its answer.
+		// The deadline runs from now, not from when a worker is free: the
+		// relay's clock started when it sent the frame.
+		// The relay answers 504 at its deadline; giving up a little before it
+		// means nothing runs, or answers, after the caller has been told 504.
+		budget := tunnelDeadline(msg)
+		msg[deadlineKey] = time.Now().Add(budget - min(deadlineMargin, budget/10))
 		c.admit(ctx, session, session.httpWork, msg)
 	case "http_stream_request":
 		c.startHTTPStream(ctx, session, msg)
@@ -428,7 +445,31 @@ func (c *Client) handleHTTPRequest(ctx context.Context, session *relaySession, m
 	if b, ok := msg["body"].(string); ok && b != "" {
 		body, _ = base64.StdEncoding.DecodeString(b)
 	}
-	req, err := c.localRequest(ctx, msg, bytes.NewReader(body))
+	// Work still queued past its deadline is discarded unrun, as
+	// serveRemote does: the relay has already answered 504, and running a
+	// mutation nobody waits for would be worse than not running it.
+	deadline, ok := msg[deadlineKey].(time.Time)
+	if !ok {
+		deadline = time.Now().Add(tunnelDeadline(msg))
+	}
+	if !time.Now().Before(deadline) {
+		return
+	}
+	// A deadline past the default is a long-poll: it may hold a worker for up
+	// to maxTunnelTimeout, so at most half the workers do, and one more is
+	// refused at once instead of starving ordinary requests into their 504.
+	if time.Until(deadline) > tunnelTimeout && session != nil {
+		select {
+		case session.longPolls <- struct{}{}:
+			defer func() { <-session.longPolls }()
+		default:
+			c.sendHTTPResponse(ctx, session, reqID, http.StatusTooManyRequests, nil, []byte(`{"detail":"too many long-polls in flight, not processed"}`))
+			return
+		}
+	}
+	reqCtx, cancel := context.WithDeadline(ctx, deadline)
+	defer cancel()
+	req, err := c.localRequest(reqCtx, msg, bytes.NewReader(body))
 	if err != nil {
 		c.sendHTTPResponse(ctx, session, reqID, http.StatusBadGateway, nil, []byte(err.Error()))
 		return
@@ -443,6 +484,33 @@ func (c *Client) handleHTTPRequest(ctx context.Context, session *relaySession, m
 	defer resp.Body.Close()
 	respBody, _ := io.ReadAll(resp.Body)
 	c.sendHTTPResponse(ctx, session, reqID, resp.StatusCode, responseHeaders(resp.Header), respBody)
+}
+
+// deadlineMargin is taken off the relay's deadline (a tenth of a short
+// one): the daemon gives up first, so the caller gets the daemon's own error, and no work runs after
+// the relay has answered 504.
+const deadlineMargin = time.Second
+
+// maxLongPolls is how many tunneled requests may hold a worker past the
+// default deadline at once: half the workers.
+const maxLongPolls = remoteWorkers / 2
+
+// deadlineKey holds a queued http_request's absolute deadline, stamped
+// when its frame is read. Not a wire field.
+const deadlineKey = "\x00deadline"
+
+// tunnelDeadline is how long the local request may take: the relay's
+// timeout_ms (the caller's deadline, #437), capped at maxTunnelTimeout, or
+// tunnelTimeout from a relay that sends none.
+func tunnelDeadline(msg map[string]any) time.Duration {
+	ms, ok := msg["timeout_ms"].(float64)
+	if !ok || math.IsNaN(ms) || ms <= 0 {
+		return tunnelTimeout
+	}
+	if ms >= float64(maxTunnelTimeout.Milliseconds()) { // compared as a float: a huge value cannot wrap
+		return maxTunnelTimeout
+	}
+	return time.Duration(ms * float64(time.Millisecond))
 }
 
 func (c *Client) sendHTTPResponse(ctx context.Context, session *relaySession, reqID string, status int, headers map[string]any, body []byte) {
