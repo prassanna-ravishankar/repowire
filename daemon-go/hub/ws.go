@@ -312,7 +312,21 @@ func (h *Hub) HandleWS(w http.ResponseWriter, r *http.Request) {
 	// Best-effort: a write failure stops the replay (a row is deleted only
 	// after its frame is written, so unsent rows survive for the next
 	// reconnect).
-	h.flushQueuedDeliveries(ctx, conn, peerID, assignedName)
+	//
+	// A spawn's opening message held for this peer goes first, live, and the
+	// queue replays behind it: a follow-up the spawner sent while the runtime
+	// sat at a first-run prompt must not become its first prompt. The live send
+	// waits for its delivery ack, which only the read loop below receives, so
+	// both run beside it. Nothing the read loop handles assumes the replay has
+	// run; coder/websocket allows the concurrent writes.
+	if h.seedHeldFor(peerID) {
+		go func() {
+			h.seedConnected(h.seedContext(), peerID)
+			h.flushQueuedDeliveries(ctx, conn, peerID, assignedName)
+		}()
+	} else {
+		h.flushQueuedDeliveries(ctx, conn, peerID, assignedName)
+	}
 
 	// Read loop: dispatch frames by type until the socket drops.
 	for {

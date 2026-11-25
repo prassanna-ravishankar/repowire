@@ -33,6 +33,8 @@ type Hub struct {
 	// beforeConnect, when set by a test, runs between a peer's registration
 	// and the attach of its socket.
 	beforeConnect func(proto.PeerID)
+	// seeds are spawn opening messages waiting for their peers (spawn_seed.go).
+	seeds spawnSeeds
 
 	// Read-path deps for the HTTP route groups. Optional and nil-safe: the
 	// peer-read handlers degrade gracefully (no inbound-health probe) when these

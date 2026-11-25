@@ -21,7 +21,6 @@ package hub
 
 import (
 	"context"
-	"log"
 	"net/http"
 	"os"
 	"strings"
@@ -363,53 +362,11 @@ func (h *Hub) spawnPeer(ctx context.Context, req SpawnRequest) (SpawnResponse, e
 		default:
 			resp.SeedState = "awaiting_registration"
 			from := firstNonempty(req.FromPeer, mcpDefaultIdentity)
-			go h.deliverSpawnSeed(h.spawn.ctx, result.PaneID, result.DisplayName, from, *req.Message)
+			h.holdSpawnSeed(h.spawn.ctx, result.PaneID, result.DisplayName, backend, req.Path, from, *req.Message)
 		}
 	}
 
 	return resp, nil
-}
-
-// spawnSeedTimeout bounds how long the daemon waits for a spawned peer to
-// register before giving up on its opening message. Generous for slow hosts
-// and Codex's late App Server registration.
-var spawnSeedTimeout = 90 * time.Second
-
-// deliverSpawnSeed is the spawn-with-message contract: create the process, wait
-// for it to register on its pane, then deliver the opening message as a normal
-// notify from the spawner. The seed bypasses the first-turn gate (it is the
-// seed); everything else for that peer still waits behind it. Outcomes are
-// journaled so a lost opening prompt is visible instead of silent.
-func (h *Hub) deliverSpawnSeed(ctx context.Context, paneID, displayName, from, text string) {
-	timeout := spawnSeedTimeout
-	deadline := time.Now().Add(timeout)
-	for {
-		if p, ok := h.ask.reg.GetPeerByPane(paneID); ok && p.Status != proto.StatusOffline {
-			res, err := h.ask.delivery.Notify(ctx, service.NotifyParams{
-				FromPeer: from, ToPeer: string(p.PeerID), Text: text, BypassCircle: true, SkipSeedGate: true,
-			})
-			payload := map[string]any{"pane_id": paneID, "peer_id": string(p.PeerID), "peer_name": string(p.DisplayName), "from_peer": from}
-			if err != nil {
-				payload["error"] = err.Error()
-				log.Printf("spawn: opening message for %s (%s) failed: %v", p.DisplayName, p.PeerID, err)
-				h.ask.reg.AddEvent(ctx, "spawn_seed_failed", payload)
-				return
-			}
-			payload["delivery_state"] = res.DeliveryState
-			h.ask.reg.AddEvent(ctx, "spawn_seed_delivered", payload)
-			return
-		}
-		if time.Now().After(deadline) {
-			log.Printf("spawn: %s never registered on pane %s within %s; opening message dropped", displayName, paneID, timeout)
-			h.ask.reg.AddEvent(ctx, "spawn_seed_failed", map[string]any{"pane_id": paneID, "display_name": displayName, "from_peer": from, "error": "peer did not register before timeout"})
-			return
-		}
-		select {
-		case <-ctx.Done():
-			return
-		case <-time.After(250 * time.Millisecond):
-		}
-	}
 }
 
 // turnStateRegistry is the optional seam for seeding pending_first_turn after a
