@@ -469,26 +469,12 @@ func (h *Hub) planRestart(ctx context.Context, p *proto.Peer, req RestartPeerReq
 		return plan, &RestartFailure{Reason: "unsupported_backend", Hint: string(p.Backend) + " has no launch template."}
 	}
 
-	binding := h.restartBinding(ctx, p)
-	cwd := p.Path
+	in := h.resumeInputsFor(ctx, p)
+	binding, cwd := in.binding, in.cwd
 	if binding != nil {
 		plan.bindingStatus = string(binding.Status)
-		if binding.ProjectPath != "" {
-			cwd = binding.ProjectPath
-		}
-		plan.capability = binding.ResumeCapability
-		plan.repowireSID = &binding.RepowireSessionID
-		if id, _ := binding.ResumeCapability["runtime_session_id_arg"].(string); id != "" {
-			plan.resumeID = id
-		} else if binding.RuntimeSessionID != nil {
-			plan.resumeID = *binding.RuntimeSessionID
-		}
 	}
-	if plan.resumeID == "" {
-		if id := runtimeSessionIDFromMetadata(p.Metadata); id != nil {
-			plan.resumeID = *id
-		}
-	}
+	plan.capability, plan.repowireSID, plan.resumeID = in.capability, in.repowireSID, in.resumeID
 	if cwd == "" {
 		return plan, &RestartFailure{Reason: "missing_cwd", Hint: "Neither the session binding nor the peer records a working directory."}
 	}
@@ -551,34 +537,17 @@ func (h *Hub) planRestart(ctx context.Context, p *proto.Peer, req RestartPeerReq
 
 	// Permissions: only modeled argument shapes are rebuilt; anything else in
 	// the permission family relaunches the observed argv verbatim.
-	hookMode := ""
-	for _, meta := range []map[string]any{p.Metadata, bindingMeta(binding)} {
-		if m, _ := meta["permission_mode"].(string); m != "" {
-			if _, ok := service.PermissionWords(p.Backend, m); ok {
-				hookMode = m
-				break
-			}
-		}
-	}
 	var argv []string
 	exact := false
 	if plan.exitMode == "sigterm" {
 		argv, exact = proc.Args(plan.pid)
 	}
-	mode, source, words := "", "", []string(nil)
-	if len(argv) > 0 {
-		obs := service.ObservePermission(p.Backend, argv)
-		mode, source, words = obs.Mode, "argv", obs.Words
-		if obs.Mode == service.ModeArgvVerbatim && !exact && hookMode != "" {
-			mode, source = hookMode, "hook"
-			words, _ = service.PermissionWords(p.Backend, hookMode)
-			result.Warnings = append(result.Warnings, "argv read via ps is not exact; used the recorded permission_mode")
-		}
-	} else if hookMode != "" {
-		mode, source = hookMode, "hook"
-		words, _ = service.PermissionWords(p.Backend, hookMode)
-	} else {
-		mode, source = service.ModeDefault, "backend_default"
+	perm := launchPermission(p, binding, argv, exact)
+	mode, source, words := perm.Mode, perm.Source, perm.Words
+	if perm.Warning != "" {
+		result.Warnings = append(result.Warnings, perm.Warning)
+	}
+	if source == "backend_default" {
 		result.Defaulted = append(result.Defaulted, "permission_mode")
 	}
 	if mode != service.ModeArgvVerbatim {
@@ -1061,6 +1030,77 @@ func (h *Hub) restartBinding(ctx context.Context, p *proto.Peer) *state.SessionB
 		}
 	}
 	return nil
+}
+
+// resumeInputs is what a relaunch knows about a peer's resumable session:
+// its binding's cwd, resume capability and runtime session id, falling back
+// to the peer's own path and metadata. Restart and swarm snapshot (#505)
+// both read it here.
+type resumeInputs struct {
+	binding     *state.SessionBinding
+	cwd         string
+	capability  map[string]any
+	repowireSID *string
+	resumeID    string
+}
+
+func (h *Hub) resumeInputsFor(ctx context.Context, p *proto.Peer) resumeInputs {
+	in := resumeInputs{binding: h.restartBinding(ctx, p), cwd: p.Path}
+	if b := in.binding; b != nil {
+		if b.ProjectPath != "" {
+			in.cwd = b.ProjectPath
+		}
+		in.capability = b.ResumeCapability
+		in.repowireSID = &b.RepowireSessionID
+		if id, _ := b.ResumeCapability["runtime_session_id_arg"].(string); id != "" {
+			in.resumeID = id
+		} else if b.RuntimeSessionID != nil {
+			in.resumeID = *b.RuntimeSessionID
+		}
+	}
+	if in.resumeID == "" {
+		if id := runtimeSessionIDFromMetadata(p.Metadata); id != nil {
+			in.resumeID = *id
+		}
+	}
+	return in
+}
+
+// permissionChoice is how a relaunch reproduces a runtime's permissions.
+type permissionChoice struct {
+	Mode    string   `json:"mode"`
+	Source  string   `json:"source"` // argv | hook | backend_default
+	Words   []string `json:"words,omitempty"`
+	Warning string   `json:"warning,omitempty"`
+}
+
+// launchPermission reads the observed argv when there is one, falling back
+// to the hook-recorded permission_mode when ps lost an unmodeled argv's
+// quoting, and to the backend's default when nothing was observed or
+// recorded. Restart and swarm snapshot share it.
+func launchPermission(p *proto.Peer, binding *state.SessionBinding, argv []string, exact bool) permissionChoice {
+	hookMode := ""
+	for _, meta := range []map[string]any{p.Metadata, bindingMeta(binding)} {
+		if m, _ := meta["permission_mode"].(string); m != "" {
+			if _, ok := service.PermissionWords(p.Backend, m); ok {
+				hookMode = m
+				break
+			}
+		}
+	}
+	switch {
+	case len(argv) > 0:
+		obs := service.ObservePermission(p.Backend, argv)
+		if obs.Mode == service.ModeArgvVerbatim && !exact && hookMode != "" {
+			words, _ := service.PermissionWords(p.Backend, hookMode)
+			return permissionChoice{Mode: hookMode, Source: "hook", Words: words, Warning: "argv read via ps is not exact; used the recorded permission_mode"}
+		}
+		return permissionChoice{Mode: obs.Mode, Source: "argv", Words: obs.Words}
+	case hookMode != "":
+		words, _ := service.PermissionWords(p.Backend, hookMode)
+		return permissionChoice{Mode: hookMode, Source: "hook", Words: words}
+	}
+	return permissionChoice{Mode: service.ModeDefault, Source: "backend_default"}
 }
 
 func bindingMeta(b *state.SessionBinding) map[string]any {

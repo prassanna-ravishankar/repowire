@@ -241,7 +241,10 @@ experiments:
     gated_tools: [Bash, Edit, Write, MultiEdit, NotebookEdit]
     timeout_seconds: 45
   git_trailers: true            # enables the Git hook installed with setup --git-hooks
+  swarm_snapshot: true          # repowire swarm snapshot and GET /swarm/snapshot (read-only)
 ```
+
+`swarm_snapshot` enables [`repowire swarm snapshot`](cli.md#repowire-swarm), a read-only record of the tmux layout and the agents running in it, for a later restore after tmux or the machine goes down. Env: `REPOWIRE_EXPERIMENTS__SWARM_SNAPSHOT`.
 
 `remote_tool_approval` gates `gated_tools` behind a blocking approval question: before a gated tool runs, a `PreToolUse` hook posts the question to the daemon and waits for an allow/deny from a human surface or peer, denying on timeout. The installer only registers the `PreToolUse` hook when `enabled` is set; toggling it off and re-running `repowire setup` removes the hook. Read-only tools are never gated. See [Structured questions](../concepts/message-types.md#pretooluse-tool-approval-claude-code).
 

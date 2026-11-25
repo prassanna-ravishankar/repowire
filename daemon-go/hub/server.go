@@ -57,6 +57,8 @@ type Hub struct {
 	// attachmentRetention is the retention policy (WithRetention), for an
 	// upload that would hit the directory cap; the zero policy keeps files.
 	attachmentRetention state.RetentionPolicy
+	// swarmEnabled mounts the swarm snapshot route (experiments.swarm_snapshot).
+	swarmEnabled bool
 	// attachmentRefs lists the attachments stored messages still name, so
 	// expiry keeps a file in use (WithRetention). nil → none are.
 	attachmentRefs attachmentReferrer
@@ -290,6 +292,7 @@ func (h *Hub) Routes(mux *http.ServeMux) {
 	if h.spawn != nil {
 		h.registerSpawnRoutes(mux)
 	}
+	h.registerSwarmRoutes(mux)
 	h.registerMCPRoutes(mux)
 	// reviews/shares/attachments are independent leaf endpoints, always
 	// registered. Reviews lazily defaults its store; shares/attachments degrade

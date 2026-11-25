@@ -535,6 +535,7 @@ func runDaemon() {
 		WithRouting(router).
 		WithSessionRoutes(reg, store).
 		WithSpawn(spawnService, reg, asks, selfMachine, cfg.Daemon.CircleBoundary).
+		WithSwarmSnapshot(cfg.Experiments.SwarmSnapshot).
 		WithSpawnContext(ctx).
 		WithWork(jobRunner, store, reg).
 		WithJobCompletion(jobCompletion).

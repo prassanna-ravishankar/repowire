@@ -94,6 +94,9 @@ func newRootCommand() *cobra.Command {
 	})
 	wire.RunE = func(*cobra.Command, []string) error { return codeError(runWire(nil)) }
 	root.AddCommand(wire)
+	root.AddCommand(group("swarm", "Snapshot the tmux layout and its agents (experiments.swarm_snapshot)", runSwarm, []leaf{
+		{"snapshot [-o FILE] [--force]", "Record every pane's place and the agent in it (read-only); 0600 file, or JSON to stdout"},
+	}))
 	root.AddCommand(group("container", "Spawned agents' container (rfcs/agent-container.md)", runContainer, []leaf{
 		{"report [--since 7d] [--db PATH] [--json]", "Summarise the exit-watch soak: tmux offline signals the agent's own exit confirmed or refuted"},
 	}))
