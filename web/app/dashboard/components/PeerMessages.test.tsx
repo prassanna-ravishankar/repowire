@@ -74,4 +74,18 @@ describe("PeerMessages", () => {
     render(<PeerMessages peer={PEER} apiBase="/api" />);
     expect(await screen.findByText("messages are not recorded on this daemon")).toBeTruthy();
   });
+
+  it("keeps the rows on screen when a refresh fails", async () => {
+    let fail = false;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn<(url: string) => Promise<Response>>(() => (fail ? json({}, 500) : json({ delivery: "push", messages: [LISTED] }))),
+    );
+    render(<PeerMessages peer={PEER} apiBase="/api" />);
+    expect(await screen.findByText("deploy at noon")).toBeTruthy();
+    fail = true;
+    fireEvent.click(screen.getByLabelText("Refresh messages"));
+    expect(await screen.findByText("Error 500")).toBeTruthy();
+    expect(screen.getByText("deploy at noon")).toBeTruthy();
+  });
 });

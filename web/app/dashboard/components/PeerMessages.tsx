@@ -45,7 +45,8 @@ export function PeerMessages({ peer, apiBase }: { peer: Peer; apiBase: string })
     const params = new URLSearchParams({ peer: peer.peer_id, limit: String(PAGE) });
     if (unreadOnly) params.set("unread", "1");
     const answer = (list: MessageList | null, error: string | null) => {
-      if (live) setResult({ key: requestKey, list, error });
+      // A failed request keeps the rows already on screen, under the error.
+      if (live) setResult((prev) => ({ key: requestKey, list: error ? (prev?.list ?? null) : list, error }));
     };
     fetch(`${apiBase}/messages?${params}`, { credentials: "include" })
       .then(async (res) => {
