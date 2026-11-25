@@ -327,7 +327,13 @@ func (r *Registry) allocateAndRegister(ctx context.Context, params AllocateParam
 	var id proto.PeerID
 	if holder != nil {
 		id = holder.peer.PeerID
-		if params.ClaimedPeerID != nil && *params.ClaimedPeerID != id {
+		if bound, ok := r.placeholderYieldsLocked(ctx, params, holder, claimPath); ok {
+			id = bound
+			if _, isRetired := r.retired[id]; isRetired {
+				r.unretireLocked(ctx, id)
+				recoveredRetirement = true
+			}
+		} else if params.ClaimedPeerID != nil && *params.ClaimedPeerID != id {
 			log.Printf("repowire: runtime pid %d already registered as %s (%s); ignoring peer_id claim %s",
 				*params.AgentPID, holder.peer.DisplayName, id, *params.ClaimedPeerID)
 		}
@@ -1085,6 +1091,45 @@ func (r *Registry) sessionBoundPeerLocked(ctx context.Context, params AllocatePa
 		}
 	}
 	return id, true
+}
+
+// placeholderYieldsLocked handles a by-hand resume (#474). The MCP stdio
+// proxy can register a runtime by pid before its SessionStart hook does, and
+// it knows no session id, so it mints a peer for a process whose session is
+// already bound to an offline peer. When the session's registration arrives,
+// the pid holder is that placeholder: it carries no runtime session, while the
+// session is bound to another peer. The bound peer takes the process back, and
+// the placeholder is dissolved: removed and closed for good, so its cached
+// certificate cannot revive it. A holder that already carries a session keeps
+// the process (a /clear stays on one peer). Asks the placeholder sent or held
+// are not handed on: it exists only from the proxy's first request
+// (initialize) until SessionStart, a startup window. Its settings rows go with
+// the hard close (Store.Retire). Must hold r.mu.
+func (r *Registry) placeholderYieldsLocked(ctx context.Context, params AllocateParams, holder *peerState, claimPath string) (proto.PeerID, bool) {
+	if runtimeSessionID(params.Metadata) == "" || runtimeSessionID(holder.peer.Metadata) != "" {
+		return "", false
+	}
+	bound, ok := r.sessionBoundPeerLocked(ctx, params, claimPath)
+	if !ok || bound == holder.peer.PeerID {
+		return "", false
+	}
+	placeholder := holder.peer.PeerID
+	log.Printf("repowire: runtime pid %d registered as %s (%s) before its session; session %s is bound to %s, which takes it back",
+		*params.AgentPID, holder.peer.DisplayName, placeholder, runtimeSessionID(params.Metadata), bound)
+	delete(r.peers, placeholder)
+	delete(r.mappings, placeholder)
+	r.clearAllContradictions(placeholder)
+	r.retireLocked(ctx, placeholder, true)
+	if err := r.store.DeleteMapping(ctx, placeholder); err != nil {
+		log.Printf("repowire: delete mapping for dissolved placeholder %s: %v", placeholder, err)
+	}
+	r.appendEvent(ctx, Event{Type: "runtime_placeholder_dissolved", Timestamp: time.Now().UTC(), PeerID: bound, SessionID: bound,
+		Payload: map[string]any{"placeholder_peer_id": string(placeholder), "placeholder_name": string(holder.peer.DisplayName), "agent_pid": *params.AgentPID}})
+	if r.transport != nil {
+		// Off the lock: closing a socket can call back into the registry.
+		go func() { _ = r.transport.Close(placeholder) }()
+	}
+	return bound, true
 }
 
 // otherSessionLocked reports whether candidate is known to run a different
