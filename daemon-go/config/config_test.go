@@ -470,3 +470,25 @@ func TestRetentionRejectsUnrepresentableDays(t *testing.T) {
 		}
 	}
 }
+
+func TestMessageDeliveryDefault(t *testing.T) {
+	t.Setenv("REPOWIRE_DAEMON__MESSAGE_DELIVERY", "")
+	if cfg := loadYAML(t, "daemon:\n  port: 9100\n"); cfg.Daemon.MessageDelivery != "push" {
+		t.Fatalf("default = %q", cfg.Daemon.MessageDelivery)
+	}
+	if cfg := loadYAML(t, "daemon:\n  message_delivery: pull\n"); cfg.Daemon.MessageDelivery != "pull" {
+		t.Fatalf("file value = %q", cfg.Daemon.MessageDelivery)
+	}
+	t.Setenv("REPOWIRE_DAEMON__MESSAGE_DELIVERY", "pull")
+	if cfg := loadYAML(t, "daemon:\n  message_delivery: push\n"); cfg.Daemon.MessageDelivery != "pull" {
+		t.Fatalf("env override = %q", cfg.Daemon.MessageDelivery)
+	}
+	t.Setenv("REPOWIRE_DAEMON__MESSAGE_DELIVERY", "")
+	cfg, err := tryLoadYAML(t, "daemon:\n  message_delivery: sideways\n")
+	if err != nil {
+		t.Fatalf("an unknown mode failed the load: %v", err)
+	}
+	if cfg.Daemon.MessageDelivery != "push" || !strings.Contains(strings.Join(cfg.Warnings, "\n"), "daemon.message_delivery") || strings.Contains(strings.Join(cfg.Warnings, "\n"), "sideways") {
+		t.Fatalf("unknown mode: %q, warnings %q", cfg.Daemon.MessageDelivery, cfg.Warnings)
+	}
+}

@@ -368,7 +368,7 @@ func runDaemon() {
 	if err := store.StartRetention(retention, state.RetentionPlugs{Passes: []func(context.Context, state.RetentionPolicy, time.Time) map[string]int{h.ExpireAttachments}, Emit: reg.AddEvent}); err != nil {
 		log.Printf("retention: %v", err)
 	}
-	messages := service.NewMessages(store)
+	messages := service.NewMessages(store).WithDefaultMode(cfg.Daemon.MessageDelivery)
 	delivery := service.NewPeerDelivery(reg, h.Router(), transport, asks, store).WithQueueConfig(cfg.Daemon.DeliveryQueueTTLSeconds, cfg.Daemon.DeliveryQueueMaxPerPeer).WithOperationStore(store).WithOrchestratorRecall(cfg.Daemon.OrchestratorRecall).WithMessages(messages)
 	if recovered := service.ReconcileACPInflight(ctx, store, cfg.Daemon.DeliveryQueueTTLSeconds, cfg.Daemon.DeliveryQueueMaxPerPeer); recovered > 0 {
 		log.Printf("acp reconcile: closed %d ask(s) lost across restart", recovered)

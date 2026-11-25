@@ -308,7 +308,7 @@ unless `peek`. Another peer's message id reads as not found.
 set_message_delivery(mode: "push" | "pull") -> str
 ```
 
-Choose how messages reach you. `push` (the default) puts each body in your
+Choose how messages reach you. `push` (the default unless `daemon.message_delivery` says otherwise) puts each body in your
 session. `pull` sends a one-line nudge instead, and you fetch the body with
 `read_message`:
 
@@ -317,7 +317,8 @@ session. `pull` sends a one-line nudge instead, and you fetch the body with
 ↳ read_message("msg-1a2b3c4d")
 ```
 
-An ask nudge keeps its correlation id and ack hint. The mode is kept per
+An ask nudge keeps its correlation id and ack hint. A spawned peer's opening
+message is always pushed, whatever the mode. The mode is kept per
 `peer_id` across daemon restarts, and dropped when the `peer_id` is closed
 for good (`kill_peer`, or the operator removing the peer).
 
