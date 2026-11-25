@@ -22,7 +22,7 @@ const AUTH_TOKEN = process.env.REPOWIRE_AUTH_TOKEN ?? "";
 const PROPOSED_NAME = process.env.REPOWIRE_DISPLAY_NAME ?? "channel";
 const PROJECT_PATH = process.cwd();
 
-interface TmuxPlacement {
+export interface TmuxPlacement {
   circle: string;
   circleSource: "tmux" | "tmux_window" | "fallback";
   pane?: string;
@@ -74,6 +74,43 @@ async function tmuxPlacement(): Promise<TmuxPlacement> {
 
 // -- Inbound message (normalized for adapters) --
 
+/**
+ * The connect frame. On a reconnect it claims the peer_id the daemon assigned
+ * this session, so two channel sessions in one folder never swap identities
+ * when the second one reconnects first (#443): without the claim the daemon
+ * can only match the folder's name tuple. The daemon still checks the claim
+ * against the backend and path, and refuses a retired one.
+ */
+export function connectFrame(
+  placement: TmuxPlacement,
+  claimedPeerId: string | null,
+  opts: { proposedName?: string; projectPath?: string; authToken?: string } = {},
+): Record<string, unknown> {
+  const authToken = opts.authToken ?? AUTH_TOKEN;
+  return {
+    type: "connect",
+    display_name: opts.proposedName ?? PROPOSED_NAME,
+    circle: placement.circle,
+    circle_source: placement.circleSource,
+    backend: "claude-code",
+    path: opts.projectPath ?? PROJECT_PATH,
+    ...(claimedPeerId ? { peer_id: claimedPeerId } : {}),
+    ...(placement.pane ? { pane_id: placement.pane } : {}),
+    ...(placement.tmuxSession ? { tmux_session: placement.tmuxSession } : {}),
+    ...(authToken ? { auth_token: authToken } : {}),
+  };
+}
+
+/**
+ * What a refused connect means for the next one: a final refusal (an operator
+ * closed the peer) stops reconnecting, as running ws-hooks do; a soft
+ * retirement drops the claim, so the next connect registers afresh.
+ */
+export function afterRefusal(msg: { code?: string; final?: boolean }): "stop" | "forget" | null {
+  if (msg.code !== "peer_retired") return null;
+  return msg.final ? "stop" : "forget";
+}
+
 export interface InboundMessage {
   /** Wire frame type. */
   type: "query" | "ask" | "notify" | "broadcast";
@@ -108,6 +145,7 @@ export class DaemonSession {
   private sessionId: string | null = null;
   private displayName: string = PROPOSED_NAME;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  private stopped = false;
   private readonly pendingCorrelations = new Map<string, string>(); // correlation_id -> from_peer
   private onMessage: MessageHandler = () => {};
 
@@ -132,19 +170,7 @@ export class DaemonSession {
     this.ws = new WebSocket(url);
 
     this.ws.on("open", () => {
-      this.ws!.send(
-        JSON.stringify({
-          type: "connect",
-          display_name: PROPOSED_NAME,
-          circle: placement.circle,
-          circle_source: placement.circleSource,
-          backend: "claude-code",
-          path: PROJECT_PATH,
-          ...(placement.pane ? { pane_id: placement.pane } : {}),
-          ...(placement.tmuxSession ? { tmux_session: placement.tmuxSession } : {}),
-          ...(AUTH_TOKEN ? { auth_token: AUTH_TOKEN } : {}),
-        })
-      );
+      this.ws!.send(JSON.stringify(connectFrame(placement, this.sessionId)));
     });
 
     this.ws.on("message", async (data: WebSocket.Data) => {
@@ -153,6 +179,18 @@ export class DaemonSession {
         msg = JSON.parse(data.toString());
       } catch {
         console.error("repowire: invalid JSON from daemon");
+        return;
+      }
+
+      if (msg.type === "error") {
+        const next = afterRefusal(msg);
+        if (next === "stop") {
+          this.stopped = true;
+          console.error(`repowire: peer ${this.sessionId} was closed by the operator; not reconnecting`);
+        } else if (next === "forget") {
+          console.error(`repowire: peer ${this.sessionId} is retired; registering afresh`);
+          this.sessionId = null;
+        }
         return;
       }
 
@@ -207,7 +245,7 @@ export class DaemonSession {
   }
 
   private scheduleReconnect(): void {
-    if (this.reconnectTimer) return;
+    if (this.reconnectTimer || this.stopped) return;
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null;
       void this.open();
