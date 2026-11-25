@@ -211,21 +211,41 @@ func TestHeldSeedTimersStopWithTheDaemon(t *testing.T) {
 	}
 }
 
-// Another runtime that comes up in the pane (the spawned one exited) does not
-// get the spawn's opening message; it is dropped loudly.
+// Another runtime that comes up in the pane first (a shell wrapper, an
+// unrelated agent) does not get the spawn's opening message; it stays held for
+// the spawned runtime, which gets it when it connects.
 func TestAnotherRuntimeOnThePaneDoesNotGetTheSeed(t *testing.T) {
 	withSeedTiming(t, time.Hour, time.Hour)
 	r := newSeedRig(t)
 	r.hold(context.Background(), "%47", "eta", "the brief")
 	other := r.registerAs("%47", "repow-default-9999", "other-codex", proto.StatusOnline, proto.AgentCodex, "/work/elsewhere")
-	if got := r.waitEvent(t, "spawn_seed_failed"); got["pane_id"] != "%47" {
+	if got := r.waitEvent(t, "spawn_seed_held"); got["other_peer_id"] != string(other.PeerID) {
+		t.Fatalf("spawn_seed_held = %v", got)
+	}
+	if r.sentTo(other.PeerID) != 0 || r.h.seeds.held("%47") == nil {
+		t.Fatal("another runtime took the spawn's opening message")
+	}
+	spawned := r.register("%47", "repow-default-8888", "eta", proto.StatusOnline)
+	if got := r.waitEvent(t, "spawn_seed_delivered"); got["peer_id"] != string(spawned.PeerID) {
+		t.Fatalf("spawn_seed_delivered = %v", got)
+	}
+}
+
+// A newer spawn on the same pane replaces the held message loudly.
+func TestReplacedSeedIsJournaledAndTheSpawnerTold(t *testing.T) {
+	withSeedTiming(t, time.Hour, time.Hour)
+	r := newSeedRig(t)
+	r.hold(context.Background(), "%48", "theta", "first brief")
+	r.hold(context.Background(), "%48", "theta", "second brief")
+	got := r.waitEvent(t, "spawn_seed_failed")
+	if got["pane_id"] != "%48" {
 		t.Fatalf("spawn_seed_failed = %v", got)
 	}
-	time.Sleep(50 * time.Millisecond)
-	if r.sentTo(other.PeerID) != 0 {
-		t.Fatal("another runtime received the spawn's opening message")
+	deadline := time.Now().Add(time.Second)
+	for r.sentTo(r.spawner.PeerID) == 0 && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
 	}
 	if r.sentTo(r.spawner.PeerID) != 1 {
-		t.Fatal("the spawner was not told")
+		t.Fatal("the spawner was not told its first message was replaced")
 	}
 }

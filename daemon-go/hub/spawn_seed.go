@@ -88,14 +88,18 @@ func (h *Hub) holdSpawnSeed(ctx context.Context, pane, name string, backend prot
 	if h.seeds.byPane == nil {
 		h.seeds.byPane = map[string]*heldSeed{}
 	}
-	if old := h.seeds.byPane[pane]; old != nil {
+	old := h.seeds.byPane[pane]
+	if old != nil {
 		old.stop()
 	}
 	h.seeds.byPane[pane] = seed
 	h.seeds.mu.Unlock()
+	if old != nil {
+		go h.seedDropped(ctx, old, fmt.Sprintf("replaced by a newer spawn on pane %s", pane))
+	}
 	// The peer may already be on the mesh (a restart registers before this).
 	if p, ok := h.ask.reg.GetPeerByPane(pane); ok && p != nil && h.seedReachable(p.PeerID) {
-		h.seedConnected(ctx, p.PeerID)
+		go h.seedConnected(ctx, p.PeerID)
 	}
 }
 
@@ -112,26 +116,51 @@ func (h *Hub) seedReachable(id proto.PeerID) bool {
 	return h.transport == nil || h.transport.IsConnected(id)
 }
 
-// seedConnected delivers the opening message held for the pane id just
-// connected on. HandleWS calls it once the socket is attached and its queued
-// deliveries are replayed, so the message goes out live.
-func (h *Hub) seedConnected(ctx context.Context, id proto.PeerID) {
+// seedFor returns the opening message held for id's pane when id is the
+// runtime the spawn launched there (its backend and project path), and that
+// pane's message otherwise; ok reports a match. Another runtime that comes up
+// in the pane first (a shell wrapper, an unrelated agent) does not get it; the
+// message stays held for the spawned one.
+func (h *Hub) seedFor(id proto.PeerID) (p *proto.Peer, seed *heldSeed, ok bool) {
 	if h.ask == nil {
+		return nil, nil, false
+	}
+	p, found := h.ask.reg.GetPeer(id)
+	if !found || p == nil || p.PaneID == nil || *p.PaneID == "" || p.Status == proto.StatusOffline {
+		return nil, nil, false
+	}
+	seed = h.seeds.held(*p.PaneID)
+	if seed == nil {
+		return p, nil, false
+	}
+	return p, seed, p.Backend == seed.backend && service.NormPath(p.Path) == seed.path
+}
+
+// seedHeldFor reports whether a connect by id will deliver an opening
+// message.
+func (h *Hub) seedHeldFor(id proto.PeerID) bool {
+	_, _, ok := h.seedFor(id)
+	return ok
+}
+
+// seedConnected delivers the opening message held for the runtime id, and
+// returns once it is sent. HandleWS calls it once the socket is attached,
+// before the queued deliveries replay, so the message goes out live and first.
+func (h *Hub) seedConnected(ctx context.Context, id proto.PeerID) {
+	p, seed, ok := h.seedFor(id)
+	if seed == nil {
 		return
 	}
-	p, ok := h.ask.reg.GetPeer(id)
-	if !ok || p == nil || p.PaneID == nil || *p.PaneID == "" || p.Status == proto.StatusOffline {
+	if !ok {
+		h.ask.reg.AddEvent(ctx, "spawn_seed_held", map[string]any{"pane_id": seed.pane, "display_name": seed.name,
+			"other_peer_id": string(p.PeerID), "other_peer_name": string(p.DisplayName), "other_backend": string(p.Backend),
+			"reason": "another runtime connected on the pane; the message stays held for the spawned one"})
 		return
 	}
-	seed := h.seeds.held(*p.PaneID)
-	if seed == nil || !h.seeds.take(seed) {
+	if !h.seeds.take(seed) {
 		return
 	}
-	if p.Backend != seed.backend || service.NormPath(p.Path) != seed.path {
-		h.seedDropped(ctx, seed, fmt.Sprintf("pane %s now runs %s (%s), not the spawned runtime", seed.pane, p.DisplayName, p.Backend))
-		return
-	}
-	go h.deliverHeldSeed(ctx, seed, *p)
+	h.deliverHeldSeed(ctx, seed, *p)
 }
 
 // deliverHeldSeed sends the opening message as a normal notify from the
@@ -161,8 +190,8 @@ func (h *Hub) seedNotConnected(ctx context.Context, seed *heldSeed) {
 	}
 	h.ask.reg.AddEvent(ctx, "spawn_seed_waiting", map[string]any{"pane_id": seed.pane, "display_name": seed.name, "from_peer": seed.from, "held_until": seed.until.UTC().Format(time.RFC3339)})
 	h.tellSpawner(ctx, seed, fmt.Sprintf(
-		"[spawn] %s is not on the mesh after %s (pane %s). Its runtime is most likely waiting at a first-run prompt there (trust this folder, or an update notice); answer it in the pane. The opening message is held and is delivered when the peer connects, until %s.",
-		seed.name, spawnSeedNotice.Round(time.Second), seed.pane, seed.until.Local().Format("15:04")))
+		"[spawn] %s is not on the mesh after %s (pane %s). Its runtime is most likely waiting at a first-run prompt there (trust this folder, or an update notice); answer it in the pane. The opening message is held and is delivered when the peer connects, until %s (in %s).",
+		seed.name, spawnSeedNotice.Round(time.Second), seed.pane, seed.until.UTC().Format("15:04 UTC"), time.Until(seed.until).Round(time.Minute)))
 }
 
 // seedExpired drops a message whose peer never connected.
