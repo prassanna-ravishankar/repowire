@@ -18,6 +18,8 @@ Schema version 17 adds [cross-machine circles](../concepts/peers-and-circles.md#
 
 Schema version 19 adds `peer_wire_visibility`: each peer's chosen [wire visibility](../reference/mcp-tools.md#set_wire_visibility), kept like its message delivery mode and exempt from retention. From this version the stages that name a thread's parties (an ask's `created`, `delegated` and `reassigned`, a notify's `resolved_peer`) carry a `provenance` detail: each party's circle, role and visibility at that moment. Retention strips message text from trace details, never provenance.
 
+Schema version 20 adds `push_devices`: the APNs device tokens of [iOS app](../use/features/ios-app.md) installs, which render the human inbox as notifications. A token leaves the table when the app unregisters it or APNs reports it dead, so the table is exempt from retention.
+
 ## Attachments
 
 Uploaded files are stored locally and expire with other content (below). Dashboard uploads can be tunneled through relay, but the final readable path is local to the daemon machine.

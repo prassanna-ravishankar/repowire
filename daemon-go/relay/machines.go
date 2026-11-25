@@ -30,6 +30,7 @@ var ErrRelayDown = errors.New("relay not connected")
 type machineResponse struct {
 	status int
 	body   []byte
+	frame  map[string]any // the whole answer, for frames that are not HTTP-shaped
 	err    error
 }
 
@@ -74,11 +75,21 @@ func (c *Client) Machines(ctx context.Context) ([]string, error) {
 }
 
 func (c *Client) machineFrame(ctx context.Context, frame map[string]any) (int, []byte, error) {
+	r, err := c.roundTrip(ctx, frame)
+	if err != nil {
+		return 0, nil, err
+	}
+	return r.status, r.body, r.err
+}
+
+// roundTrip writes frame under a fresh id and waits for the relay's answer
+// carrying that id (machine_response, push_result).
+func (c *Client) roundTrip(ctx context.Context, frame map[string]any) (machineResponse, error) {
 	c.mu.Lock()
 	session := c.session
 	c.mu.Unlock()
 	if session == nil {
-		return 0, nil, ErrRelayDown
+		return machineResponse{}, ErrRelayDown
 	}
 	id := machineID()
 	frame["id"] = id
@@ -92,13 +103,13 @@ func (c *Client) machineFrame(ctx context.Context, frame map[string]any) (int, [
 		session.machinesMu.Unlock()
 	}()
 	if err := session.write(ctx, frame); err != nil {
-		return 0, nil, fmt.Errorf("relay write: %w", err)
+		return machineResponse{}, fmt.Errorf("relay write: %w", err)
 	}
 	select {
 	case r := <-ch:
-		return r.status, r.body, r.err
+		return r, nil
 	case <-ctx.Done():
-		return 0, nil, ctx.Err()
+		return machineResponse{}, ctx.Err()
 	}
 }
 
@@ -112,7 +123,7 @@ func (s *relaySession) deliverMachine(msg map[string]any) {
 	body, _ := base64.StdEncoding.DecodeString(stringField(msg, "body"))
 	status, _ := msg["status"].(float64)
 	select {
-	case ch <- machineResponse{status: int(status), body: body}:
+	case ch <- machineResponse{status: int(status), body: body, frame: msg}:
 	default:
 	}
 }

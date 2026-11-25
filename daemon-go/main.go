@@ -509,13 +509,12 @@ func runDaemon() {
 	// local HTTP surface (127.0.0.1) — same trust model as the Python client.
 	var relayClient *relay.Client
 	if relayCfg.Enabled {
-		relayClient = relay.NewClient(relayCfg.URL, relayCfg.APIKey, selfMachine, "http://"+*addr).
-			WithAuthToken(cfg.Daemon.AuthToken).
-			WithInvalidPushTokens(func(tokens []string) {
-				if _, err := store.DeletePushDevices(context.Background(), tokens...); err != nil {
-					log.Printf("push: drop invalid tokens: %v", err)
-				}
-			})
+		relayClient = relay.NewClient(relayCfg.URL, relayCfg.APIKey, selfMachine, "http://"+*addr).WithAuthToken(cfg.Daemon.AuthToken)
+		// The iOS app renders the inbox as APNs alerts, which leave through
+		// the relay because it holds the APNs key.
+		if inbox != nil {
+			inbox.AddSurface(push.NewSurface(store, relayClient))
+		}
 	}
 
 	// (11) Wire EVERY route group onto the hub. Each With* gates a route group
@@ -594,8 +593,6 @@ func runDaemon() {
 	}()
 	if relayClient != nil {
 		relayClient.Start(ctx)
-		// Native-app pushes leave through the relay, which holds the APNs key.
-		go push.Run(ctx, reg, store, relayClient)
 	}
 
 	// (13) Register HTTP/ws handlers.

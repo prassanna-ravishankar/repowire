@@ -41,7 +41,7 @@ The `relay` block reports the real connection, not just the config flag:
 
 ## Push notifications
 
-The relay sends APNs pushes for the [iOS app](../use/features/ios-app.md). The daemon decides what is push-worthy and owns the device tokens (`/push/devices`, stored in its SQLite state); each push frame it sends over the relay WebSocket names its target tokens. The relay only holds the APNs key.
+The relay sends APNs pushes for the [iOS app](../use/features/ios-app.md), which is the `ios` surface of the [human inbox](../concepts/human-inbox.md). The daemon decides what reaches the human and owns the device tokens (`/push/devices`, stored in its SQLite state); each push frame it sends over the relay WebSocket names its target tokens. The relay only holds the APNs key, and answers each frame with APNs' outcome, which the inbox records as the push's receipt.
 
 Configure the relay with all four variables, or none to leave push off:
 
@@ -52,7 +52,7 @@ Configure the relay with all four variables, or none to leave push off:
 | `REPOWIRE_RELAY_APNS_KEY_PATH` | Path to the `.p8` file |
 | `REPOWIRE_RELAY_APNS_TOPIC` | The app's bundle id (`io.repowire.app`) |
 
-Each push names an environment per device (`sandbox` for development builds, `production` otherwise). The relay sends at most 30 pushes per minute per relay key and 10 devices per push. Tokens APNs rejects as unregistered or invalid are reported back to the daemon, which deletes them. Failures surface in the daemon log as `relay: push failed: …`.
+Each push names an environment per device (`sandbox` for development builds, `production` otherwise). The relay sends at most 30 pushes per minute per relay key and 10 devices per push. Tokens APNs rejects as unregistered or invalid are reported back to the daemon, which deletes them. Failures are recorded on the message's trace as `surface_failed` with `surface: ios`.
 
 ## Related
 

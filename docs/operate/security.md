@@ -29,7 +29,7 @@ For the hosted relay at `repowire.io`, this means the operators *could* see your
 
 ## Push notifications
 
-Push notifications carry the sender's name and up to 240 characters of the message or question text. The text passes through the relay and Apple Push Notification service to reach the device, which is wider exposure than the tunnel alone. Pushes go only to devices registered on your daemon (`/push/devices`), and only for events addressed to the human.
+Push notifications carry the sender's name and up to 240 characters of the message or question text. The text passes through the relay and Apple Push Notification service to reach the device, which is wider exposure than the tunnel alone. Pushes go only to devices registered on your daemon (`/push/devices`), and only for items stored in the [human inbox](../concepts/human-inbox.md). The relay trusts the daemon's list of tokens: any holder of a relay key can push to a token it knows, within the relay's rate limit.
 
 ## Trust boundaries
 

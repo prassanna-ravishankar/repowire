@@ -66,9 +66,6 @@ type Client struct {
 	cancel        context.CancelFunc
 	done          chan struct{}
 	session       *relaySession // the live connection, for outbound machine requests
-
-	// onInvalidPushTokens receives APNs tokens the relay reported as dead.
-	onInvalidPushTokens func([]string)
 }
 
 type relaySession struct {
@@ -225,45 +222,39 @@ func (c *Client) EnsureRunning(parent context.Context) bool {
 	return true
 }
 
-// ErrNotConnected reports that the relay socket is down, so a push cannot leave.
-var ErrNotConnected = errors.New("relay not connected")
-
-// WithInvalidPushTokens registers the callback for tokens APNs rejected.
-func (c *Client) WithInvalidPushTokens(fn func([]string)) *Client {
-	c.onInvalidPushTokens = fn
-	return c
+// PushResult is the relay's answer to one push: the device tokens APNs
+// reported dead, which the daemon should forget.
+type PushResult struct {
+	InvalidTokens []string
 }
 
-// Push hands an APNs push frame to the relay, which holds the APNs key.
-func (c *Client) Push(ctx context.Context, frame map[string]any) error {
-	c.mu.Lock()
-	session := c.session
-	c.mu.Unlock()
-	if session == nil {
-		return ErrNotConnected
-	}
+// Push hands an APNs push frame to the relay, which holds the APNs key, and
+// waits for its answer. ErrRelayDown means nothing was sent; an error with a
+// result means APNs refused some devices for a reason other than a dead token.
+func (c *Client) Push(ctx context.Context, frame map[string]any) (PushResult, error) {
 	out := make(map[string]any, len(frame)+1)
 	for key, value := range frame {
 		out[key] = value
 	}
 	out["type"] = "push"
-	return session.write(ctx, out)
-}
-
-func (c *Client) handlePushResult(msg map[string]any) {
-	raw, _ := msg["invalid_tokens"].([]any)
-	tokens := make([]string, 0, len(raw))
+	r, err := c.roundTrip(ctx, out)
+	if err == nil {
+		err = r.err
+	}
+	if err != nil {
+		return PushResult{}, err
+	}
+	var result PushResult
+	raw, _ := r.frame["invalid_tokens"].([]any)
 	for _, value := range raw {
 		if token, ok := value.(string); ok && token != "" {
-			tokens = append(tokens, token)
+			result.InvalidTokens = append(result.InvalidTokens, token)
 		}
 	}
-	if errText := stringField(msg, "error"); errText != "" {
-		log.Printf("relay: push failed: %s", errText)
+	if text := stringField(r.frame, "error"); text != "" {
+		return result, errors.New(text)
 	}
-	if len(tokens) > 0 && c.onInvalidPushTokens != nil {
-		c.onInvalidPushTokens(tokens)
-	}
+	return result, nil
 }
 
 // Stop signals shutdown and blocks until the loop exits.
@@ -452,7 +443,7 @@ func (c *Client) handleMessage(ctx context.Context, session *relaySession, msg m
 	case "remote_request":
 		c.admit(ctx, session, session.remoteWork, msg)
 	case "push_result":
-		c.handlePushResult(msg)
+		session.deliverMachine(msg)
 	default:
 		// Unknown/opaque — ignore (Python logs at debug).
 	}

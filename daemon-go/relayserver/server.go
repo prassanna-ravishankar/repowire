@@ -788,10 +788,11 @@ func (s *Server) relayWebSocket(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// handlePush sends a daemon push frame through APNs and reports the outcome,
-// including dead tokens the daemon should forget.
+// handlePush sends a daemon push frame through APNs and answers it under the
+// frame's id: the tokens APNs reported dead, and any error. The daemon's inbox
+// records the answer as the push's receipt.
 func (s *Server) handlePush(ctx context.Context, daemon *daemonConn, msg map[string]any) {
-	result := map[string]any{"type": "push_result", "push_id": msg["push_id"]}
+	result := map[string]any{"type": "push_result", "id": msg["id"]}
 	defer func() { _ = daemon.write(ctx, result) }()
 	if s.apns == nil {
 		result["error"] = "push is not configured on this relay"

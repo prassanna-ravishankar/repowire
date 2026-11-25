@@ -15,11 +15,15 @@ import (
 	"math/big"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/coder/websocket/wsjson"
+	"github.com/repowire/repowire/daemon-go/push"
+	"github.com/repowire/repowire/daemon-go/relay"
+	"github.com/repowire/repowire/daemon-go/state"
 )
 
 const (
@@ -85,7 +89,7 @@ func TestRelayPushSendsToAPNsAndReportsDeadTokens(t *testing.T) {
 	defer cancel()
 
 	if err := wsjson.Write(ctx, conn, map[string]any{
-		"type": "push", "push_id": "evt-1", "title": "@backend asks", "body": "ship it?", "thread_id": "backend", "category": "QUESTION",
+		"type": "push", "id": "req-1", "push_id": "evt-1", "title": "@backend asks", "body": "ship it?", "thread_id": "backend", "category": "QUESTION",
 		"data":    map[string]any{"correlation_id": "ask-1"},
 		"devices": []map[string]any{{"token": liveToken, "environment": "sandbox"}, {"token": deadToken, "environment": "production"}},
 	}); err != nil {
@@ -95,7 +99,7 @@ func TestRelayPushSendsToAPNsAndReportsDeadTokens(t *testing.T) {
 	if err := wsjson.Read(ctx, conn, &result); err != nil {
 		t.Fatal(err)
 	}
-	if result["type"] != "push_result" || result["error"] != nil {
+	if result["type"] != "push_result" || result["id"] != "req-1" || result["error"] != nil {
 		t.Fatalf("result = %v", result)
 	}
 	if invalid := result["invalid_tokens"].([]any); len(invalid) != 1 || invalid[0] != deadToken {
@@ -149,5 +153,55 @@ func TestAPNsPayloadShape(t *testing.T) {
 	aps := payload["aps"].(map[string]any)
 	if aps["category"] != "APPROVAL" || aps["thread-id"] != "peer" || payload["repowire"].(map[string]any)["correlation_id"] != "c" {
 		t.Fatalf("payload = %v", payload)
+	}
+}
+
+// The daemon's ios inbox surface pushes through a real relay client and gets
+// APNs' answer back as its receipt; a dead token leaves the device store.
+func TestInboxSurfacePushRoundTripsThroughTheRelay(t *testing.T) {
+	relayServer := New("")
+	sender, seen := testAPNs(t)
+	relayServer.apns = sender
+	server := httptest.NewServer(relayServer.Handler())
+	t.Cleanup(server.Close)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	store, err := state.NewStore(filepath.Join(t.TempDir(), "push.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	for _, d := range []state.PushDevice{{Token: liveToken, Environment: "sandbox"}, {Token: deadToken, Environment: "production"}} {
+		if err := store.UpsertPushDevice(ctx, d); err != nil {
+			t.Fatal(err)
+		}
+	}
+	key := "rw_test-push-round-trip"
+	client := relay.NewClient("ws"+strings.TrimPrefix(server.URL, "http"), key, "laptop", "http://127.0.0.1:1")
+	client.Start(ctx)
+	t.Cleanup(client.Stop)
+	waitForDaemon(t, server.URL, key, "laptop")
+
+	surface := push.NewSurface(store, client)
+	if !surface.Live() {
+		t.Fatal("surface with a registered device and a connected relay should be live")
+	}
+	item := &state.InboxItem{ID: "inb-1", Kind: "ask", FromName: "backend", CorrelationID: "ask-1", Text: "ship it?"}
+	if err := surface.Push(ctx, item); err != nil {
+		t.Fatalf("push = %v", err)
+	}
+	first := <-seen
+	if first.Header.Get("apns-collapse-id") != "inb-1" {
+		t.Fatalf("collapse id = %q", first.Header.Get("apns-collapse-id"))
+	}
+	devices, _ := store.ListPushDevices(ctx)
+	if len(devices) != 1 || devices[0].Token != liveToken {
+		t.Fatalf("devices after push = %+v", devices)
+	}
+
+	relayServer.apns = nil
+	if err := surface.Push(ctx, item); err == nil || !strings.Contains(err.Error(), "not configured") {
+		t.Fatalf("push through a relay without APNs = %v", err)
 	}
 }

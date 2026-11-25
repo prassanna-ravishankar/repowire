@@ -7,8 +7,9 @@ import (
 	"github.com/repowire/repowire/daemon-go/state"
 )
 
-// registerPushRoutes exposes the native-app device registry. The app reaches it
-// through the relay tunnel; the daemon owns the tokens and the relay only sends.
+// registerPushRoutes exposes the device registry of the iOS app's inbox
+// surface (push.Surface). The app reaches it through the relay tunnel; the
+// daemon owns the tokens and the relay only sends.
 func (h *Hub) registerPushRoutes(mux *http.ServeMux) {
 	if h.store == nil {
 		return
@@ -33,9 +34,12 @@ func (h *Hub) handleRegisterPushDevice(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	req.Token = strings.ToLower(strings.TrimSpace(req.Token))
-	if req.Token == "" {
-		writeJSONError(w, http.StatusBadRequest, "token is required")
+	if !validDeviceToken(req.Token) {
+		writeJSONError(w, http.StatusBadRequest, "token must be an APNs device token (hex)")
 		return
+	}
+	if len(req.Name) > maxDeviceName {
+		req.Name = req.Name[:maxDeviceName]
 	}
 	if req.Environment == "" {
 		req.Environment = "production"
@@ -49,6 +53,7 @@ func (h *Hub) handleRegisterPushDevice(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	h.syncPushPresence(r)
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
@@ -58,5 +63,29 @@ func (h *Hub) handleDeletePushDevice(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	h.syncPushPresence(r)
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "removed": removed})
+}
+
+// syncPushPresence republishes the human's surface presence: the ios surface
+// is live only while an install is registered.
+func (h *Hub) syncPushPresence(r *http.Request) {
+	if h.inbox != nil {
+		h.inbox.SyncPresence(r.Context())
+	}
+}
+
+const maxDeviceName = 128
+
+// validDeviceToken accepts the hex APNs device tokens the app sends.
+func validDeviceToken(token string) bool {
+	if len(token) < 32 || len(token) > 200 {
+		return false
+	}
+	for _, c := range token {
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
+			return false
+		}
+	}
+	return true
 }
