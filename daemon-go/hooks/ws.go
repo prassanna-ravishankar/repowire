@@ -211,6 +211,16 @@ func RunWS() int {
 	}
 	unsafeStrikes, failures := 0, 0
 	for {
+		// A gone pane ends the hook whatever is known of its agent (#553):
+		// with an unknown (0) or recycled live agent pid, the check below
+		// never fires, and a daemon that cannot be reached kept the hook
+		// retrying forever. Only a conclusive answer counts: tmux reached,
+		// the pane absent.
+		if paneGone(paneID) {
+			markOffline(lastPeerID, "pane_gone", "ws_hook", fmt.Sprintf("pane %s is gone", paneID), paneID, agentPID)
+			ClearPaneRuntimeState(paneID)
+			return 0
+		}
 		if agentPID > 0 && !pidAlive(agentPID) {
 			if replacement := findExpectedAgentPID(paneID, expectedCommand); replacement > 0 && replacement != agentPID {
 				agentPID = replacement

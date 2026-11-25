@@ -486,6 +486,13 @@ func panePID(paneID string) (int, bool) {
 	return pid, err == nil
 }
 
+// paneGone reports a conclusive "this pane no longer exists": tmux answered
+// and does not have it. An inconclusive probe (tmux could not run) is not gone.
+func paneGone(paneID string) bool {
+	root, ok := panePID(paneID)
+	return ok && root <= 0
+}
+
 func commandIsShell(pid int) (bool, bool) {
 	out, err := exec.Command("ps", "-o", "comm=", "-p", strconv.Itoa(pid)).Output()
 	if err != nil {
