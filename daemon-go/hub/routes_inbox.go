@@ -80,7 +80,18 @@ func (h *Hub) handleInboxList(w http.ResponseWriter, r *http.Request) {
 		out = append(out, h.inboxItemView(&items[i]))
 	}
 	human, name := h.inbox.Human()
-	writeJSON(w, http.StatusOK, map[string]any{"human_peer_id": human, "human": name, "items": out})
+	resp := map[string]any{"human_peer_id": human, "human": name, "items": out}
+	// The surfaces' presence, quiet hours included (#476): which are live,
+	// which are quiet and until when, and how many items wait for each.
+	// Refreshed here, on the request (lazy, no timer): a window's start or
+	// end changes "quiet" with nothing else happening.
+	h.inbox.SyncPresence(r.Context())
+	if p, ok := h.reg.GetPeer(human); ok && p.Metadata != nil {
+		if surfaces, ok := p.Metadata["surfaces"]; ok {
+			resp["surfaces"] = surfaces
+		}
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 func (h *Hub) handleInboxGet(w http.ResponseWriter, r *http.Request) {

@@ -24,6 +24,10 @@ import (
 // All of it goes back through the daemon's /inbox routes, so whatever the
 // human does here is visible on every other surface.
 
+// inboxHoldCapability matches proto.CapInboxHold: this bridge answers
+// surface_hold (DaemonPeer arms its release), so quiet hours may hold it.
+const inboxHoldCapability = "inbox_hold"
+
 // inboxSurfaceCapability matches proto.CapInboxSurface.
 const inboxSurfaceCapability = "inbox_surface"
 

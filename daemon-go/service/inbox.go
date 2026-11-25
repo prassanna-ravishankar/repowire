@@ -60,6 +60,10 @@ type InboxStore interface {
 	MarkInboxReplied(ctx context.Context, id, surface string) (bool, error)
 	RecordTrace(ctx context.Context, traceID, kind, stage, status, deliveryID, peerID, fromPeerID string, detail map[string]any) error
 	UnrepliedInboxAsks(ctx context.Context, cid string) ([]state.InboxItem, error)
+	HeldInboxItems(ctx context.Context, surface string) ([]state.InboxItem, error)
+	HeldInboxCount(ctx context.Context, surface string) (int, error)
+	ClaimHeldInboxPush(ctx context.Context, itemID, surface string) (bool, error)
+	ResetReleasingInboxPushes(ctx context.Context) (int64, error)
 }
 
 // inboxRegistry is the slice of *peer.Registry the inbox reads and annotates.
@@ -136,6 +140,24 @@ type Inbox struct {
 	settles  []AskSettled
 	draining bool
 	applied  map[string]appliedSettle // per ask, the newest Seq published
+
+	// now is the clock quiet hours read (tests replace it). mayHold marks
+	// the surfaces that may have held items, so a Store outside quiet hours
+	// looks for a backlog only when one can exist; every surface starts
+	// marked, since the store may hold items from before a restart.
+	now func() time.Time
+	// presenceMu serializes SyncPresence, so a slower call never writes an
+	// older view (a stale held count) over a newer one.
+	presenceMu sync.Mutex
+	holdMu     sync.Mutex
+	mayHold    map[string]bool
+	cleared    map[string]bool // surfaces whose backlog was looked for and found empty
+	// retry is, per surface, when the Store trigger may next retry a
+	// release that failed, and the backoff that set it.
+	retry map[string]releaseBackoff
+	// releasing serializes releases per surface, so concurrent triggers
+	// deliver its backlog oldest first rather than interleaved.
+	releasing map[string]*sync.Mutex
 }
 
 // NewInbox wires the inbox. asks may be nil (no thread validation: items never
@@ -144,7 +166,7 @@ func NewInbox(store InboxStore, reg inboxRegistry, transport Transport, asks *As
 	ctx, cancel := context.WithCancel(context.Background())
 	return &Inbox{store: store, reg: reg, transport: transport, asks: asks, cfg: cfg,
 		pushTimeout: inboxPushTimeout, catchUpLimit: inboxCatchUpLimit, pushing: map[pushKey]struct{}{},
-		baseCtx: ctx, cancel: cancel}
+		baseCtx: ctx, cancel: cancel, now: time.Now, mayHold: map[string]bool{}, cleared: map[string]bool{}, retry: map[string]releaseBackoff{}, releasing: map[string]*sync.Mutex{}}
 }
 
 // SetHuman records the registered human peer.
@@ -239,9 +261,20 @@ func (i *Inbox) Store(ctx context.Context, params InboxStoreParams) (InboxReceip
 		names = append(names, target.name)
 	}
 	snapshot := *item
+	now := i.now()
 	for _, target := range targets {
 		target := target
-		if !i.spawn(func() { i.push(&snapshot, target) }) {
+		hold := i.holds(&snapshot, target, now)
+		if !i.spawn(func() {
+			if hold {
+				i.hold(&snapshot, target, now)
+				return
+			}
+			// Outside its quiet hours, a surface's backlog lands before
+			// the new item (the first of the lazy release triggers).
+			i.releaseIfDue(target, now)
+			i.push(&snapshot, target)
+		}) {
 			i.release(item.ID, target.name)
 		}
 	}
@@ -411,6 +444,8 @@ func (i *Inbox) MarkReplied(ctx context.Context, item *state.InboxItem, surface 
 // SyncPresence publishes which surfaces are live on the human peer's
 // metadata. Called when a surface connects or drops; never on a timer.
 func (i *Inbox) SyncPresence(ctx context.Context) {
+	i.presenceMu.Lock()
+	defer i.presenceMu.Unlock()
 	human, _ := i.Human()
 	if human == "" {
 		return
@@ -425,7 +460,20 @@ func (i *Inbox) SyncPresence(ctx context.Context) {
 		if connected {
 			live++
 		}
-		surfaces[string(p.DisplayName)] = map[string]any{"live": connected}
+		entry := map[string]any{"live": connected}
+		// Quiet hours, where the surface can be held: whether its window is
+		// on now, and how many items wait for it (#476).
+		if w, ok := i.window(surfaceTarget{name: string(p.DisplayName), peer: p}); ok {
+			now := i.now()
+			entry["quiet"] = w.Quiet(now)
+			if w.Quiet(now) {
+				entry["quiet_until"] = w.End(now).Format(time.RFC3339)
+			}
+			if n, err := i.store.HeldInboxCount(ctx, string(p.DisplayName)); err == nil {
+				entry["held"] = n
+			}
+		}
+		surfaces[string(p.DisplayName)] = entry
 	}
 	for _, s := range i.localSurfaces() {
 		if s.Live() {
@@ -478,12 +526,23 @@ func (i *Inbox) CatchUp(p *proto.Peer, liveSince time.Time) {
 			log.Printf("inbox: catch-up for %s: %v", target.name, err)
 			return
 		}
+		now := i.now()
 		for n := len(items) - 1; n >= 0 && i.baseCtx.Err() == nil; n-- {
-			if i.claimPush(i.baseCtx, items[n].ID, target.name) {
-				i.push(&items[n], target)
+			if !i.claimPush(i.baseCtx, items[n].ID, target.name) {
+				continue
 			}
+			// A reconnect in the surface's quiet window holds what it
+			// missed, as a live Store would have.
+			if i.holds(&items[n], target, now) {
+				i.hold(&items[n], target, now)
+				continue
+			}
+			i.push(&items[n], target)
 		}
 	})
+	// A reconnect is a release trigger too: outside its window the backlog
+	// goes now, inside it the surface is told again when to come back.
+	i.SurfaceRelease(p)
 }
 
 // Close cancels in-flight pushes and waits for them; later Stores push nothing.
@@ -592,10 +651,16 @@ func (i *Inbox) spawn(f func()) bool {
 // an inbox_item frame and must ack it; a legacy bridge gets today's notify
 // frame, which proves only the socket write.
 func (i *Inbox) push(item *state.InboxItem, target surfaceTarget) {
+	defer i.release(item.ID, target.name)
+	i.recordPush(item, target.name, i.deliver(item, target))
+}
+
+// deliver renders item on one surface and reports the outcome, recording
+// nothing: push records it for item, a digest for each item it carries.
+func (i *Inbox) deliver(item *state.InboxItem, target surfaceTarget) pushOutcome {
 	ctx, cancel := context.WithTimeout(i.baseCtx, i.pushTimeout+5*time.Second)
 	defer cancel()
 	name, surface := target.name, target.peer
-	defer i.release(item.ID, name)
 
 	if target.local != nil {
 		pushCtx, cancelPush := context.WithTimeout(ctx, i.pushTimeout)
@@ -607,14 +672,12 @@ func (i *Inbox) push(item *state.InboxItem, target surfaceTarget) {
 				out.errorClass = "no_receipt"
 			}
 		}
-		i.recordPush(item, name, out)
-		return
+		return out
 	}
 
 	if !proto.HasCapability(surface.Metadata, proto.CapInboxSurface) {
 		err := i.transport.Send(ctx, surface.PeerID, legacyInboxFrame(item, surface))
-		i.recordPush(item, name, pushOutcome{verified: false, err: err, errorClass: "network"})
-		return
+		return pushOutcome{verified: false, err: err, errorClass: "network"}
 	}
 
 	ref := ""
@@ -633,21 +696,20 @@ func (i *Inbox) push(item *state.InboxItem, target surfaceTarget) {
 	ack, err := i.transport.SendAndWaitDeliveryAck(ctx, surface.PeerID, frame, i.pushTimeout)
 	switch {
 	case err != nil:
-		i.recordPush(item, name, pushOutcome{verified: true, err: err, errorClass: "network"})
+		return pushOutcome{verified: true, err: err, errorClass: "network"}
 	case ack == nil:
-		i.recordPush(item, name, pushOutcome{verified: true, err: errors.New("no receipt"), errorClass: "no_receipt"})
-	default:
-		status, _ := ack["status"].(string)
-		errorClass, _ := ack["error_class"].(string)
-		out := pushOutcome{verified: true, refs: receiptRefs(ack)}
-		if status != state.PushPushed {
-			if errorClass == "" {
-				errorClass = "other"
-			}
-			out.err, out.errorClass = errors.New(status), errorClass
-		}
-		i.recordPush(item, name, out)
+		return pushOutcome{verified: true, err: errors.New("no receipt"), errorClass: "no_receipt"}
 	}
+	status, _ := ack["status"].(string)
+	errorClass, _ := ack["error_class"].(string)
+	out := pushOutcome{verified: true, refs: receiptRefs(ack)}
+	if status != state.PushPushed {
+		if errorClass == "" {
+			errorClass = "other"
+		}
+		out.err, out.errorClass = errors.New(status), errorClass
+	}
+	return out
 }
 
 type pushKey struct{ item, surface string }

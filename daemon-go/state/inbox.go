@@ -22,6 +22,14 @@ const (
 const (
 	PushPushed = "pushed"
 	PushFailed = "failed"
+	// PushHeld: the surface is in quiet hours and the item waits for the
+	// window to end (#476). PushReleasing: a release claimed it and is
+	// pushing it now; a daemon that stops mid-release returns it to held.
+	// PushSkipped: released after the human had already handled it, so it
+	// was never pushed. None of the three is a delivery.
+	PushHeld      = "held"
+	PushReleasing = "releasing"
+	PushSkipped   = "skipped"
 )
 
 // InboxItem is one message in the human inbox. Text lives here and only here:
@@ -141,10 +149,10 @@ func (s *Store) InsertInboxItem(ctx context.Context, item *InboxItem) error {
 }
 
 // PushedTo reports whether item has a push record for surface, whatever its
-// outcome.
+// outcome, except a hold: a held or releasing item has not been pushed yet.
 func (item *InboxItem) PushedTo(surface string) bool {
 	for _, p := range item.Pushes {
-		if p.Surface == surface {
+		if p.Surface == surface && p.Status != PushHeld && p.Status != PushReleasing {
 			return true
 		}
 	}
@@ -199,7 +207,8 @@ func (s *Store) ListInbox(ctx context.Context, filter InboxFilter) ([]InboxItem,
 		// milliseconds, so the boundary and the selection agree on ties.
 		where += ` AND NOT EXISTS (SELECT 1 FROM inbox_pushes p WHERE p.item_id = inbox_items.id AND p.surface = ?)
 			AND rowid > COALESCE((SELECT MAX(i.rowid) FROM inbox_items i
-				JOIN inbox_pushes p ON p.item_id = i.id WHERE p.surface = ? AND p.ts < ?), 0)
+				JOIN inbox_pushes p ON p.item_id = i.id WHERE p.surface = ? AND p.ts < ?
+					AND p.status NOT IN ('held', 'releasing')), 0)
 			AND rowid <= ?`
 		args = append(args, filter.MissedBy, filter.MissedBy, filter.LiveSince.UTC().Format(tsLayout), filter.MaxSeq)
 		order = `rowid DESC`
@@ -284,6 +293,74 @@ func (s *Store) RecordInboxPush(ctx context.Context, itemID string, push InboxPu
 		return fmt.Errorf("commit inbox push: %w", err)
 	}
 	return nil
+}
+
+// HeldInboxItems lists the items held for surface, oldest first, with
+// their push records.
+func (s *Store) HeldInboxItems(ctx context.Context, surface string) ([]InboxItem, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT `+inboxColumns+` FROM inbox_items
+		WHERE EXISTS (SELECT 1 FROM inbox_pushes p WHERE p.item_id = inbox_items.id AND p.surface = ? AND p.status = ?)
+		ORDER BY rowid ASC`, surface, PushHeld)
+	if err != nil {
+		return nil, fmt.Errorf("held inbox items: %w", err)
+	}
+	var items []InboxItem
+	var ids []string
+	for rows.Next() {
+		item, err := scanInboxItem(rows)
+		if err != nil {
+			_ = rows.Close()
+			return nil, err
+		}
+		items = append(items, *item)
+		ids = append(ids, item.ID)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	pushes, err := s.inboxPushes(ctx, ids)
+	if err != nil {
+		return nil, err
+	}
+	for i := range items {
+		items[i].Pushes = pushes[items[i].ID]
+	}
+	return items, nil
+}
+
+// HeldInboxCount is how many items are held for surface.
+func (s *Store) HeldInboxCount(ctx context.Context, surface string) (int, error) {
+	var n int
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM inbox_pushes WHERE surface = ? AND status = ?`,
+		surface, PushHeld).Scan(&n); err != nil {
+		return 0, fmt.Errorf("held inbox count: %w", err)
+	}
+	return n, nil
+}
+
+// ClaimHeldInboxPush moves one held push to releasing and reports whether
+// this caller did: the one transition every release trigger races for, so
+// an item held once is released once.
+func (s *Store) ClaimHeldInboxPush(ctx context.Context, itemID, surface string) (bool, error) {
+	res, err := s.db.ExecContext(ctx, `UPDATE inbox_pushes SET status = ?, ts = ?
+		WHERE item_id = ? AND surface = ? AND status = ?`,
+		PushReleasing, time.Now().UTC().Format(tsLayout), itemID, surface, PushHeld)
+	if err != nil {
+		return false, fmt.Errorf("claim held inbox push: %w", err)
+	}
+	n, err := res.RowsAffected()
+	return n == 1, err
+}
+
+// ResetReleasingInboxPushes returns every releasing push to held: run at
+// startup, it recovers a release the previous daemon stopped in the middle
+// of. Returns how many it reset.
+func (s *Store) ResetReleasingInboxPushes(ctx context.Context) (int64, error) {
+	res, err := s.db.ExecContext(ctx, `UPDATE inbox_pushes SET status = ? WHERE status = ?`, PushHeld, PushReleasing)
+	if err != nil {
+		return 0, fmt.Errorf("reset releasing inbox pushes: %w", err)
+	}
+	return res.RowsAffected()
 }
 
 // InboxItemBySurfaceRef finds the item a surface rendered as ref (for a

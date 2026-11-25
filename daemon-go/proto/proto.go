@@ -196,7 +196,12 @@ const (
 	CapThreadSteering   = "thread_steering"
 	// CapInboxSurface marks a client that renders the human inbox: it
 	// understands inbox_item frames and acks each one.
-	CapInboxSurface       = "inbox_surface"
+	CapInboxSurface = "inbox_surface"
+	// CapInboxHold marks an inbox surface that can be held in quiet hours
+	// (#476): it understands surface_hold and answers with surface_release
+	// at the time it names. A surface without it is never held, so nothing
+	// waits without a way out.
+	CapInboxHold          = "inbox_hold"
 	PaneUnsafeStrikeLimit = 3
 )
 
@@ -246,6 +251,11 @@ const (
 	// CapInboxSurface. The surface answers with a delivery_ack whose
 	// status is "pushed" or "failed".
 	FrameInboxItem FrameType = "inbox_item"
+	// FrameSurfaceHold tells a CapInboxHold surface that items wait for it:
+	// {held, release_at (RFC 3339 UTC)}. The surface sends FrameSurfaceRelease
+	// at release_at, or at once when that is already past.
+	FrameSurfaceHold    FrameType = "surface_hold"
+	FrameSurfaceRelease FrameType = "surface_release"
 )
 
 // IsMobileBridge reports whether a registration is one of the daemon's own
