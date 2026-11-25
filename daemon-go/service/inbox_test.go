@@ -866,3 +866,15 @@ func TestInboxIgnoresAnOlderSettle(t *testing.T) {
 		t.Fatalf("answerable published after the close = %v, want [true false]", after)
 	}
 }
+
+// A progress thread never panics on a missing tracker or an ask the tracker
+// no longer holds (#477): it is simply unthreaded.
+func TestProgressThreadWithoutAnAsk(t *testing.T) {
+	if got := (&Inbox{}).progressThread("ask-gone", "repow-a"); got != "" {
+		t.Fatalf("no tracker: %q", got)
+	}
+	in := &Inbox{asks: NewAskTracker(0)}
+	if got := in.progressThread("ask-gone", "repow-a"); got != "" {
+		t.Fatalf("unknown ask: %q", got)
+	}
+}

@@ -537,7 +537,7 @@ func (h *Hub) broadcastRemote(ctx context.Context, from state.RemotePrincipal, t
 // notifyAddress sends a notify addressed name@machine to another machine.
 // handled is false when the address is not remote, so the caller routes it
 // locally.
-func (h *Hub) notifyAddress(ctx context.Context, caller, address, text string, attachments []map[string]any) (handled bool, id, outcome string, err error) {
+func (h *Hub) notifyAddress(ctx context.Context, caller, address, text string, attachments []map[string]any, thread string) (handled bool, id, outcome string, err error) {
 	name, machine, err := h.remoteAddress(ctx, address)
 	if errors.Is(err, errNotRemote) {
 		return false, "", "", nil
@@ -547,6 +547,9 @@ func (h *Hub) notifyAddress(ctx context.Context, caller, address, text string, a
 	}
 	if len(attachments) > 0 {
 		return true, "", "", routeErr(http.StatusUnprocessableEntity, "cross-machine notifies carry text only")
+	}
+	if thread != "" {
+		return true, "", "", routeErr(http.StatusUnprocessableEntity, "a cross-machine notify cannot carry a correlation_id: only the local human's inbox threads a notify")
 	}
 	id, outcome, err = h.remoteNotify(ctx, caller, name, machine, text)
 	if err != nil {

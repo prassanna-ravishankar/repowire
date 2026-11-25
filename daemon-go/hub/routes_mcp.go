@@ -236,6 +236,8 @@ type mcpNotifyPeerArgs struct {
 	Message     string           `json:"message" jsonschema:"Message text to deliver"`
 	Circle      string           `json:"circle,omitempty" jsonschema:"Optional circle scope for resolving peer_name"`
 	Attachments []map[string]any `json:"attachments,omitempty"`
+	// CorrelationID threads a progress update under the human's ask (#477).
+	CorrelationID string `json:"correlation_id,omitempty" jsonschema:"An open ask between you and the human that this message reports progress on: the human sees it in that ask's thread. It does not answer or close the ask; ack does that. Only for a message to the human."`
 }
 
 type mcpBroadcastArgs struct {
@@ -391,7 +393,7 @@ func (h *Hub) mcpNotifyPeer(ctx context.Context, delivery *service.PeerDelivery,
 	if delivery == nil {
 		return nil, fmt.Errorf("notify_peer is not wired (no delivery service configured)")
 	}
-	if handled, id, state, err := h.notifyAddress(ctx, fromPeer, args.PeerName, args.Message, args.Attachments); handled {
+	if handled, id, state, err := h.notifyAddress(ctx, fromPeer, args.PeerName, args.Message, args.Attachments, args.CorrelationID); handled {
 		if err != nil {
 			return nil, err
 		}
@@ -403,6 +405,7 @@ func (h *Hub) mcpNotifyPeer(ctx context.Context, delivery *service.PeerDelivery,
 		Text:        args.Message,
 		Circle:      h.mcpSendCircle(fromPeer, args.Circle),
 		Attachments: args.Attachments,
+		ThreadID:    args.CorrelationID,
 	}
 	var result service.NotifyResult
 	var deliveryID string
@@ -419,16 +422,21 @@ func (h *Hub) mcpNotifyPeer(ctx context.Context, delivery *service.PeerDelivery,
 	if err != nil {
 		return nil, fmt.Errorf("notify failed: %w", err)
 	}
-	return textResult(notifyToolResult(deliveryID, result)), nil
+	return textResult(notifyToolResult(deliveryID, result, args.CorrelationID)), nil
 }
 
 // notifyToolResult is the delivery id, plus the inbox receipt when the
-// recipient is the human peer.
-func notifyToolResult(deliveryID string, result service.NotifyResult) string {
+// recipient is the human peer, and the thread when one was requested:
+// thread=none says the ask did not qualify and the message went unthreaded.
+func notifyToolResult(deliveryID string, result service.NotifyResult, thread string) string {
 	if result.Inbox == nil {
 		return deliveryID
 	}
-	return fmt.Sprintf("%s inbox_item=%s surfaces=%s", deliveryID, result.Inbox.ItemID, surfaceList(result.Inbox.Surfaces))
+	out := fmt.Sprintf("%s inbox_item=%s surfaces=%s", deliveryID, result.Inbox.ItemID, surfaceList(result.Inbox.Surfaces))
+	if thread != "" {
+		out += " thread=" + firstNonempty(result.Inbox.Thread, "none")
+	}
+	return out
 }
 
 func surfaceList(surfaces []string) string {

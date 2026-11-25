@@ -68,7 +68,7 @@ type MessagingRoutes struct {
 // a broadcast (cross-machine circles). The hub supplies it at registration;
 // nil keeps both routes local.
 type remoteMessenger interface {
-	notifyAddress(ctx context.Context, caller, address, text string, attachments []map[string]any) (handled bool, id, outcome string, err error)
+	notifyAddress(ctx context.Context, caller, address, text string, attachments []map[string]any, thread string) (handled bool, id, outcome string, err error)
 	broadcastAcross(ctx context.Context, caller, text string) *remoteBroadcast
 }
 
@@ -96,6 +96,9 @@ type notifyRequest struct {
 	Attachments  []map[string]any `json:"attachments"`
 	BypassCircle bool             `json:"bypass_circle"`
 	Circle       *string          `json:"circle"`
+	// CorrelationID is an ask of the human's this notify reports progress
+	// on: the inbox threads it there (service.NotifyParams.ThreadID).
+	CorrelationID string `json:"correlation_id"`
 }
 
 type notifyResponse struct {
@@ -119,6 +122,9 @@ type notifyResponse struct {
 	// InboxItemID and Surfaces are set when the recipient is the human peer.
 	InboxItemID *string  `json:"inbox_item_id,omitempty"`
 	Surfaces    []string `json:"surfaces,omitempty"`
+	// ThreadID is the ask the human's item was filed under, null when a
+	// requested correlation_id did not qualify; omitted without one.
+	ThreadID *string `json:"thread_id,omitempty"`
 }
 
 type broadcastRequest struct {
@@ -151,7 +157,7 @@ func (mr *MessagingRoutes) handleNotify(w http.ResponseWriter, r *http.Request) 
 	mr.reg.LazyRepairAsync(context.Background())
 
 	if mr.remote != nil {
-		if handled, id, outcome, err := mr.remote.notifyAddress(ctx, req.FromPeer, req.ToPeer, req.Text, req.Attachments); handled {
+		if handled, id, outcome, err := mr.remote.notifyAddress(ctx, req.FromPeer, req.ToPeer, req.Text, req.Attachments, req.CorrelationID); handled {
 			// The source traces under the cross-machine notify id.
 			if id != "" {
 				mr.trace(ctx, id, "notify", "created", "", id, "", req.FromPeer, map[string]any{"to_peer": req.ToPeer})
@@ -178,16 +184,17 @@ func (mr *MessagingRoutes) handleNotify(w http.ResponseWriter, r *http.Request) 
 		BypassCircle: req.BypassCircle,
 		Circle:       req.Circle,
 		Attachments:  req.Attachments,
+		ThreadID:     req.CorrelationID,
 	})
 	if err != nil {
 		mr.writeNotifyError(w, ctx, req, deliveryID, err)
 		return
 	}
 
-	var inboxItemID *string
+	var inboxItemID, threadID *string
 	var surfaces []string
 	if result.Inbox != nil {
-		inboxItemID, surfaces = strPtr(result.Inbox.ItemID), result.Inbox.Surfaces
+		inboxItemID, surfaces, threadID = strPtr(result.Inbox.ItemID), result.Inbox.Surfaces, strPtr(result.Inbox.Thread)
 	}
 	writeJSON(w, http.StatusOK, notifyResponse{
 		OK:                    true,
@@ -208,6 +215,7 @@ func (mr *MessagingRoutes) handleNotify(w http.ResponseWriter, r *http.Request) 
 		MessageID:             strPtr(result.MessageID),
 		InboxItemID:           inboxItemID,
 		Surfaces:              surfaces,
+		ThreadID:              threadID,
 	})
 }
 
@@ -267,6 +275,8 @@ func (mr *MessagingRoutes) writeNotifyError(w http.ResponseWriter, ctx context.C
 			"from_peer_name": req.FromPeer,
 			"to_peer_name":   req.ToPeer,
 		})
+	case errors.Is(err, service.ErrThreadNotHuman):
+		writeJSON(w, http.StatusUnprocessableEntity, accessErrorBody("invalid_request", "failed", "thread_not_human", msg, req))
 	case errors.As(err, new(*proto.NotAddressableError)):
 		// Nothing was registered or queued: the target cannot take input.
 		body := accessErrorBody("peer_not_addressable", "failed", "peer_not_addressable", msg, req)

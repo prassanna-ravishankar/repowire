@@ -110,6 +110,14 @@ function InboxRow({ item, active, onClick }: { item: InboxItem; active: boolean;
         <span className={cn("shrink-0 border px-1.5 py-0.5 font-mono text-[9px] uppercase tracking-[0.12em]", kindTone(item.kind))}>
           {KIND_LABEL[item.kind]}
         </span>
+        {item.kind === "notify" && item.correlation_id && (
+          <span
+            className="shrink-0 font-mono text-[10px] text-outline"
+            title={`progress on ask ${item.correlation_id}`}
+          >
+            re #{item.correlation_id}
+          </span>
+        )}
         <span className="min-w-0 flex-1 truncate font-mono text-[11px] leading-5 text-outline">{preview(item.text)}</span>
         {item.replied && <span className="shrink-0 font-mono text-[11px] text-outline" title="replied">↩</span>}
       </div>

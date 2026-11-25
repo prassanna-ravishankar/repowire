@@ -46,7 +46,7 @@ Frames the human peer sends carry `from_role: "human"`. The daemon decides this 
 | `answer` | An `ack`/`answer`/`decline` reply to an ask the human sent | Yes, under the human's original message |
 | `broadcast` | `broadcast`, only when `human.broadcast: true` | No |
 
-An item is threaded only when its `correlation_id` names an ask the daemon still tracks (open, or closed within the ask TTL) and the human is one of its parties. A plain notify never creates, acks, or closes an ask.
+An item is threaded only when its `correlation_id` names an ask the daemon still tracks (open, or closed within the ask TTL) and the human is one of its parties. A plain notify never creates, acks, or closes an ask. An agent can thread a progress update under an ask by passing that ask's `correlation_id` to `notify_peer` or `POST /notify`. The item stays a `notify` and is threaded only while the ask is open and the sender asked it or holds it now; otherwise it is stored unthreaded. The dashboard marks a threaded notify with `re #<correlation_id>`.
 
 ## Receipts and traces
 

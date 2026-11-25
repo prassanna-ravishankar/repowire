@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log"
 	"regexp"
+	"slices"
 	"sort"
 	"sync"
 	"time"
@@ -82,6 +83,8 @@ type LocalSurface interface {
 type InboxReceipt struct {
 	ItemID   string
 	Surfaces []string
+	// Thread is the ask the item was filed under, "" when unthreaded.
+	Thread string
 }
 
 // InboxStoreParams describes one inbound item.
@@ -92,9 +95,13 @@ type InboxStoreParams struct {
 	FromPeerID    string
 	FromName      string
 	CorrelationID string
-	Text          string
-	Attachments   []map[string]any
-	Question      map[string]any
+	// ProgressOn is an ask a notify reports progress on (#477). It becomes
+	// the item's thread only when the ask is threadable and the sender asked
+	// or holds it; the item stays a notify either way.
+	ProgressOn  string
+	Text        string
+	Attachments []map[string]any
+	Question    map[string]any
 }
 
 // Inbox owns the human peer's items and their surface pushes.
@@ -193,7 +200,7 @@ func (i *Inbox) Store(ctx context.Context, params InboxStoreParams) (InboxReceip
 		FromName:      params.FromName,
 		ToPeerID:      string(human),
 		ToName:        string(humanName),
-		CorrelationID: i.threadable(params.CorrelationID),
+		CorrelationID: firstNonEmpty(i.threadable(params.CorrelationID), i.progressThread(params.ProgressOn, params.FromPeerID)),
 		Text:          params.Text,
 		Attachments:   params.Attachments,
 		Question:      params.Question,
@@ -238,7 +245,7 @@ func (i *Inbox) Store(ctx context.Context, params InboxStoreParams) (InboxReceip
 			i.release(item.ID, target.name)
 		}
 	}
-	return InboxReceipt{ItemID: item.ID, Surfaces: names}, nil
+	return InboxReceipt{ItemID: item.ID, Surfaces: names, Thread: item.CorrelationID}, nil
 }
 
 // RecordOutbound stores what the human sent (an ask typed on a surface) so the
@@ -502,6 +509,28 @@ func (i *Inbox) threadable(cid string) string {
 	ask, ok := i.asks.Get(cid)
 	human, _ := i.Human()
 	if !ok || (ask.FromPeerID != human && ask.ToPeerID != human) {
+		return ""
+	}
+	return cid
+}
+
+// progressThread keeps cid as a progress notify's thread when it names an
+// open ask between the human and sender, its asker or current holder, so a
+// peer outside the ask cannot post into the human's thread and nothing posts
+// under an ask already closed. One snapshot answers every test: the ask can
+// be pruned at any moment. Like threadable, a cid that does not qualify
+// yields an unthreaded item, never an error.
+func (i *Inbox) progressThread(cid, sender string) string {
+	if cid == "" || sender == "" || i.asks == nil {
+		return ""
+	}
+	ask, ok := i.asks.Get(cid)
+	if !ok || ask.Closed {
+		return ""
+	}
+	human, _ := i.Human()
+	parties := []proto.PeerID{ask.FromPeerID, ask.ToPeerID}
+	if !slices.Contains(parties, human) || !slices.Contains(parties, proto.PeerID(sender)) {
 		return ""
 	}
 	return cid
