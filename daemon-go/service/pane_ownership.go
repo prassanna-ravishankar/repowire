@@ -582,5 +582,22 @@ func PaneConfirmedPeer(paneID string, pid int) (proto.PeerID, bool) {
 	if id == "" || int(metaPID) != pid || !sameProcess(pid, meta) {
 		return "", false
 	}
+	// Metadata from hooks that predate agent_started names its process by pid
+	// alone. Pane ids restart when the tmux server does and pids are reused, so
+	// such a file must at least have been written while this process ran.
+	if recorded, _ := meta["agent_started"].(string); recorded == "" && !writtenSinceStart(hooks.WSHookMetaPath(paneID), pid) {
+		return "", false
+	}
 	return proto.PeerID(id), true
+}
+
+// writtenSinceStart reports whether path was last written at or after pid
+// started. An unreadable time is not proof.
+func writtenSinceStart(path string, pid int) bool {
+	info, err := os.Stat(path)
+	if err != nil {
+		return false
+	}
+	started, ok := hooks.ProcessStartedAt(pid)
+	return ok && !info.ModTime().Before(started)
 }

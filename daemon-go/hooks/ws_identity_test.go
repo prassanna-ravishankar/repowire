@@ -1,6 +1,10 @@
 package hooks
 
-import "testing"
+import (
+	"os"
+	"testing"
+	"time"
+)
 
 func TestReconnectClaimsTheConfirmedIdentity(t *testing.T) {
 	id, name := confirmedIdentity("repow-1-e9cb2c1d", "repowire-4-claude-code",
@@ -10,5 +14,12 @@ func TestReconnectClaimsTheConfirmedIdentity(t *testing.T) {
 	}
 	if id, name := confirmedIdentity("repow-1-a", "n", map[string]any{"type": "connected"}); id != "repow-1-a" || name != "n" {
 		t.Fatalf("a frame without identity changed the claim to %s %s", id, name)
+	}
+}
+
+func TestProcessStartedAtOfSelf(t *testing.T) {
+	started, ok := ProcessStartedAt(os.Getpid())
+	if !ok || started.After(time.Now()) || time.Since(started) > time.Hour {
+		t.Fatalf("ProcessStartedAt(self) = %v, %v", started, ok)
 	}
 }

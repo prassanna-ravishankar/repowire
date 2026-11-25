@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"testing"
+	"time"
 
 	"github.com/repowire/repowire/daemon-go/hooks"
 )
@@ -45,5 +46,16 @@ func TestPaneConfirmedPeerNeedsTheSameProcess(t *testing.T) {
 				t.Fatalf("PaneConfirmedPeer = %q, %v; want %q", got, ok, tc.want)
 			}
 		})
+	}
+	// Legacy metadata (no agent_started) written before this process started
+	// describes an earlier process that had the same pane id and pid: a tmux
+	// server restart reuses pane ids.
+	writePaneMeta(t, "%29", map[string]any{"peer_id": "repow-1-dead", "agent_pid": pid})
+	old := time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)
+	if err := os.Chtimes(hooks.WSHookMetaPath("%29"), old, old); err != nil {
+		t.Fatal(err)
+	}
+	if got, ok := PaneConfirmedPeer("%29", pid); ok {
+		t.Fatalf("legacy metadata older than the process adopted %q", got)
 	}
 }
