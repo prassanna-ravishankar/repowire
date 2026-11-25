@@ -14,6 +14,7 @@ import {
 } from "../lib/templates";
 import type { AttachmentRef, Event, Peer } from "../types";
 import { peerLabel } from "../types";
+import { PeerMessages } from "./PeerMessages";
 import { formatTime, StatusLabel } from "./status";
 
 interface TranscriptTurn {
@@ -98,7 +99,7 @@ interface TranscriptResponse {
 const ACK_FRAME_RE = /^\[ack #([^\]\s]+) from @([^\]\s]+)\]\s?([\s\S]*)$/;
 const BARE_ACK_TIMEOUT_MS = 120_000;
 
-type PeerTab = "chat" | "mcp" | "history";
+type PeerTab = "chat" | "mcp" | "history" | "messages";
 
 /** Pending-turn group built from chat_turn_delta events. Synthetic client-side
  * shape — not a wire event — carrying a discriminator so the thread renderer
@@ -499,6 +500,7 @@ export function PeerView({
       <div className="flex shrink-0 gap-0 border-b border-border-faint px-4 md:px-6" role="tablist">
         <TabButton label="chat" active={activeTab === "chat"} onClick={() => setActiveTab("chat")} />
         <TabButton label="history" active={activeTab === "history"} onClick={() => setActiveTab("history")} />
+        <TabButton label="messages" active={activeTab === "messages"} onClick={() => setActiveTab("messages")} />
         <TabButton label="mcp" active={activeTab === "mcp"} onClick={() => setActiveTab("mcp")} />
       </div>
 
@@ -583,6 +585,8 @@ export function PeerView({
         </>
       ) : activeTab === "history" ? (
         <HistoryPane peer={peer} apiBase={apiBase} />
+      ) : activeTab === "messages" ? (
+        <PeerMessages key={peer.peer_id} peer={peer} apiBase={apiBase} />
       ) : (
         <McpPanel peer={peer} apiBase={apiBase} />
       )}
