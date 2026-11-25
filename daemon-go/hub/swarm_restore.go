@@ -115,6 +115,13 @@ func (h *Hub) swarmTrusted(ctx context.Context, a *SwarmAgent) (*SwarmAgent, str
 	if p == nil {
 		return a, "unknown to this daemon"
 	}
+	// Recomputed from the daemon's record, so a manifest whose exclude was
+	// cleared cannot relaunch the orchestrator, a service or a sub-agent. A
+	// manifest exclude is still honoured above ("not running" is only
+	// knowable at snapshot time); honouring it only makes restore stricter.
+	if ex := swarmExclusion(p); ex != "" {
+		return a, ex
+	}
 	in := h.resumeInputsFor(ctx, p)
 	switch {
 	case string(p.Backend) != a.Backend:
@@ -177,7 +184,7 @@ func (h *Hub) swarmPeer(a *SwarmAgent) *proto.Peer {
 	if !ok {
 		return nil
 	}
-	p := &proto.Peer{PeerID: a.PeerID, Backend: m.Backend, Circle: m.Circle, Role: m.Role, DisplayName: m.DisplayName}
+	p := &proto.Peer{PeerID: a.PeerID, Backend: m.Backend, Circle: m.Circle, Role: m.Role, DisplayName: m.DisplayName, Provenance: m.Provenance}
 	if m.Path != nil {
 		p.Path = *m.Path
 	}

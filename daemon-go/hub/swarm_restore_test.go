@@ -321,6 +321,10 @@ func TestSwarmPlanTrustsTheDaemonNotTheManifest(t *testing.T) {
 	forgedBackend := agentFor(edit, "edit", proto.RoleAgent)
 	forgedBackend.Backend = "codex"
 	stranger := agentFor("repow-work-stranger", "stranger", proto.RoleAgent)
+	orch := r.register("orch", "", proto.RoleOrchestrator, "")
+	r.offline(orch)
+	r.sessionFile("orch")
+	cleared := agentFor(orch, "orch", proto.RoleAgent) // a forged entry: exclude cleared, role rewritten
 	geo := func(i int) service.PaneGeometry {
 		return service.PaneGeometry{Session: "work", WindowIndex: 1, WindowName: "w", PaneIndex: i, PaneID: "%" + string(rune('1'+i))}
 	}
@@ -330,6 +334,7 @@ func TestSwarmPlanTrustsTheDaemonNotTheManifest(t *testing.T) {
 		{PaneGeometry: geo(2), Agent: forgedBackend},
 		{PaneGeometry: geo(3), Agent: stranger},
 		{PaneGeometry: geo(4), Agent: agentFor(edit, "edit", proto.RoleAgent)},
+		{PaneGeometry: geo(5), Agent: cleared},
 	}})
 	if err != nil {
 		t.Fatal(err)
@@ -341,5 +346,8 @@ func TestSwarmPlanTrustsTheDaemonNotTheManifest(t *testing.T) {
 	}
 	if p := plan.Panes[4]; p.Action != SwarmLaunch || p.CWD != "/work/edit" || !strings.Contains(p.Command, "sess-edit") {
 		t.Fatalf("the faithful entry = %+v", p)
+	}
+	if p := plan.Panes[5]; p.Action != SwarmShell || !strings.Contains(p.Skip, "orchestrator") {
+		t.Fatalf("the orchestrator with its exclude cleared = %+v", p)
 	}
 }
