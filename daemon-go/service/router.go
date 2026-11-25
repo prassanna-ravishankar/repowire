@@ -246,30 +246,43 @@ func (m *MessageRouter) SendAsk(
 	return ack, nil
 }
 
+// BroadcastBody is what one recipient of a broadcast is sent: the text (the
+// body, or a pull recipient's nudge) and the message_id its record carries
+// ("" when unrecorded).
+type BroadcastBody struct {
+	Text      string
+	MessageID string
+}
+
+// broadcastFrame is one recipient's broadcast envelope.
+func (m *MessageRouter) broadcastFrame(from Sender, body BroadcastBody) map[string]any {
+	frame := map[string]any{
+		"type": string(proto.FrameBroadcast),
+		"text": body.Text,
+	}
+	if body.MessageID != "" {
+		frame["message_id"] = body.MessageID
+	}
+	return m.stampSender(frame, from)
+}
+
 // BroadcastToSession sends one broadcast envelope to a single live WS session.
 // Used for deferred broadcast to a peer that was pending_first_turn at fanout.
 // Returns ErrNotConnected when the session has no live transport.
-func (m *MessageRouter) BroadcastToSession(ctx context.Context, from Sender, text string, to proto.PeerID) error {
-	return m.transport.Send(ctx, to, m.stampSender(map[string]any{
-		"type": string(proto.FrameBroadcast),
-		"text": text,
-	}, from))
+func (m *MessageRouter) BroadcastToSession(ctx context.Context, from Sender, body BroadcastBody, to proto.PeerID) error {
+	return m.transport.Send(ctx, to, m.broadcastFrame(from, body))
 }
 
 // Broadcast fans out to every connected peer minus exclude (a set of PeerID),
-// best-effort. Returns the sent peer_ids and per-recipient failures; one failure
-// never aborts the fanout. Mirrors MessageRouter.broadcast.
+// best-effort, each recipient getting its own frame from bodyFor. Returns the
+// sent peer_ids and per-recipient failures; one failure never aborts the
+// fanout. bodyFor runs concurrently, once per recipient.
 func (m *MessageRouter) Broadcast(
 	ctx context.Context,
 	from Sender,
-	text string,
 	exclude map[proto.PeerID]struct{},
+	bodyFor func(proto.PeerID) BroadcastBody,
 ) (sent []proto.PeerID, failed []BroadcastFailure) {
-	frame := m.stampSender(map[string]any{
-		"type": string(proto.FrameBroadcast),
-		"text": text,
-	}, from)
-
 	var (
 		mu sync.Mutex
 		wg sync.WaitGroup
@@ -281,7 +294,7 @@ func (m *MessageRouter) Broadcast(
 		wg.Add(1)
 		go func(id proto.PeerID) {
 			defer wg.Done()
-			if err := m.transport.Send(ctx, id, frame); err != nil {
+			if err := m.transport.Send(ctx, id, m.broadcastFrame(from, bodyFor(id))); err != nil {
 				mu.Lock()
 				failed = append(failed, BroadcastFailure{PeerID: id, Error: err.Error()})
 				mu.Unlock()

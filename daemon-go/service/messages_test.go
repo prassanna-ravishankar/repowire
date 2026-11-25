@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -327,5 +328,93 @@ func TestACPRecipientIsAlwaysPushed(t *testing.T) {
 	ws := NewPeerDelivery(&fakeRegistry{peers: []*proto.Peer{beta}}, newRouterWithFake(f), f, NewAskTracker(0), nil).WithMessages(messages)
 	if got := ws.MessageMode(ctx, beta); got != MessageDeliveryPull {
 		t.Fatalf("WS recipient's mode = %q", got)
+	}
+}
+
+// A broadcast is recorded once per recipient: each frame carries its own
+// message_id, a pull recipient gets a nudge, and a push recipient's copy is
+// read on send.
+func TestBroadcastRecordsEachRecipientsCopy(t *testing.T) {
+	ctx := context.Background()
+	alpha := peerWith("repow-default-aaaa", "alpha", "default", proto.StatusOnline)
+	beta := peerWith("repow-default-bbbb", "beta", "default", proto.StatusOnline)
+	gamma := peerWith("repow-default-cccc", "gamma", "default", proto.StatusOnline)
+	f := &fakeTransport{sessions: []proto.PeerID{alpha.PeerID, beta.PeerID, gamma.PeerID}}
+	d, messages, _ := deliveryWithMessages(t, f, nil, alpha, beta, gamma)
+	if err := messages.SetMode(ctx, gamma.PeerID, MessageDeliveryPull); err != nil {
+		t.Fatal(err)
+	}
+
+	body := "deploy at noon\nfreeze merges until then"
+	if sent, failed := d.Broadcast(ctx, "alpha", body, nil, false); len(sent) != 2 || len(failed) != 0 {
+		t.Fatalf("sent %v, failed %v", sent, failed)
+	}
+	if _, ok := f.framesTo[alpha.PeerID]; ok {
+		t.Fatal("the sender got its own broadcast")
+	}
+	read := func(p *proto.Peer) (map[string]any, *state.PeerMessage) {
+		t.Helper()
+		frame, _ := f.framesTo[p.PeerID].(map[string]any)
+		id, _ := frame["message_id"].(string)
+		msg, err := messages.Get(ctx, id)
+		if err != nil || msg == nil {
+			t.Fatalf("%s: no record for frame %#v (%v)", p.DisplayName, frame, err)
+		}
+		if msg.Kind != state.MessageBroadcast || msg.PeerID != string(p.PeerID) || msg.FromName != "alpha" || msg.Text != body {
+			t.Fatalf("%s: record = %+v", p.DisplayName, msg)
+		}
+		return frame, msg
+	}
+	pushFrame, pushMsg := read(beta)
+	if pushFrame["text"] != body || pushMsg.ReadAt == "" {
+		t.Fatalf("push copy: frame %#v, read_at %q", pushFrame, pushMsg.ReadAt)
+	}
+	pullFrame, pullMsg := read(gamma)
+	text, _ := pullFrame["text"].(string)
+	if !strings.HasPrefix(text, "[message "+pullMsg.ID+": broadcast from @alpha") || strings.Contains(text, "freeze merges") || pullMsg.ReadAt != "" {
+		t.Fatalf("pull copy: text %q, read_at %q", text, pullMsg.ReadAt)
+	}
+	if pushMsg.ID == pullMsg.ID {
+		t.Fatal("recipients share one record")
+	}
+}
+
+// A copy whose send failed is not left behind for the recipient to list.
+func TestFailedBroadcastSendDiscardsTheCopy(t *testing.T) {
+	ctx := context.Background()
+	alpha := peerWith("repow-default-aaaa", "alpha", "default", proto.StatusOnline)
+	beta := peerWith("repow-default-bbbb", "beta", "default", proto.StatusOnline)
+	f := &fakeTransport{sessions: []proto.PeerID{beta.PeerID}, sendErr: errors.New("socket closed")}
+	d, messages, _ := deliveryWithMessages(t, f, nil, alpha, beta)
+	if _, failed := d.Broadcast(ctx, "alpha", "deploy at noon", nil, false); len(failed) != 1 {
+		t.Fatalf("failed = %v", failed)
+	}
+	if list, err := messages.List(ctx, state.PeerMessageFilter{PeerID: string(beta.PeerID)}); err != nil || len(list) != 0 {
+		t.Fatalf("beta's messages after a failed send = %+v (%v)", list, err)
+	}
+}
+
+// A recipient still seeding gets its copy after the seed gate, recorded and
+// nudged like the rest.
+func TestDeferredBroadcastCarriesItsRecord(t *testing.T) {
+	ctx := context.Background()
+	alpha := peerWith("repow-default-aaaa", "alpha", "default", proto.StatusOnline)
+	beta := peerWith("repow-default-bbbb", "beta", "default", proto.StatusOnline)
+	beta.TurnState = proto.TurnPendingFirstTurn
+	f := &fakeTransport{sessions: []proto.PeerID{beta.PeerID}}
+	d, messages, _ := deliveryWithMessages(t, f, nil, alpha, beta)
+	if err := messages.SetMode(ctx, beta.PeerID, MessageDeliveryPull); err != nil {
+		t.Fatal(err)
+	}
+	if sent, _ := d.Broadcast(ctx, "alpha", "deploy at noon\nsecond line", nil, false); len(sent) != 1 {
+		t.Fatalf("sent = %v", sent)
+	}
+	d.Close() // releases the seed gate and joins the deferred send
+
+	frame, _ := f.framesTo[beta.PeerID].(map[string]any)
+	id, _ := frame["message_id"].(string)
+	text, _ := frame["text"].(string)
+	if msg, _ := messages.Get(ctx, id); msg == nil || msg.Kind != state.MessageBroadcast || !strings.HasPrefix(text, "[message "+id) || strings.Contains(text, "second line") {
+		t.Fatalf("deferred frame %#v, record %+v", frame, msg)
 	}
 }
