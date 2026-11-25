@@ -49,10 +49,12 @@ The CLI `repowire peer list` is god-view: every peer in every circle, caller inc
 Backend says which runtime a peer is; provenance says how it reached the mesh and whether it can be addressed. The fields are orthogonal on purpose:
 
 - `source`: `hook` for a runtime hook registration, `codex-app-server` for a thread the codex bridge found on the Codex App Server socket, `unknown` for peers registered before provenance existed. Unknown is a first-class value; the daemon only fills it from registration evidence, never by guessing.
-- `initiator`: who opened the session: `user`, `agent` (a sub-agent spawned by another agent), or `system` (runtime machinery nobody opened, such as helper threads the ChatGPT desktop app creates). Empty when the runtime does not say.
+- `initiator`: who opened the session: `user` or `agent` (a sub-agent spawned by another agent). Empty when the runtime does not say. `system` marks runtime machinery nobody opened; the codex bridge no longer registers such threads (see below), so it appears only on records from older bridges.
 - `parent_runtime_id` / `parent_peer_id`: a sub-agent thread's parent. The runtime id is stored; the peer id is resolved when read and is empty if the parent is not registered.
-- `ephemeral`: the runtime does not persist the thread. Ephemeral threads can still accept input.
+- `ephemeral`: the runtime does not persist the thread. Ephemeral threads can still accept input. The App Server keeps no turn history for them, so the bridge records their turns from `turn/completed` only.
 - `addressable`: the runtime's own verdict on direct input (Codex publishes `canAcceptDirectInput`). Codex multi-agent v2 sub-agent threads are usually `false` with `addressable_reason=subagent_direct_input_denied`, but a sub-agent the runtime says accepts input stays addressable. Non-addressable is inbound-only: the peer can still ack, reply, and notify.
+
+The codex bridge registers only conversations: threads whose Codex `threadSource` is `user` or `subagent`, or that carry no `threadSource` (older runtimes). The runtime's own helper threads (the TUI's `thread_title` namer, the desktop app's `system` helpers, and any other source a client names) are never peers. Registering them used to mint `<name>-2-codex` phantoms on the spawned peer's pane.
 
 Addressability is enforced, not just displayed: an ask or notify to a non-addressable peer is refused with `peer_not_addressable` before any tracker entry or queued delivery exists, broadcasts skip it, and a peer that loses addressability while live has its open inbound asks closed (askers are told) and its queued deliveries dropped. Outbound stays open: the peer can still ack, reply, notify, and broadcast.
 
