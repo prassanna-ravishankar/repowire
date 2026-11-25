@@ -327,3 +327,29 @@ func TestSweepDeletesPeerMessagesOlderThanBothCutoffs(t *testing.T) {
 		}
 	}
 }
+
+// A rule walks its rows by rowid, so each batch starts after the last row the
+// previous one touched: a row is visited once even when set leaves it
+// matching where, and the loop ends (#571).
+func TestApplyRuleVisitsEachRowOnce(t *testing.T) {
+	s := newTempStore(t)
+	ctx := context.Background()
+	if _, err := s.db.Exec(`CREATE TABLE sweep_probe (n INTEGER NOT NULL)`); err != nil {
+		t.Fatal(err)
+	}
+	const rows = 2*sweepBatch + 100
+	for i := range rows {
+		if _, err := s.db.Exec(`INSERT INTO sweep_probe (n) VALUES (?)`, i%2); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// set does not stop where matching: the old loop never ended on this.
+	n, err := s.applyRule(ctx, sweepRule{name: "probe", table: "sweep_probe", where: "n >= 0", set: "n = n + 10"})
+	if err != nil || n != rows {
+		t.Fatalf("touched %d rows (%v), want %d", n, err, rows)
+	}
+	var over int
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM sweep_probe WHERE n >= 20`).Scan(&over); err != nil || over != 0 {
+		t.Fatalf("%d rows were touched twice (%v)", over, err)
+	}
+}

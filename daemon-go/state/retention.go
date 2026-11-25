@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -53,8 +54,8 @@ const RemoteWindow = 7 * 24 * time.Hour
 type sweepRule struct {
 	name string
 	// table and where select the rows; set is the UPDATE assignment, empty
-	// for a delete. where must stop matching a row once set has run, so a
-	// batch loop ends.
+	// for a delete. Each row is visited once (applyRule walks rowids), so
+	// where need not stop matching a row that set has run on.
 	table, where, set string
 	args              []any
 }
@@ -187,27 +188,66 @@ func (s *Store) Sweep(ctx context.Context, p RetentionPolicy, now time.Time) (ma
 	return counts, first
 }
 
+// applyRule walks the table's matching rows in rowid order, sweepBatch at a
+// time, each batch starting after the last rowid the previous one touched.
+// A batch never revisits a row an earlier batch stripped, so a first sweep
+// over a large journal costs one pass, not one rescan per batch (#571).
+// The action repeats where, so a row that changed since it was selected is
+// left alone.
+//
+// The walk is in rowid order, so SQLite seeks the rowid, not a rule's time
+// index: a sweep costs one pass over the table rather than over the
+// matching rows. Retention bounds the tables, so that pass is cheap (about
+// 10ms on the live database in November 2026). If it ever is not, a (ts,
+// rowid) cursor for the time-keyed rules keeps both properties.
 func (s *Store) applyRule(ctx context.Context, rule sweepRule) (int, error) {
-	batch := `rowid IN (SELECT rowid FROM ` + rule.table + ` WHERE ` + rule.where + fmt.Sprintf(` LIMIT %d)`, sweepBatch)
-	query := `DELETE FROM ` + rule.table + ` WHERE ` + batch
+	sel := `SELECT rowid FROM ` + rule.table + ` WHERE rowid > ? AND (` + rule.where + `) ORDER BY rowid LIMIT ` + strconv.Itoa(sweepBatch)
+	act := `DELETE FROM ` + rule.table
 	if rule.set != "" {
-		query = `UPDATE ` + rule.table + ` SET ` + rule.set + ` WHERE ` + batch
+		act = `UPDATE ` + rule.table + ` SET ` + rule.set
 	}
 	total := 0
+	var after int64
 	for {
 		if err := ctx.Err(); err != nil {
 			return total, err
 		}
-		res, err := s.db.ExecContext(ctx, query, rule.args...)
+		ids, err := s.sweepRowids(ctx, sel, append([]any{after}, rule.args...))
+		if err != nil || len(ids) == 0 {
+			return total, err
+		}
+		args := make([]any, 0, len(ids)+len(rule.args))
+		for _, id := range ids {
+			args = append(args, id)
+		}
+		res, err := s.db.ExecContext(ctx, act+` WHERE rowid IN (?`+strings.Repeat(",?", len(ids)-1)+`) AND (`+rule.where+`)`, append(args, rule.args...)...)
 		if err != nil {
 			return total, err
 		}
 		n, _ := res.RowsAffected()
 		total += int(n)
-		if n < sweepBatch {
+		after = ids[len(ids)-1]
+		if len(ids) < sweepBatch {
 			return total, nil
 		}
 	}
+}
+
+func (s *Store) sweepRowids(ctx context.Context, query string, args []any) ([]int64, error) {
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var ids []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
 }
 
 // RetentionPlugs connect the store's sweep to the rest of the daemon.
