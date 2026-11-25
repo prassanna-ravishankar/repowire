@@ -122,7 +122,7 @@ func (i *Inbox) SurfaceRelease(p *proto.Peer) {
 // releaseIfDue releases target's backlog when it may have one and is not in
 // its window.
 func (i *Inbox) releaseIfDue(target surfaceTarget, now time.Time) {
-	if !i.mayHoldFor(target.name) {
+	if !i.mayHoldFor(target.name) || !i.retryDue(target.name, now) {
 		return
 	}
 	if w, ok := i.window(target); ok && w.Quiet(now) {
@@ -163,19 +163,23 @@ func (i *Inbox) releaseHeld(target surfaceTarget) {
 	if len(digest) == 1 {
 		individual, digest = append(digest, individual...), nil
 	}
-	if len(digest) > 0 {
-		i.pushDigest(target, digest)
+	failed := 0
+	if len(digest) > 0 && !i.pushDigest(target, digest) {
+		failed++
 	}
 	for n := range individual {
 		item := individual[n]
 		i.claim(item.ID, target.name)
 		out := i.deliver(&item, target)
 		i.release(item.ID, target.name)
-		i.recordRelease(&item, target.name, out, "")
+		if !i.recordRelease(&item, target.name, out, "") {
+			failed++
+		}
 	}
 	if n, err := i.store.HeldInboxCount(ctx, target.name); err == nil {
 		i.setMayHold(target.name, n > 0)
 	}
+	i.settleRetry(target.name, failed > 0)
 	i.SyncPresence(ctx)
 }
 
@@ -188,7 +192,7 @@ func (i *Inbox) handled(item *state.InboxItem) bool {
 // pushDigest delivers items as one message and records each as pushed by it.
 // The digest is a rendering, not an inbox item, and its refs map to no item:
 // a reply to it threads to nothing, so it says to reply on the item.
-func (i *Inbox) pushDigest(target surfaceTarget, items []state.InboxItem) {
+func (i *Inbox) pushDigest(target surfaceTarget, items []state.InboxItem) bool {
 	var b strings.Builder
 	fmt.Fprintf(&b, "%d messages arrived during quiet hours:\n", len(items))
 	for _, item := range items {
@@ -206,13 +210,14 @@ func (i *Inbox) pushDigest(target surfaceTarget, items []state.InboxItem) {
 	for n := range items {
 		i.recordRelease(&items[n], target.name, out, summary.ID)
 	}
+	return out.err == nil
 }
 
 // recordRelease records a released item's push. A release that failed
 // (the bridge went away, a full queue) returns the item to held, so the next
 // trigger tries again: a failure must not strand an item the human never
 // saw. digestID names the summary it went in, if any.
-func (i *Inbox) recordRelease(item *state.InboxItem, surface string, out pushOutcome, digestID string) {
+func (i *Inbox) recordRelease(item *state.InboxItem, surface string, out pushOutcome, digestID string) bool {
 	detail := map[string]any{"item_id": item.ID, "surface": surface, "outcome": "pushed"}
 	if digestID != "" {
 		detail["outcome"], detail["digest_id"] = "digest", digestID
@@ -226,10 +231,46 @@ func (i *Inbox) recordRelease(item *state.InboxItem, surface string, out pushOut
 		i.setMayHold(surface, true)
 		detail["outcome"], detail["error_class"] = "held_again", out.errorClass
 		i.trace(ctx, item, "surface_released", "fail", detail)
-		return
+		return false
 	}
 	i.trace(i.baseCtx, item, "surface_released", "", detail)
 	i.recordPush(item, surface, out)
+	return true
+}
+
+// releaseBackoff spaces the Store trigger's retries of a failing release,
+// so a bridge that keeps failing is not sent its whole backlog on every new
+// item. A reconnect or surface_release retries at once: that is when a
+// retry is likely to work. Checked on those requests; no timer.
+type releaseBackoff struct {
+	after time.Time
+	wait  time.Duration
+}
+
+const (
+	releaseRetryFirst = time.Minute
+	releaseRetryMax   = 15 * time.Minute
+)
+
+func (i *Inbox) retryDue(surface string, now time.Time) bool {
+	i.holdMu.Lock()
+	defer i.holdMu.Unlock()
+	return !now.Before(i.retry[surface].after)
+}
+
+// settleRetry doubles the surface's backoff after a release with failures
+// (up to releaseRetryMax) and clears it after a clean one.
+func (i *Inbox) settleRetry(surface string, failed bool) {
+	i.holdMu.Lock()
+	defer i.holdMu.Unlock()
+	if !failed {
+		delete(i.retry, surface)
+		return
+	}
+	b := i.retry[surface]
+	b.wait = min(max(b.wait*2, releaseRetryFirst), releaseRetryMax)
+	b.after = i.now().Add(b.wait)
+	i.retry[surface] = b
 }
 
 func (i *Inbox) setMayHold(surface string, may bool) {

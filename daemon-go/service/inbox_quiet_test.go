@@ -358,3 +358,37 @@ func TestFailedReleaseIsHeldAgain(t *testing.T) {
 		t.Fatalf("the retry left status %q", got)
 	}
 }
+
+// A failing release is retried by the next Store only after a backoff, so a
+// bridge that keeps failing is not sent its backlog on every new item; a
+// surface_release retries at once.
+func TestFailingReleaseBacksOff(t *testing.T) {
+	f := newQuietFixture(t, false, nil, true)
+	held := f.store(t, InboxStoreParams{Text: "held"})
+	attempts := 0
+	f.transport.mu.Lock()
+	f.transport.receipts[f.telegram.PeerID] = func(frame map[string]any) map[string]any {
+		if frame["delivery_id"] == held {
+			attempts++
+			return map[string]any{"status": "failed", "error_class": "network"}
+		}
+		return map[string]any{"status": "pushed", "surface_ref": "1"}
+	}
+	f.transport.mu.Unlock()
+	f.at(7, 0)
+	f.release() // attempt 1
+	f.store(t, InboxStoreParams{Text: "a"})
+	f.store(t, InboxStoreParams{Text: "b"})
+	if attempts != 1 {
+		t.Fatalf("held item attempted %d times within the backoff, want 1", attempts)
+	}
+	f.at(7, 2) // past the first minute's backoff
+	f.store(t, InboxStoreParams{Text: "c"})
+	if attempts != 2 {
+		t.Fatalf("after the backoff: %d attempts, want 2", attempts)
+	}
+	f.release() // explicit trigger: not throttled
+	if attempts != 3 {
+		t.Fatalf("surface_release: %d attempts, want 3", attempts)
+	}
+}

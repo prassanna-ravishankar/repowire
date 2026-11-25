@@ -152,6 +152,9 @@ type Inbox struct {
 	holdMu     sync.Mutex
 	mayHold    map[string]bool
 	cleared    map[string]bool // surfaces whose backlog was looked for and found empty
+	// retry is, per surface, when the Store trigger may next retry a
+	// release that failed, and the backoff that set it.
+	retry map[string]releaseBackoff
 }
 
 // NewInbox wires the inbox. asks may be nil (no thread validation: items never
@@ -160,7 +163,7 @@ func NewInbox(store InboxStore, reg inboxRegistry, transport Transport, asks *As
 	ctx, cancel := context.WithCancel(context.Background())
 	return &Inbox{store: store, reg: reg, transport: transport, asks: asks, cfg: cfg,
 		pushTimeout: inboxPushTimeout, catchUpLimit: inboxCatchUpLimit, pushing: map[pushKey]struct{}{},
-		baseCtx: ctx, cancel: cancel, now: time.Now, mayHold: map[string]bool{}, cleared: map[string]bool{}}
+		baseCtx: ctx, cancel: cancel, now: time.Now, mayHold: map[string]bool{}, cleared: map[string]bool{}, retry: map[string]releaseBackoff{}}
 }
 
 // SetHuman records the registered human peer.
