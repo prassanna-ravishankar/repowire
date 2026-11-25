@@ -231,6 +231,7 @@ func TestListedAnswersAreCheckedForCompleteness(t *testing.T) {
 		"score > 1":      {mutate: func(it []map[string]any) []map[string]any { it[3]["score"] = 1.5; return it }, want: FallbackUnparseable},
 		"no key":         {mutate: func(it []map[string]any) []map[string]any { delete(it[2], "key"); return it }, want: FallbackUnparseable},
 		"keyed instead":  {text: `{"scores":{"c1":0.5},"confidence":0.5}`, want: FallbackUnparseable},
+		"null scores":    {text: `{"scores":null,"confidence":0.5}`, want: FallbackUnparseable},
 		"no confidence":  {text: `{"scores":[]}`, want: FallbackUnparseable},
 		"scores missing": {text: `{"confidence":0.5}`, want: FallbackUnparseable},
 	}
@@ -249,9 +250,36 @@ func TestListedAnswersAreCheckedForCompleteness(t *testing.T) {
 			if res.Signals["scores_listed"] != 1 || res.Signals["input_tokens"] != 10 {
 				t.Fatalf("a failed answered row must keep its shape and tokens: %v", res.Signals)
 			}
+			if res.TemplateSHA256 != (Frontier{View: ViewClaimed}).templateSHA256(true) {
+				t.Fatalf("a failed listed row names the keyed template: %s", res.TemplateSHA256)
+			}
 		})
 	}
 	if providerFailure(FallbackIncomplete) {
 		t.Fatal("an incomplete listed answer counts against the provider")
+	}
+}
+
+// A refused or unconfigured call still names the shape and template it was
+// for: replay counts it under that shape.
+func TestFailedRowsNameTheirShapeAndTemplate(t *testing.T) {
+	listedSHA := (Frontier{View: ViewClaimed}).templateSHA256(true)
+	unconfigured := Run(context.Background(), Frontier{View: ViewClaimed, Model: "claude-sonnet-5-5"}, largeInput(80), 5*time.Second)
+	if unconfigured.FallbackReason != FallbackUnconfigured || unconfigured.Signals["scores_listed"] != 1 || unconfigured.TemplateSHA256 != listedSHA {
+		t.Fatalf("unconfigured = %+v", unconfigured)
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(`{"type":"error","error":{"type":"api_error","message":"x"}}`))
+	}))
+	defer srv.Close()
+	refused := runFrontier(t, srv, 0, largeInput(80))
+	if refused.FallbackReason != FallbackServerError || refused.Signals["scores_listed"] != 1 || refused.TemplateSHA256 != listedSHA {
+		t.Fatalf("refused = %+v", refused)
+	}
+	keyed := runFrontier(t, srv, 0, largeInput(3))
+	if keyed.Signals["scores_listed"] != 0 || keyed.TemplateSHA256 != (Frontier{View: ViewClaimed}).TemplateSHA256() {
+		t.Fatalf("keyed refusal = %+v", keyed)
 	}
 }

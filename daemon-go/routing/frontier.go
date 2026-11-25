@@ -166,7 +166,8 @@ func parseScores(raw json.RawMessage, listed bool, keys map[string]string) (map[
 			Key   *string  `json:"key"`
 			Score *float64 `json:"score"`
 		}
-		if json.Unmarshal(raw, &items) != nil {
+		// null is not a list: the schema was broken, not merely unfinished.
+		if json.Unmarshal(raw, &items) != nil || items == nil {
 			return nil, FallbackUnparseable
 		}
 		for _, it := range items {
@@ -207,14 +208,7 @@ func parseScores(raw json.RawMessage, listed bool, keys map[string]string) (map[
 }
 
 func (f Frontier) Rank(ctx context.Context, in Input) (RouterResult, error) {
-	if f.APIKey == "" {
-		return RouterResult{}, fail(FallbackUnconfigured)
-	}
 	state, keys := Project(in, f.View)
-	data, err := json.Marshal(state)
-	if err != nil {
-		return RouterResult{}, fail(FallbackError)
-	}
 	labels := make([]string, 0, len(keys))
 	for k := range keys {
 		labels = append(labels, k)
@@ -225,11 +219,19 @@ func (f Frontier) Rank(ctx context.Context, in Input) (RouterResult, error) {
 	if listed {
 		system = append(system, anthropic.TextBlockParam{Text: frontierListedSystem})
 	}
-	// Every row, a refusal included, says which shape was asked for, so
-	// replay can split the fallback rate by it.
+	// Every row, a refusal or an unconfigured arm included, says which shape
+	// and template it was for, so replay can split the fallback rate by them.
 	shape := map[string]float64{"scores_listed": 0}
 	if listed {
 		shape["scores_listed"] = 1
+	}
+	asked := RouterResult{TemplateSHA256: f.templateSHA256(listed), Signals: shape}
+	if f.APIKey == "" {
+		return asked, fail(FallbackUnconfigured)
+	}
+	data, err := json.Marshal(state)
+	if err != nil {
+		return asked, fail(FallbackError)
 	}
 
 	// The router resolves its own credentials: never inherit ANTHROPIC_* from
@@ -285,12 +287,12 @@ func (f Frontier) Rank(ctx context.Context, in Input) (RouterResult, error) {
 	if err != nil {
 		if refused.status != 0 {
 			reason, code := anthropicError(refused.status, refused.body)
-			return RouterResult{Signals: shape}, failHTTP(reason, refused.status, code)
+			return asked, failHTTP(reason, refused.status, code)
 		}
-		return RouterResult{Signals: shape}, fail(FallbackError)
+		return asked, fail(FallbackError)
 	}
 	// Every answered call is billed, so its token counts ride on failures too.
-	noted := RouterResult{Signals: map[string]float64{
+	noted := RouterResult{TemplateSHA256: asked.TemplateSHA256, Signals: map[string]float64{
 		"input_tokens": float64(resp.Usage.InputTokens), "output_tokens": float64(resp.Usage.OutputTokens),
 		"scores_listed": shape["scores_listed"],
 	}}
