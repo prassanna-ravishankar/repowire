@@ -6,6 +6,7 @@ import (
 	"log"
 	"strings"
 	"sync"
+	"time"
 	"unicode/utf8"
 
 	"github.com/google/uuid"
@@ -33,6 +34,8 @@ const (
 
 const (
 	nudgePreviewRunes = 80
+	// discardTimeout bounds deleting a failed send's record.
+	discardTimeout = 5 * time.Second
 )
 
 // MessageStore is the persistence seam; *state.Store satisfies it.
@@ -178,11 +181,15 @@ func (m *Messages) MarkRead(ctx context.Context, msg *state.PeerMessage) {
 }
 
 // Discard drops the record of a message whose send failed outright, so the
-// recipient never lists a message it was not sent. Nil-safe.
+// recipient never lists a message it was not sent. Nil-safe. The delete
+// outlives ctx: a send that failed because its request was cancelled must
+// still not leave its record behind.
 func (m *Messages) Discard(ctx context.Context, msg *state.PeerMessage) {
 	if m == nil || msg == nil {
 		return
 	}
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), discardTimeout)
+	defer cancel()
 	if err := m.store.DeletePeerMessage(ctx, msg.ID); err != nil {
 		log.Printf("messages: discard %s: %v", msg.ID, err)
 	}

@@ -418,3 +418,16 @@ func TestDeferredBroadcastCarriesItsRecord(t *testing.T) {
 		t.Fatalf("deferred frame %#v, record %+v", frame, msg)
 	}
 }
+
+// A send that failed because its request was cancelled still drops its record.
+func TestDiscardOutlivesACancelledRequest(t *testing.T) {
+	store := newMessageStore(t)
+	m := NewMessages(store)
+	msg := m.Record(context.Background(), state.PeerMessage{Kind: state.MessageBroadcast, PeerID: "repow-b", Text: "x"})
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	m.Discard(ctx, msg)
+	if got, err := m.Get(context.Background(), msg.ID); err != nil || got != nil {
+		t.Fatalf("record after a discard under a cancelled ctx = %+v (%v)", got, err)
+	}
+}
