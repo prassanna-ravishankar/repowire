@@ -362,7 +362,7 @@ func (h *Hub) spawnPeer(ctx context.Context, req SpawnRequest) (SpawnResponse, e
 		default:
 			resp.SeedState = "awaiting_registration"
 			from := firstNonempty(req.FromPeer, mcpDefaultIdentity)
-			h.holdSpawnSeed(h.spawn.ctx, result.PaneID, result.DisplayName, from, *req.Message)
+			h.holdSpawnSeed(h.spawn.ctx, result.PaneID, result.DisplayName, backend, req.Path, from, *req.Message)
 		}
 	}
 

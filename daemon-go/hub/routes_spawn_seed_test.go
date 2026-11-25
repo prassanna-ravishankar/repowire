@@ -27,10 +27,25 @@ func newSeedRig(t *testing.T) *seedRig {
 	return &seedRig{h: h, reg: reg, f: f, spawner: spawner}
 }
 
-// register puts a peer on pane as a registration would, and observes it.
+const (
+	seedBackend = proto.AgentClaudeCode
+	seedPath    = "/work/repo"
+)
+
+// hold holds a seed for the runtime a spawn launched on pane.
+func (r *seedRig) hold(ctx context.Context, pane, name, text string) {
+	r.h.holdSpawnSeed(ctx, pane, name, seedBackend, seedPath, "alpha", text)
+}
+
+// register puts a peer on pane and connects it, as HandleWS would.
 func (r *seedRig) register(pane, id, name string, status proto.PeerStatus) *proto.Peer {
+	return r.registerAs(pane, id, name, status, seedBackend, seedPath)
+}
+
+func (r *seedRig) registerAs(pane, id, name string, status proto.PeerStatus, backend proto.AgentType, path string) *proto.Peer {
 	p := peerWith(id, name, "default", status)
 	p.PaneID = &pane
+	p.Backend, p.Path = backend, path
 	p.TurnState = proto.TurnPendingFirstTurn
 	r.reg.mu.Lock()
 	r.reg.peers = append(r.reg.peers, p)
@@ -39,7 +54,7 @@ func (r *seedRig) register(pane, id, name string, status proto.PeerStatus) *prot
 	r.f.mu.Lock()
 	r.f.sessions = append(r.f.sessions, p.PeerID)
 	r.f.mu.Unlock()
-	r.h.ObserveRegistration(*p)
+	r.h.seedConnected(context.Background(), p.PeerID)
 	return p
 }
 
@@ -84,7 +99,7 @@ func withSeedTiming(t *testing.T, notice, hold time.Duration) {
 func TestHeldSeedIsDeliveredByTheRegistration(t *testing.T) {
 	withSeedTiming(t, time.Hour, time.Hour)
 	r := newSeedRig(t)
-	r.h.holdSpawnSeed(context.Background(), "%42", "beta-claude-code", "alpha", "review PR 400")
+	r.hold(context.Background(), "%42", "beta-claude-code", "review PR 400")
 	time.Sleep(50 * time.Millisecond)
 	r.f.mu.Lock()
 	early := len(r.f.sentTargets) + len(r.f.ackTargets)
@@ -101,7 +116,7 @@ func TestHeldSeedIsDeliveredByTheRegistration(t *testing.T) {
 		t.Fatalf("seed frames to the newcomer = %d, want 1", r.sentTo(newcomer.PeerID))
 	}
 	// A reconnect later does not deliver it again.
-	r.h.ObserveRegistration(*newcomer)
+	r.h.seedConnected(context.Background(), newcomer.PeerID)
 	time.Sleep(50 * time.Millisecond)
 	if r.sentTo(newcomer.PeerID) != 1 {
 		t.Fatal("a reconnect redelivered the opening message")
@@ -113,7 +128,7 @@ func TestHeldSeedReachesAPeerAlreadyRegistered(t *testing.T) {
 	withSeedTiming(t, time.Hour, time.Hour)
 	r := newSeedRig(t)
 	early := r.register("%43", "repow-default-cccc", "gamma-codex", proto.StatusOnline)
-	r.h.holdSpawnSeed(context.Background(), "%43", "gamma-codex", "alpha", "hello")
+	r.hold(context.Background(), "%43", "gamma-codex", "hello")
 	if got := r.waitEvent(t, "spawn_seed_delivered"); got["peer_id"] != string(early.PeerID) {
 		t.Fatalf("spawn_seed_delivered = %v", got)
 	}
@@ -125,7 +140,7 @@ func TestHeldSeedReachesAPeerAlreadyRegistered(t *testing.T) {
 func TestSpawnerIsToldAndTheSeedSurvivesALateRegistration(t *testing.T) {
 	withSeedTiming(t, 20*time.Millisecond, time.Hour)
 	r := newSeedRig(t)
-	r.h.holdSpawnSeed(context.Background(), "%44", "delta-codex", "alpha", "the brief")
+	r.hold(context.Background(), "%44", "delta-codex", "the brief")
 	waiting := r.waitEvent(t, "spawn_seed_waiting")
 	if waiting["pane_id"] != "%44" {
 		t.Fatalf("spawn_seed_waiting = %v", waiting)
@@ -147,12 +162,9 @@ func TestSpawnerIsToldAndTheSeedSurvivesALateRegistration(t *testing.T) {
 func TestOfflineRegistrationKeepsTheSeedHeld(t *testing.T) {
 	withSeedTiming(t, time.Hour, time.Hour)
 	r := newSeedRig(t)
-	r.h.holdSpawnSeed(context.Background(), "%45", "eps", "alpha", "hello")
+	r.hold(context.Background(), "%45", "eps", "hello")
 	r.register("%45", "repow-default-eeee", "eps", proto.StatusOffline)
-	r.h.seeds.mu.Lock()
-	held := r.h.seeds.byPane["%45"] != nil
-	r.h.seeds.mu.Unlock()
-	if !held {
+	if r.h.seeds.held("%45") == nil {
 		t.Fatal("an offline registration consumed the opening message")
 	}
 }
@@ -162,7 +174,7 @@ func TestOfflineRegistrationKeepsTheSeedHeld(t *testing.T) {
 func TestHeldSeedExpiresLoudly(t *testing.T) {
 	withSeedTiming(t, time.Hour, 20*time.Millisecond)
 	r := newSeedRig(t)
-	r.h.holdSpawnSeed(context.Background(), "%99", "ghost", "alpha", "hello")
+	r.hold(context.Background(), "%99", "ghost", "hello")
 	if got := r.waitEvent(t, "spawn_seed_failed"); got["pane_id"] != "%99" {
 		t.Fatalf("spawn_seed_failed = %v", got)
 	}
@@ -185,7 +197,7 @@ func TestHeldSeedTimersStopWithTheDaemon(t *testing.T) {
 	withSeedTiming(t, 10*time.Millisecond, 20*time.Millisecond)
 	r := newSeedRig(t)
 	ctx, cancel := context.WithCancel(context.Background())
-	r.h.holdSpawnSeed(ctx, "%46", "zeta", "alpha", "hello")
+	r.hold(ctx, "%46", "zeta", "hello")
 	cancel()
 	time.Sleep(80 * time.Millisecond)
 	r.reg.mu.Lock()
@@ -193,5 +205,27 @@ func TestHeldSeedTimersStopWithTheDaemon(t *testing.T) {
 	r.reg.mu.Unlock()
 	if n != 0 || r.sentTo(r.spawner.PeerID) != 0 {
 		t.Fatalf("timers acted after shutdown: %d events", n)
+	}
+	if r.h.seeds.held("%46") != nil {
+		t.Fatal("shutdown left the message held")
+	}
+}
+
+// Another runtime that comes up in the pane (the spawned one exited) does not
+// get the spawn's opening message; it is dropped loudly.
+func TestAnotherRuntimeOnThePaneDoesNotGetTheSeed(t *testing.T) {
+	withSeedTiming(t, time.Hour, time.Hour)
+	r := newSeedRig(t)
+	r.hold(context.Background(), "%47", "eta", "the brief")
+	other := r.registerAs("%47", "repow-default-9999", "other-codex", proto.StatusOnline, proto.AgentCodex, "/work/elsewhere")
+	if got := r.waitEvent(t, "spawn_seed_failed"); got["pane_id"] != "%47" {
+		t.Fatalf("spawn_seed_failed = %v", got)
+	}
+	time.Sleep(50 * time.Millisecond)
+	if r.sentTo(other.PeerID) != 0 {
+		t.Fatal("another runtime received the spawn's opening message")
+	}
+	if r.sentTo(r.spawner.PeerID) != 1 {
+		t.Fatal("the spawner was not told")
 	}
 }

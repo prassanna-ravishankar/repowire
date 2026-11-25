@@ -12,21 +12,24 @@ import (
 )
 
 // Spawn-with-message (#452): a spawn's opening message is held until the new
-// peer registers on its pane, and the registration delivers it
-// (ObserveRegistration, on the registry's OnRegistered), never a poll.
+// peer is reachable on its pane, and its connection delivers it (seedConnected,
+// once the socket is attached and its queue replayed), never a poll.
 //
 // A runtime can stop at a first-run prompt before it registers at all: Claude
 // Code and Codex both ask whether to trust a folder they have not seen (a new
 // worktree), and nothing registers until someone answers; an update notice can
 // do the same. So the message is held for spawnSeedHold, not dropped after a
 // short wait, and the spawner is told at spawnSeedNotice that the peer has not
-// registered and where to look. Every outcome is journaled.
+// connected and where to look. A held message belongs to the runtime the spawn
+// launched (its backend and project path): another runtime that comes up in
+// the pane does not get it, and the message is dropped loudly. Every outcome is
+// journaled.
 
 var (
 	// spawnSeedNotice is when the spawner hears that the peer has not
-	// registered yet.
+	// connected yet.
 	spawnSeedNotice = 90 * time.Second
-	// spawnSeedHold is how long the opening message waits for registration.
+	// spawnSeedHold is how long the opening message waits for the peer.
 	spawnSeedHold = 30 * time.Minute
 )
 
@@ -36,8 +39,17 @@ const spawnSender = "repowire:spawn"
 
 type heldSeed struct {
 	pane, name, from, text string
+	backend                proto.AgentType
+	path                   string
 	until                  time.Time
 	notice, expiry         *time.Timer
+	stopOnShutdown         func() bool
+}
+
+func (s *heldSeed) stop() {
+	s.notice.Stop()
+	s.expiry.Stop()
+	s.stopOnShutdown()
 }
 
 // spawnSeeds are the opening messages waiting for their peers, by pane.
@@ -46,57 +58,80 @@ type spawnSeeds struct {
 	byPane map[string]*heldSeed
 }
 
-// take removes and returns the seed held for pane, stopping its timers.
-func (s *spawnSeeds) take(pane string) *heldSeed {
+// take removes seed if it is still the one held for its pane.
+func (s *spawnSeeds) take(seed *heldSeed) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	seed := s.byPane[pane]
-	if seed == nil {
-		return nil
+	if s.byPane[seed.pane] != seed {
+		return false
 	}
-	delete(s.byPane, pane)
-	seed.notice.Stop()
-	seed.expiry.Stop()
-	return seed
+	delete(s.byPane, seed.pane)
+	seed.stop()
+	return true
 }
 
-// holdSpawnSeed keeps text for the peer that will register on pane. A seed
-// held earlier for the same pane is replaced.
-func (h *Hub) holdSpawnSeed(ctx context.Context, pane, name, from, text string) {
-	seed := &heldSeed{pane: pane, name: name, from: from, text: text, until: time.Now().Add(spawnSeedHold)}
-	seed.notice = time.AfterFunc(spawnSeedNotice, func() { h.seedNotRegistered(ctx, seed) })
+func (s *spawnSeeds) held(pane string) *heldSeed {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.byPane[pane]
+}
+
+// holdSpawnSeed keeps text for the runtime spawned on pane (backend, path). A
+// message held earlier for the same pane is replaced.
+func (h *Hub) holdSpawnSeed(ctx context.Context, pane, name string, backend proto.AgentType, path, from, text string) {
+	seed := &heldSeed{pane: pane, name: name, backend: backend, path: service.NormPath(path), from: from, text: text, until: time.Now().Add(spawnSeedHold)}
+	seed.notice = time.AfterFunc(spawnSeedNotice, func() { h.seedNotConnected(ctx, seed) })
 	seed.expiry = time.AfterFunc(spawnSeedHold, func() { h.seedExpired(ctx, seed) })
+	// A daemon shutting down releases what it holds.
+	seed.stopOnShutdown = context.AfterFunc(ctx, func() { h.seeds.take(seed) })
 	h.seeds.mu.Lock()
 	if h.seeds.byPane == nil {
 		h.seeds.byPane = map[string]*heldSeed{}
 	}
 	if old := h.seeds.byPane[pane]; old != nil {
-		old.notice.Stop()
-		old.expiry.Stop()
+		old.stop()
 	}
 	h.seeds.byPane[pane] = seed
 	h.seeds.mu.Unlock()
-	// The peer may have registered before the seed was held.
-	if p, ok := h.ask.reg.GetPeerByPane(pane); ok && p != nil {
-		h.ObserveRegistration(*p)
+	// The peer may already be on the mesh (a restart registers before this).
+	if p, ok := h.ask.reg.GetPeerByPane(pane); ok && p != nil && h.seedReachable(p.PeerID) {
+		h.seedConnected(ctx, p.PeerID)
 	}
 }
 
-// ObserveRegistration delivers the opening message held for the pane p just
-// registered on. It never blocks the registration.
-func (h *Hub) ObserveRegistration(p proto.Peer) {
-	if p.PaneID == nil || *p.PaneID == "" || p.Status == proto.StatusOffline || h.ask == nil {
-		return
-	}
-	seed := h.seeds.take(*p.PaneID)
-	if seed == nil {
-		return
-	}
-	ctx := context.Background()
+// seedContext outlives a connection: the daemon's, when spawning is wired.
+func (h *Hub) seedContext() context.Context {
 	if h.spawn != nil && h.spawn.ctx != nil {
-		ctx = h.spawn.ctx
+		return h.spawn.ctx
 	}
-	go h.deliverHeldSeed(ctx, seed, p)
+	return context.Background()
+}
+
+// seedReachable reports whether id has a live connection to deliver on.
+func (h *Hub) seedReachable(id proto.PeerID) bool {
+	return h.transport == nil || h.transport.IsConnected(id)
+}
+
+// seedConnected delivers the opening message held for the pane id just
+// connected on. HandleWS calls it once the socket is attached and its queued
+// deliveries are replayed, so the message goes out live.
+func (h *Hub) seedConnected(ctx context.Context, id proto.PeerID) {
+	if h.ask == nil {
+		return
+	}
+	p, ok := h.ask.reg.GetPeer(id)
+	if !ok || p == nil || p.PaneID == nil || *p.PaneID == "" || p.Status == proto.StatusOffline {
+		return
+	}
+	seed := h.seeds.held(*p.PaneID)
+	if seed == nil || !h.seeds.take(seed) {
+		return
+	}
+	if p.Backend != seed.backend || service.NormPath(p.Path) != seed.path {
+		h.seedDropped(ctx, seed, fmt.Sprintf("pane %s now runs %s (%s), not the spawned runtime", seed.pane, p.DisplayName, p.Backend))
+		return
+	}
+	go h.deliverHeldSeed(ctx, seed, *p)
 }
 
 // deliverHeldSeed sends the opening message as a normal notify from the
@@ -118,42 +153,32 @@ func (h *Hub) deliverHeldSeed(ctx context.Context, seed *heldSeed, p proto.Peer)
 	h.ask.reg.AddEvent(ctx, "spawn_seed_delivered", payload)
 }
 
-// seedNotRegistered tells the spawner the peer has not registered yet. The
+// seedNotConnected tells the spawner the peer is not on the mesh yet. The
 // message stays held.
-func (h *Hub) seedNotRegistered(ctx context.Context, seed *heldSeed) {
-	if ctx.Err() != nil {
-		return
-	}
-	h.seeds.mu.Lock()
-	held := h.seeds.byPane[seed.pane] == seed
-	h.seeds.mu.Unlock()
-	if !held {
+func (h *Hub) seedNotConnected(ctx context.Context, seed *heldSeed) {
+	if ctx.Err() != nil || h.seeds.held(seed.pane) != seed {
 		return
 	}
 	h.ask.reg.AddEvent(ctx, "spawn_seed_waiting", map[string]any{"pane_id": seed.pane, "display_name": seed.name, "from_peer": seed.from, "held_until": seed.until.UTC().Format(time.RFC3339)})
 	h.tellSpawner(ctx, seed, fmt.Sprintf(
-		"[spawn] %s has not registered on pane %s after %s. Its runtime is most likely waiting at a first-run prompt there (trust this folder, or an update notice); answer it in the pane. The opening message is held and is delivered when the peer registers, until %s.",
-		seed.name, seed.pane, spawnSeedNotice.Round(time.Second), seed.until.Local().Format("15:04")))
+		"[spawn] %s is not on the mesh after %s (pane %s). Its runtime is most likely waiting at a first-run prompt there (trust this folder, or an update notice); answer it in the pane. The opening message is held and is delivered when the peer connects, until %s.",
+		seed.name, spawnSeedNotice.Round(time.Second), seed.pane, seed.until.Local().Format("15:04")))
 }
 
-// seedExpired drops a message whose peer never registered, and says so.
+// seedExpired drops a message whose peer never connected.
 func (h *Hub) seedExpired(ctx context.Context, seed *heldSeed) {
-	if ctx.Err() != nil {
+	if ctx.Err() != nil || !h.seeds.take(seed) {
 		return
 	}
-	h.seeds.mu.Lock()
-	held := h.seeds.byPane[seed.pane] == seed
-	if held {
-		delete(h.seeds.byPane, seed.pane)
-	}
-	h.seeds.mu.Unlock()
-	if !held {
-		return
-	}
-	log.Printf("spawn: %s never registered on pane %s within %s; opening message dropped", seed.name, seed.pane, spawnSeedHold)
-	h.ask.reg.AddEvent(ctx, "spawn_seed_failed", map[string]any{"pane_id": seed.pane, "display_name": seed.name, "from_peer": seed.from, "error": "peer did not register before timeout"})
-	h.tellSpawner(ctx, seed, fmt.Sprintf("[spawn] %s never registered on pane %s within %s; its opening message was dropped. Send it again once the peer is on the mesh.",
-		seed.name, seed.pane, spawnSeedHold))
+	h.seedDropped(ctx, seed, fmt.Sprintf("the peer did not connect within %s", spawnSeedHold))
+}
+
+// seedDropped journals a message that will not be delivered and tells the
+// spawner.
+func (h *Hub) seedDropped(ctx context.Context, seed *heldSeed, why string) {
+	log.Printf("spawn: opening message for %s on pane %s dropped: %s", seed.name, seed.pane, why)
+	h.ask.reg.AddEvent(ctx, "spawn_seed_failed", map[string]any{"pane_id": seed.pane, "display_name": seed.name, "from_peer": seed.from, "error": why})
+	h.tellSpawner(ctx, seed, fmt.Sprintf("[spawn] the opening message for %s was dropped: %s. Send it again once the peer is on the mesh.", seed.name, why))
 }
 
 // tellSpawner notifies the spawner, best effort: a spawner that is not a peer

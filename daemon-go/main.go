@@ -482,11 +482,7 @@ func runDaemon() {
 		}
 		return p.Status, true
 	})
-	// Every registration also delivers a spawn's held opening message (#452).
-	reg.OnRegistered = func(p proto.Peer) {
-		exitWatch.BindAsync(p)
-		h.ObserveRegistration(p)
-	}
+	reg.OnRegistered = exitWatch.BindAsync
 	for _, p := range reg.GetAllPeers() {
 		exitWatch.BindAsync(*p)
 	}

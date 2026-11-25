@@ -311,6 +311,8 @@ func (h *Hub) HandleWS(w http.ResponseWriter, r *http.Request) {
 	// after its frame is written, so unsent rows survive for the next
 	// reconnect).
 	h.flushQueuedDeliveries(ctx, conn, peerID, assignedName)
+	// A spawn's opening message waits for exactly this: the peer reachable.
+	h.seedConnected(h.seedContext(), peerID)
 
 	// Read loop: dispatch frames by type until the socket drops.
 	for {

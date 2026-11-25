@@ -916,7 +916,7 @@ func (h *Hub) runRestart(ctx context.Context, run *restartRun, plan *restartPlan
 	result := run.snapshot()
 	h.restartEvent(ctx, "peer_restart_restarted", result, nil)
 	if plan.message != nil && strings.TrimSpace(*plan.message) != "" && h.ask != nil && h.ask.delivery != nil && h.ask.reg != nil {
-		h.holdSpawnSeed(ctx, spawned.PaneID, result.DisplayName, plan.from, *plan.message)
+		h.holdSpawnSeed(ctx, spawned.PaneID, result.DisplayName, registered.Backend, registered.Path, plan.from, *plan.message)
 	}
 	h.notifyRestarted(ctx, result)
 }
