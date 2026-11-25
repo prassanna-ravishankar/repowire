@@ -30,6 +30,11 @@ func Run(args []string) int {
 	if name == "prepare-commit-msg" {
 		return runPrepareCommitMsg(args[1:])
 	}
+	if HooksDisabled() {
+		// A runtime the daemon already brokers (a headless Claude Code under
+		// ACP) must not register a second peer or block its own turns.
+		return 0
+	}
 	flags := flag.NewFlagSet("hook "+name, flag.ContinueOnError)
 	backend := flags.String("backend", "claude-code", "agent backend")
 	remindersOnly := flags.Bool("reminders-only", false, "only block on unacked asks")
@@ -718,3 +723,12 @@ func contains(values []string, target string) bool {
 	}
 	return false
 }
+
+// HooksDisabledEnv, set to "off" in a runtime's environment, turns every
+// session hook into a no-op. The daemon sets it for runtimes it brokers
+// itself (rfcs/agent-container.md, the headless Claude Code plug), whose
+// identity, delivery and approvals already go through the broker.
+const HooksDisabledEnv = "REPOWIRE_HOOKS"
+
+// HooksDisabled reports whether this process's runtime opted out of hooks.
+func HooksDisabled() bool { return os.Getenv(HooksDisabledEnv) == "off" }

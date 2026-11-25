@@ -171,6 +171,19 @@ type ExperimentsConfig struct {
 	// GitTrailers enables the repository prepare-commit-msg hook installed by
 	// setup --git-hooks to add Repowire-Thread / Repowire-Session trailers.
 	GitTrailers bool `yaml:"git_trailers"`
+	// HeadlessClaudeCode lets spawn_peer start a Claude Code worker with no
+	// pane: the Claude Agent SDK behind an ACP adapter, brokered by the
+	// daemon (rfcs/agent-container.md, Claude Code plug options). It needs
+	// acp_broker_client. Off by default.
+	HeadlessClaudeCode HeadlessClaudeCodeConfig `yaml:"headless_claude_code"`
+}
+
+// HeadlessClaudeCodeConfig is the headless Claude Code plug: on or off, and
+// the ACP adapter it launches.
+type HeadlessClaudeCodeConfig struct {
+	Enabled bool     `yaml:"enabled"`
+	Command string   `yaml:"command"`
+	Args    []string `yaml:"args"`
 }
 
 type RemoteToolApprovalConfig struct {
@@ -685,6 +698,12 @@ func normalize(cfg *Config) {
 	}{{&stuck.SlowMinutes, stuckDefaults.SlowMinutes}, {&stuck.AskerGoneMinutes, stuckDefaults.AskerGoneMinutes}, {&stuck.UndeliveredMinutes, stuckDefaults.UndeliveredMinutes}} {
 		if !(*m.value > 0) {
 			*m.value = m.fallback
+		}
+	}
+	if cfg.Experiments.HeadlessClaudeCode.Command == "" {
+		cfg.Experiments.HeadlessClaudeCode.Command = "npx"
+		if len(cfg.Experiments.HeadlessClaudeCode.Args) == 0 {
+			cfg.Experiments.HeadlessClaudeCode.Args = []string{"-y", "@zed-industries/claude-agent-acp"}
 		}
 	}
 	if len(cfg.Experiments.RemoteToolApproval.GatedTools) == 0 {

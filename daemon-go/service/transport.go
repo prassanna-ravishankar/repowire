@@ -475,6 +475,16 @@ func (t *WebSocketTransport) Close(id proto.PeerID) error {
 }
 
 // CloseACP tears down every brokered subprocess during daemon shutdown.
+// DropACP ends one peer's ACP child, if it has one (the ACP plug's stop).
+func (t *WebSocketTransport) DropACP(id proto.PeerID) {
+	t.mu.RLock()
+	manager := t.acp
+	t.mu.RUnlock()
+	if manager != nil {
+		manager.Drop(id)
+	}
+}
+
 func (t *WebSocketTransport) CloseACP() {
 	t.mu.RLock()
 	manager := t.acp

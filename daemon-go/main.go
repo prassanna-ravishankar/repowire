@@ -551,6 +551,17 @@ func runDaemon() {
 			WithPlacementUpdater(spawnService.Ownership().UpdatePlacement).
 			WithExitWatch(exitWatch))
 	// Reviews defaults its JSON store at Routes() time if unset; leave it.
+	// ACP-brokered peers are a plug of the agent container: kill_peer stops
+	// their child by peer. The headless Claude Code plug spawns such peers
+	// (rfcs/agent-container.md); both need the ACP broker.
+	if cfg.Experiments.ACPBrokerClient {
+		spawnService.WithPeerContainers(service.NewACPContainer(transport.DropACP))
+		if hc := cfg.Experiments.HeadlessClaudeCode; hc.Enabled {
+			h.WithHeadlessClaudeCode(hub.HeadlessLaunch{Command: hc.Command, Args: hc.Args})
+		}
+	} else if cfg.Experiments.HeadlessClaudeCode.Enabled {
+		log.Printf("WARNING experiments.headless_claude_code needs experiments.acp_broker_client; headless spawn is off")
+	}
 
 	// Cross-machine circles: the relay client serves the /remote API in-process
 	// and carries this daemon's requests to the owner's other machines.

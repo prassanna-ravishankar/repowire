@@ -63,6 +63,24 @@ type spawnDeps struct {
 	// socket's pane (tests); nil uses the ask deps and the hub transport.
 	notify        func(context.Context, service.NotifyParams) error
 	transportPane func(proto.PeerID) (string, bool)
+	// headless is the headless Claude Code plug's ACP launch, nil when
+	// experiments.headless_claude_code (with acp_broker_client) is off.
+	headless *HeadlessLaunch
+}
+
+// HeadlessLaunch is how the headless Claude Code plug starts a worker: the
+// ACP adapter command and its arguments (rfcs/agent-container.md).
+type HeadlessLaunch struct {
+	Command string
+	Args    []string
+}
+
+// WithHeadlessClaudeCode enables spawn_peer's headless mode for claude-code.
+func (h *Hub) WithHeadlessClaudeCode(launch HeadlessLaunch) *Hub {
+	if h.spawn != nil {
+		h.spawn.headless = &launch
+	}
+	return h
 }
 
 // WithSpawn attaches the spawn-kill-restart route group. svc owns tmux + ownership;
@@ -184,6 +202,9 @@ type SpawnRequest struct {
 	// FromPeer is the spawner's identity, used as the sender of the opening
 	// message once the new peer registers. Empty → the daemon's MCP identity.
 	FromPeer string `json:"from_peer,omitempty"`
+	// Headless starts the worker with no pane through the headless plug
+	// (experiments.headless_claude_code; claude-code only).
+	Headless bool `json:"headless,omitempty"`
 }
 
 // SpawnResponse mirrors spawn.py SpawnResponse.
@@ -273,6 +294,10 @@ func (h *Hub) spawnPeer(ctx context.Context, req SpawnRequest) (SpawnResponse, e
 			"error": "unsupported_backend", "backend": string(backend),
 			"hint": "Supported runtimes are claude-code, codex, opencode, and pi.",
 		}}
+	}
+
+	if req.Headless {
+		return h.spawnHeadless(ctx, req, backend)
 	}
 
 	svc := h.spawn.svc
@@ -732,6 +757,10 @@ func (h *Hub) handleRehookPeer(w http.ResponseWriter, r *http.Request) {
 		h.writeSpawnError(w, err)
 		return
 	}
+	if err := h.paneOnly(resolved, "rehook"); err != nil {
+		h.writeSpawnError(w, err)
+		return
+	}
 	peerCopy := h.peerWithAdoptedOwnership(resolved)
 	wasConnected := h.transport.IsConnected(peerCopy.PeerID)
 	if wasConnected {
@@ -916,4 +945,91 @@ func selfHostname() string {
 		return hn
 	}
 	return "unknown"
+}
+
+// spawnHeadless starts a Claude Code worker with no pane: a peer whose
+// metadata.acp launches the Claude Agent SDK behind its ACP adapter, which the
+// daemon's ACP broker starts on the first prompt and the ACP plug stops on
+// kill. Its session hooks are off (REPOWIRE_HOOKS=off), since the broker
+// already carries its identity, delivery and approvals. The opening message
+// is its first prompt.
+func (h *Hub) spawnHeadless(ctx context.Context, req SpawnRequest, backend proto.AgentType) (SpawnResponse, error) {
+	if backend != proto.AgentClaudeCode {
+		return SpawnResponse{}, &service.SpawnError{Status: http.StatusUnprocessableEntity, Detail: map[string]any{
+			"error": "headless_unsupported", "backend": string(backend),
+			"hint": "Headless spawn is for claude-code only; Codex peers are already App Server threads.",
+		}}
+	}
+	if h.spawn.headless == nil {
+		return SpawnResponse{}, &service.SpawnError{Status: http.StatusUnprocessableEntity, Detail: map[string]any{
+			"error": "headless_disabled",
+			"hint":  "Enable experiments.headless_claude_code.enabled and experiments.acp_broker_client in ~/.repowire/config.yaml.",
+		}}
+	}
+	if (req.Profile != nil && *req.Profile != "") || req.Command != nil || req.SourcePane != "" {
+		return SpawnResponse{}, &service.SpawnError{Status: http.StatusUnprocessableEntity, Detail: map[string]any{
+			"error": "headless_options",
+			"hint":  "Headless spawn takes no profile, command or source pane: it launches the configured ACP adapter (experiments.headless_claude_code).",
+		}}
+	}
+	// claude-code must be a configured spawn backend, as for a pane spawn.
+	if _, err := h.spawn.svc.ResolveCommand(backend, nil); err != nil {
+		return SpawnResponse{}, err
+	}
+	path, err := h.spawn.svc.ValidatePath(req.Path)
+	if err != nil {
+		return SpawnResponse{}, err
+	}
+	args := make([]any, len(h.spawn.headless.Args))
+	for i, a := range h.spawn.headless.Args {
+		args[i] = a
+	}
+	id, name, err := h.spawn.reg.AllocateAndRegister(ctx, peer.AllocateParams{
+		Circle: req.Circle, Backend: backend, Path: &path, Machine: h.spawn.selfMachine, Role: req.Role,
+		Metadata: map[string]any{
+			"headless": true,
+			"acp": map[string]any{
+				"command": h.spawn.headless.Command, "args": args, "cwd": path,
+				"env": map[string]any{clienthooks.HooksDisabledEnv: "off"},
+			},
+		},
+	})
+	if err != nil {
+		return SpawnResponse{}, &service.SpawnError{Status: http.StatusConflict, Detail: err.Error()}
+	}
+	idStr := string(id)
+	resp := SpawnResponse{OK: true, DisplayName: string(name), PeerID: &idStr, RegistrationState: "registered", Warnings: []string{}}
+	if req.Message != nil && strings.TrimSpace(*req.Message) != "" {
+		if h.ask == nil || h.ask.delivery == nil {
+			resp.SeedState = "undeliverable"
+			resp.Warnings = append(resp.Warnings, "opening message not delivered: delivery service unavailable")
+			return resp, nil
+		}
+		from := firstNonempty(req.FromPeer, mcpDefaultIdentity)
+		res, nerr := h.ask.delivery.Notify(ctx, service.NotifyParams{FromPeer: from, ToPeer: idStr, Text: *req.Message, BypassCircle: true})
+		switch {
+		case nerr != nil:
+			resp.SeedState = "undeliverable"
+			resp.Warnings = append(resp.Warnings, "opening message not delivered: "+nerr.Error())
+		case res.Delivered():
+			resp.SeedState = "delivered"
+		default:
+			resp.SeedState = "queued"
+		}
+	}
+	return resp, nil
+}
+
+// paneOnly refuses a pane-backed control (restart, rehook) for a peer a
+// PeerContainer owns outright: it has no pane, so say so plainly instead of
+// failing pane proof.
+func (h *Hub) paneOnly(p *proto.Peer, action string) error {
+	plug := h.spawn.svc.PeerContainerFor(p)
+	if plug == nil {
+		return nil
+	}
+	return &service.SpawnError{Status: http.StatusUnprocessableEntity, Detail: map[string]any{
+		"error": "not_supported", "container": plug.Kind(), "action": action,
+		"hint": action + " is not supported for " + plug.Kind() + " peers; kill it and spawn again.",
+	}}
 }

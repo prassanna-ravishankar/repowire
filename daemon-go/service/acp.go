@@ -52,14 +52,18 @@ type acpClient struct {
 	updatesMu    sync.Mutex
 	permissionMu sync.RWMutex
 	cmd          *exec.Cmd
-	stdin        io.WriteCloser
-	pending      map[string]chan acpRPCResponse
-	readerDone   chan error
-	sessionID    string
-	activeText   []string
-	closed       bool
-	nextID       atomic.Uint64
-	permission   ACPPermissionHandler
+	// procMu guards proc, the running child, so kill can signal it while a
+	// prompt holds mu.
+	procMu     sync.Mutex
+	proc       *os.Process
+	stdin      io.WriteCloser
+	pending    map[string]chan acpRPCResponse
+	readerDone chan error
+	sessionID  string
+	activeText []string
+	closed     bool
+	nextID     atomic.Uint64
+	permission ACPPermissionHandler
 }
 
 func newACPClient(spec ACPPeerSpec) *acpClient {
@@ -145,6 +149,9 @@ func (c *acpClient) ensureStartedLocked(ctx context.Context) error {
 		return err
 	}
 	c.cmd, c.stdin = cmd, stdin
+	c.procMu.Lock()
+	c.proc = cmd.Process
+	c.procMu.Unlock()
 	c.readerDone = make(chan error, 1)
 	go c.readLoop(stdout)
 	var result struct {
@@ -291,6 +298,17 @@ func rawID(value json.RawMessage) string {
 	return string(value)
 }
 
+// kill signals the running child without waiting for mu: a prompt in flight
+// (a tool run, a permission wait) holds mu until it returns, and the dead
+// child's closed stdout ends it at once.
+func (c *acpClient) kill() {
+	c.procMu.Lock()
+	defer c.procMu.Unlock()
+	if c.proc != nil {
+		_ = c.proc.Kill()
+	}
+}
+
 func (c *acpClient) close() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -312,6 +330,9 @@ func (c *acpClient) closeLocked() {
 		_ = c.cmd.Process.Kill()
 	}
 	_ = c.cmd.Wait()
+	c.procMu.Lock()
+	c.proc = nil
+	c.procMu.Unlock()
 	c.cmd, c.stdin, c.sessionID = nil, nil, ""
 }
 
@@ -376,6 +397,7 @@ func (m *ACPManager) Drop(id proto.PeerID) {
 	delete(m.clients, id)
 	m.mu.Unlock()
 	if client != nil {
+		client.kill() // first, so a prompt in flight ends instead of running on
 		client.close()
 	}
 }
