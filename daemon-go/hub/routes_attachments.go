@@ -234,7 +234,10 @@ func (h *Hub) ExpireAttachments(ctx context.Context, p state.RetentionPolicy, no
 // references it, so one uploaded long ago and attached to a new ask lasts
 // as long as that ask's message (#573); a file nothing names goes a content
 // lifetime after its upload. A zero cutoff keeps everything, and so does a
-// failed lookup of the references.
+// failed lookup of the references. The references are read once, before
+// the removals: a file already past the cutoff that a send names in that
+// window, a few milliseconds, can still go. Closing it would mean holding
+// every send path behind the sweep, which costs more than the window.
 func expireAttachments(ctx context.Context, dir string, cutoff time.Time, refs attachmentReferrer) (int, error) {
 	if cutoff.IsZero() {
 		return 0, nil
