@@ -32,6 +32,9 @@ type ExitWatch struct {
 	started func(pid int) (string, bool)
 	wait    func(pid int, cancel <-chan struct{}, armed func() bool) (bool, error)
 
+	// onExit, when set, acts on an observed exit (step 3: the watch decides).
+	onExit func(id proto.PeerID, pane string, pid int)
+
 	mu      sync.Mutex
 	watches map[proto.PeerID]*exitWatch // kept after an exit, until the next bind
 	binds   map[proto.PeerID]uint64     // the latest Bind per peer, in call order
@@ -131,6 +134,29 @@ func (w *ExitWatch) run(id proto.PeerID, ew *exitWatch) {
 		payload["peer_status"] = string(status)
 	}
 	w.emit(context.Background(), EventAgentExitObserved, payload)
+	if w.onExit != nil {
+		w.onExit(id, ew.pane, ew.pid)
+	}
+}
+
+// OnExit makes the watch act on what it observes (rfcs/agent-container.md,
+// step 3): fn runs after each recorded exit. Set it once, while wiring.
+func (w *ExitWatch) OnExit(fn func(id proto.PeerID, pane string, pid int)) { w.onExit = fn }
+
+// AgentAlive reports p's agent as the watch sees it. watched is false when
+// no watch covers p's current agent pid; the caller then keeps its own
+// evidence. It reads only the watch's state, never the process table.
+func (w *ExitWatch) AgentAlive(p *proto.Peer) (alive, watched bool) {
+	if p == nil || p.AgentPID == nil {
+		return false, false
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	ew := w.watches[p.PeerID]
+	if ew == nil || ew.pid != *p.AgentPID {
+		return false, false
+	}
+	return !ew.exited, true
 }
 
 // CheckSignal records, for a tmux signal about to offline p, whether p's bound

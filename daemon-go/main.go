@@ -482,6 +482,23 @@ func runDaemon() {
 		}
 		return p.Status, true
 	})
+
+	// The tmux lifecycle handler. Its signals are checked against the exit
+	// watch; with experiments.exit_watch_authority (rfcs/agent-container.md,
+	// step 3) the watch decides: an observed exit offlines the peer, and tmux
+	// signals and reconcile's pane strikes are hints while the agent runs.
+	lifecycle := hub.NewLifecycleHandler(reg, transport, hub.TmuxPaneLister{}, spawnService.Ownership().Forget, nil, cfg.Daemon.CircleBoundary).
+		WithPlacementUpdater(spawnService.Ownership().UpdatePlacement).
+		WithExitWatch(exitWatch)
+	if cfg.Experiments.ExitWatchAuthority {
+		lifecycle.WithExitWatchAuthority(exitWatch.AgentAlive)
+		exitWatch.OnExit(func(id proto.PeerID, pane string, pid int) {
+			lifecycle.HandleAgentExited(context.Background(), id, pane, pid)
+		})
+		reg.AgentWatch = exitWatch.AgentAlive
+	}
+	// Bind only once the watch is fully wired, so a watch never starts
+	// before its exit handler is set.
 	reg.OnRegistered = exitWatch.BindAsync
 	for _, p := range reg.GetAllPeers() {
 		exitWatch.BindAsync(*p)
@@ -547,9 +564,7 @@ func runDaemon() {
 		// destructivePaneProof can't authorize kill/restart against a reused pane id.
 		// clearPaneRuntimeState is nil here because NewLifecycleHandler defaults
 		// it to hooks.ClearPaneRuntimeState.
-		WithLifecycle(hub.NewLifecycleHandler(reg, transport, hub.TmuxPaneLister{}, spawnService.Ownership().Forget, nil, cfg.Daemon.CircleBoundary).
-			WithPlacementUpdater(spawnService.Ownership().UpdatePlacement).
-			WithExitWatch(exitWatch))
+		WithLifecycle(lifecycle)
 	// Reviews defaults its JSON store at Routes() time if unset; leave it.
 
 	// Cross-machine circles: the relay client serves the /remote API in-process
