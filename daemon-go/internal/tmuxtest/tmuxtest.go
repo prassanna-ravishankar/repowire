@@ -29,6 +29,9 @@ type Server struct {
 	Dir string
 	bin string
 	t   testing.TB
+	// refused are the sockets a bare client reached before New changed the
+	// environment; cleanup never stops one of them.
+	refused map[string]bool
 }
 
 // Option adjusts New.
@@ -64,8 +67,8 @@ func New(t testing.TB, opts ...Option) *Server {
 	if err != nil {
 		t.Fatal(err)
 	}
-	s := &Server{Socket: filepath.Join(dir, "sock"), Dir: dir, bin: bin, t: t}
-	if live := LiveSockets(); live[s.Socket] {
+	s := &Server{Socket: filepath.Join(dir, "sock"), Dir: dir, bin: bin, t: t, refused: LiveSockets()}
+	if s.refused[s.Socket] {
 		_ = os.RemoveAll(dir)
 		t.Fatalf("tmuxtest: refusing socket %s: it is the live server's", s.Socket)
 	}
@@ -187,7 +190,9 @@ func NoPTY(err error) bool {
 // while that socket exists. Under FollowEnv a bare new-session may have
 // started a second server at the sandbox's own default socket.
 func (s *Server) kill() {
-	live := LiveSockets()
+	// Not LiveSockets(): by now the environment points at the sandbox, whose
+	// own default socket is exactly what must be stopped.
+	live := s.refused
 	for _, sock := range []string{s.Socket, filepath.Join(s.Dir, fmt.Sprintf("tmux-%d", os.Getuid()), "default")} {
 		if !isSocket(sock) || live[sock] || !strings.HasPrefix(sock, s.Dir+string(os.PathSeparator)) {
 			continue

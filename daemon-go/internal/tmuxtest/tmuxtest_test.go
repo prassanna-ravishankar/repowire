@@ -7,7 +7,9 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
+	"time"
 )
 
 // A bare `tmux`, as the code under test runs it, reaches the sandbox even
@@ -111,23 +113,33 @@ func TestIsolatedEnvironment(t *testing.T) {
 // Under FollowEnv a bare new-session starts a server at the sandbox's own
 // default socket; cleanup stops that one too.
 func TestFollowEnvStrayServerIsStopped(t *testing.T) {
-	var stray string
+	var strayPID int
 	t.Run("sandbox", func(t *testing.T) {
 		srv := New(t, FollowEnv())
 		srv.Start("-s", "probe", "sleep 30")
 		if out, err := exec.Command("tmux", "new-session", "-d", "-s", "stray", "sleep 30").CombinedOutput(); err != nil {
 			t.Fatalf("bare new-session: %v %s", err, out)
 		}
-		stray = filepath.Join(srv.Dir, "tmux-"+strconv.Itoa(os.Getuid()), "default")
-		if !isSocket(stray) {
-			t.Fatalf("no stray server at %s", stray)
+		stray := filepath.Join(srv.Dir, "tmux-"+strconv.Itoa(os.Getuid()), "default")
+		out, err := exec.Command("tmux", "-S", stray, "display-message", "-p", "#{pid}").Output()
+		if err != nil {
+			t.Fatalf("no stray server at %s: %v", stray, err)
+		}
+		if strayPID, err = strconv.Atoi(strings.TrimSpace(string(out))); err != nil || strayPID <= 0 {
+			t.Fatalf("stray server pid %q: %v", out, err)
 		}
 	})
-	if stray != "" {
-		if err := exec.Command("tmux", "-S", stray, "has-session").Run(); err == nil {
-			t.Fatal("the stray sandbox server outlived the test")
-		}
+	if strayPID == 0 {
+		return
 	}
+	// The socket is gone with the sandbox dir; the process must be too.
+	for i := 0; i < 50; i++ {
+		if syscall.Kill(strayPID, 0) != nil {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("the stray sandbox server (pid %d) outlived the test", strayPID)
 }
 
 func TestNoPTYReadsOnlyTmuxOutput(t *testing.T) {
