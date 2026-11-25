@@ -1,8 +1,10 @@
 package tmuxtest
 
 import (
+	"errors"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
@@ -76,3 +78,63 @@ func TestNoPTY(t *testing.T) {
 type errString string
 
 func (e errString) Error() string { return string(e) }
+
+// Neither Run nor the shim lets a caller name another server.
+func TestCallerCannotNameAnotherServer(t *testing.T) {
+	srv := New(t)
+	srv.Start("-s", "probe", "sleep 30")
+	if _, err := srv.Run("-S", "/tmp/elsewhere", "list-sessions"); err == nil || !strings.Contains(err.Error(), "refusing global option") {
+		t.Fatalf("Run with -S: %v", err)
+	}
+	for _, opt := range []string{"-S", "-L", "-f"} {
+		out, err := exec.Command("tmux", opt, "elsewhere", "list-sessions").CombinedOutput()
+		var exit *exec.ExitError
+		if !errors.As(err, &exit) || exit.ExitCode() != 97 || !strings.Contains(string(out), "refusing global option") {
+			t.Fatalf("shim with %s: %v %s", opt, err, out)
+		}
+	}
+}
+
+// Isolate's environment reaches no server, and keeps refusing the sockets
+// that were live before it.
+func TestIsolatedEnvironment(t *testing.T) {
+	if os.Getenv("TMUX") != "" || !strings.Contains(os.Getenv("TMUX_TMPDIR"), "rwtmuxbase") {
+		t.Fatalf("TestMain did not isolate: TMUX=%q TMUX_TMPDIR=%q", os.Getenv("TMUX"), os.Getenv("TMUX_TMPDIR"))
+	}
+	for p := range outside {
+		if !LiveSockets()[p] {
+			t.Fatalf("an outside socket %s is no longer refused", p)
+		}
+	}
+}
+
+// Under FollowEnv a bare new-session starts a server at the sandbox's own
+// default socket; cleanup stops that one too.
+func TestFollowEnvStrayServerIsStopped(t *testing.T) {
+	var stray string
+	t.Run("sandbox", func(t *testing.T) {
+		srv := New(t, FollowEnv())
+		srv.Start("-s", "probe", "sleep 30")
+		if out, err := exec.Command("tmux", "new-session", "-d", "-s", "stray", "sleep 30").CombinedOutput(); err != nil {
+			t.Fatalf("bare new-session: %v %s", err, out)
+		}
+		stray = filepath.Join(srv.Dir, "tmux-"+strconv.Itoa(os.Getuid()), "default")
+		if !isSocket(stray) {
+			t.Fatalf("no stray server at %s", stray)
+		}
+	})
+	if stray != "" {
+		if err := exec.Command("tmux", "-S", stray, "has-session").Run(); err == nil {
+			t.Fatal("the stray sandbox server outlived the test")
+		}
+	}
+}
+
+func TestNoPTYReadsOnlyTmuxOutput(t *testing.T) {
+	if NoPTY(&Error{Args: []string{"new-session", "echo fork failed"}, Output: "duplicate session: x", Err: errString("exit status 1")}) {
+		t.Fatal("NoPTY matched an argument")
+	}
+	if !NoPTY(&Error{Args: []string{"respawn-pane"}, Output: "respawn pane failed: fork failed: Device not configured", Err: errString("exit status 1")}) {
+		t.Fatal("NoPTY missed tmux's diagnostic")
+	}
+}
