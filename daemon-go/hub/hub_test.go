@@ -465,6 +465,8 @@ type fakeTransport struct {
 	lastTarget  proto.PeerID
 	lastFrame   any
 	sentTargets []proto.PeerID
+	// ackTargets records SendAndWaitDeliveryAck targets, in order.
+	ackTargets []proto.PeerID
 }
 
 func (f *fakeTransport) Send(ctx context.Context, id proto.PeerID, v any) error {
@@ -480,6 +482,7 @@ func (f *fakeTransport) SendAndWaitDeliveryAck(ctx context.Context, id proto.Pee
 	f.mu.Lock()
 	f.lastTarget = id
 	f.lastFrame = v
+	f.ackTargets = append(f.ackTargets, id)
 	f.mu.Unlock()
 	if f.ackErr != nil {
 		return nil, f.ackErr
