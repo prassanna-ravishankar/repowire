@@ -56,7 +56,9 @@ type Bridge struct {
 	// closed tracks threads whose peer an operator closed (#530); guarded by threadsMu.
 	closed map[string]tombstone
 	// internal holds the runtime's own helper threads (see meshThread), so
-	// their status changes are not read again; guarded by threadsMu.
+	// their status changes are not read again; guarded by threadsMu. An id is
+	// dropped on thread/closed; a helper that is never closed stays, about one
+	// id per conversation for the bridge's lifetime, which is accepted.
 	internal   map[string]bool
 	hintMu     sync.Mutex
 	daemonHTTP string
@@ -577,7 +579,8 @@ func (b *Bridge) isInternal(id string) bool {
 // TUI's "thread_title" namer, the desktop app's "system" helpers, and
 // whatever a client names at thread/start); registering those minted
 // '<name>-2-codex' phantoms (#465, #475). A payload without threadSource,
-// from a runtime that predates it, counts as a conversation.
+// from a runtime that predates it, counts as a conversation, so this relies on
+// thread/started carrying the field whenever thread/read does.
 func meshThread(thread map[string]any) bool {
 	switch stringValue(thread, "threadSource") {
 	case "", "user", "subagent":
