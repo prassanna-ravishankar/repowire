@@ -450,10 +450,13 @@ Where it differs from the draft above:
   recipient is known) and every hop (`delegated`: delegator and new
   holder; `reassigned`: the new holder, and from step 4 the acting
   orchestrator)
-  carry `provenance` in their detail: per party, `peer_id`, `circle`,
-  `role`, `private`, and `unknown` when the registry did not know it. The
-  hub writes it through `Wire.WithProvenance`; retention strips text keys
-  only, so provenance lives as long as the stage.
+  carry `provenance` in their detail: per party, `peer_id`,
+  `display_name`, `circle`, `role`, `private`, and `unknown` when the
+  registry did not know it. The hub writes it through
+  `Wire.WithProvenance`; retention strips text keys only, so provenance
+  lives as long as the stage. A party the registry no longer knows is
+  shown by the last `display_name` its thread recorded (provenance, or a
+  pre-provenance delegation's `from`/`to`), never looked up elsewhere.
 - **Visibility.** `peer_wire_visibility` (schema 19), `visible` or
   `private`, cached by the view and written through. A peer sets its own
   with `set_wire_visibility`; the operator with

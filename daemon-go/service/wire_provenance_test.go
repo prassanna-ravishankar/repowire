@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -39,6 +40,9 @@ func provenance(recs ...WireProvenance) map[string]any {
 	out := make([]any, 0, len(recs))
 	for _, r := range recs {
 		m := map[string]any{"peer_id": string(r.PeerID), "circle": r.Circle, "role": string(r.Role)}
+		if r.Name != "" {
+			m["display_name"] = string(r.Name)
+		}
 		if r.Private {
 			m["private"] = true
 		}
@@ -63,7 +67,9 @@ func TestWireProvenanceRecordsPartiesAsTheyAreNow(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := w.Provenance(ctx, "repow-a", "repow-b", "", "repow-gone")
-	want := []WireProvenance{recA, {PeerID: "repow-b", Circle: "dev", Role: proto.RoleAgent, Private: true}, {PeerID: "repow-gone", Unknown: true}}
+	named := recA
+	named.Name = "alpha"
+	want := []WireProvenance{named, {PeerID: "repow-b", Name: "beta", Circle: "dev", Role: proto.RoleAgent, Private: true}, {PeerID: "repow-gone", Unknown: true}}
 	if len(got) != len(want) {
 		t.Fatalf("provenance = %+v", got)
 	}
@@ -148,5 +154,41 @@ func TestWireProtectionFollowsRecordedProvenance(t *testing.T) {
 	got, _, _ := w.Thread(ctx, "now-private")
 	if got.ProtectedBy != WirePrivate || !got.Holder.Private {
 		t.Fatalf("now-private = %q, holder %+v", got.ProtectedBy, got.Holder)
+	}
+}
+
+// A party the registry no longer knows is shown by the last name its thread
+// recorded: from provenance, or for a thread recorded before provenance, from
+// a delegation's from and to (#577). With neither, its peer id.
+func TestWireNamesAGonePartyByItsRecordedName(t *testing.T) {
+	ctx := context.Background()
+	ledger := &fakeWireLedger{}
+	at := wireNow.Add(-time.Hour)
+	gone := recA
+	gone.PeerID, gone.Name = "repow-old-asker", "old-asker"
+	ledger.add("ask-gone", "ask", "created", "ok", "repow-b", "repow-old-asker", at, provenance(gone, recB))
+	ledger.add("ask-gone", "ask", "delegated", "ok", "repow-old-holder", "", at.Add(time.Minute), map[string]any{
+		"from_peer_id": "repow-b", "from": "beta", "to_peer_id": "repow-old-holder", "to": "old-holder",
+		wireProvenanceKey: provenance(recB, WireProvenance{PeerID: "repow-old-holder", Circle: "dev", Role: proto.RoleAgent})[wireProvenanceKey],
+	})
+	ledger.add("ask-bare", "ask", "created", "ok", "repow-b", "repow-nameless", at, nil)
+	w, _ := newTestWire(ledger, testPeers())
+
+	th, ok, err := w.Thread(ctx, "ask-gone")
+	if err != nil || !ok {
+		t.Fatal(ok, err)
+	}
+	if th.From.Known || th.From.Name != "old-asker" || th.Holder.Name != "old-holder" || th.Via[0].Name != "beta" {
+		t.Fatalf("parties: from %+v holder %+v via %+v", th.From, th.Holder, th.Via)
+	}
+	if th.Stages[1].Peer.Name != "old-holder" {
+		t.Fatalf("stage peer %+v", th.Stages[1].Peer)
+	}
+	if text := th.Text(0); !strings.Contains(text, "@old-asker(gone)") || strings.Contains(text, "repow-old") {
+		t.Fatalf("text:\n%s", text)
+	}
+	bare, _, _ := w.Thread(ctx, "ask-bare")
+	if bare.From.Name != "repow-nameless" {
+		t.Fatalf("no recorded name: %+v", bare.From)
 	}
 }

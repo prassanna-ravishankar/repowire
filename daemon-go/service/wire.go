@@ -66,7 +66,8 @@ func NewWire(asks *AskTracker, ledger WireLedger, peers WirePeers, vis WireVisib
 }
 
 // WireParty is one party to a thread, as the registry knows it now. Known is
-// false for a peer the registry no longer has.
+// false for a peer the registry no longer has; its Name is then the last
+// display name the thread recorded for it, or its peer id.
 type WireParty struct {
 	PeerID proto.PeerID      `json:"peer_id"`
 	Name   proto.DisplayName `json:"display_name"`
@@ -327,8 +328,10 @@ func (w *Wire) reduce(ctx context.Context, traceID, kind string, withStages bool
 	if t.Open && kind == "ask" {
 		w.askStuck(ctx, &t, ask)
 	}
+	names := recordedNames(rows)
 	for _, p := range append([]*WireParty{&t.From, &t.Holder}, ptrs(t.Via)...) {
 		p.Private = p.PeerID != "" && w.Private(ctx, p.PeerID)
+		nameGone(p, names)
 	}
 	recorded, complete := threadProvenance(kind, rows)
 	t.Provenance = recorded
@@ -338,6 +341,7 @@ func (w *Wire) reduce(ctx context.Context, traceID, kind string, withStages bool
 		t.Stages = make([]WireStage, 0, len(rows))
 		for _, r := range rows {
 			st := WireStage{Seq: r.Seq, At: r.TS, Stage: r.Stage, Status: r.Status, Peer: w.party(proto.PeerID(r.PeerID))}
+			nameGone(&st.Peer, names)
 			if reason, ok := r.Detail["close_reason"].(string); ok {
 				st.CloseReason = reason
 			}
