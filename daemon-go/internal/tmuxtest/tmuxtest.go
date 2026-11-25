@@ -47,7 +47,8 @@ type options struct{ followEnv bool }
 // path that does not exist.
 func FollowEnv() Option { return func(o *options) { o.followEnv = true } }
 
-// New prepares a private server for t: a short sandbox directory (macOS caps
+// New prepares a private server for t, in a package whose TestMain runs
+// Main (it fails the test otherwise): a short sandbox directory (macOS caps
 // unix socket paths at 104 bytes), a tmux shim first on PATH that pins every
 // bare `tmux` call to the sandbox socket with an empty config, TMUX and
 // TMUX_PANE cleared and TMUX_TMPDIR set to the sandbox, so nothing falls back
@@ -58,6 +59,12 @@ func New(t testing.TB, opts ...Option) *Server {
 	var o options
 	for _, opt := range opts {
 		opt(&o)
+	}
+	// Without Isolate, a test's environment restores go back to the caller's
+	// TMUX (a live pane), where a goroutine that outlives the test would find
+	// the live server.
+	if os.Getenv(isolatedEnv) == "" {
+		t.Fatal("tmuxtest: this package has no isolating TestMain; add\n\tfunc TestMain(m *testing.M) { os.Exit(tmuxtest.Main(m)) }")
 	}
 	bin, err := exec.LookPath("tmux")
 	if err != nil {
@@ -240,9 +247,18 @@ func Isolate() func() {
 		if bin, err := exec.LookPath("tmux"); err == nil && isSocket(sock) {
 			_ = exec.Command(bin, "-S", sock, "kill-server").Run()
 		}
+		// A goroutine that outlived its test may still run a bare tmux until
+		// the process exits. With TMUX_TMPDIR naming a missing directory,
+		// tmux falls back to the live default socket; a TMUX naming a dead
+		// socket fails closed instead, whatever TMUX_TMPDIR says.
+		_ = os.Setenv("TMUX", deadSocket(dir))
 		_ = os.RemoveAll(dir)
 	}
 }
+
+// deadSocket is a TMUX value naming a socket that never exists, so a bare
+// client fails rather than finding any server.
+func deadSocket(dir string) string { return filepath.Join(dir, "gone") + ",0,0" }
 
 // isolatedEnv carries Isolate's directory to child test processes.
 const isolatedEnv = "REPOWIRE_TMUXTEST_ISOLATED"

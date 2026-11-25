@@ -150,3 +150,29 @@ func TestNoPTYReadsOnlyTmuxOutput(t *testing.T) {
 		t.Fatal("NoPTY missed tmux's diagnostic")
 	}
 }
+
+// After Isolate's cleanup, a late bare client fails closed: TMUX names a dead
+// socket, so the removed TMUX_TMPDIR cannot send it to the live default.
+func TestIsolateCleanupLeavesADeadSocket(t *testing.T) {
+	t.Setenv("TMUX", "")
+	t.Setenv("TMUX_TMPDIR", "")
+	t.Setenv(isolatedEnv, "")
+	saved := outside // the TestMain capture: the real live sockets
+	t.Cleanup(func() { outside = saved })
+	done := Isolate()
+	dir := os.Getenv("TMUX_TMPDIR")
+	done()
+	if got := os.Getenv("TMUX"); got != deadSocket(dir) {
+		t.Fatalf("TMUX after cleanup = %q, want %q", got, deadSocket(dir))
+	}
+	if _, err := os.Stat(dir); !os.IsNotExist(err) {
+		t.Fatalf("isolated dir not removed: %v", err)
+	}
+	if _, err := exec.LookPath("tmux"); err != nil {
+		return
+	}
+	out, err := exec.Command("tmux", "list-sessions").CombinedOutput()
+	if err == nil || !strings.Contains(string(out), filepath.Join(dir, "gone")) {
+		t.Fatalf("a late bare tmux reached a server: %v %s", err, out)
+	}
+}
