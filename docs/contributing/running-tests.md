@@ -10,9 +10,12 @@ go test -race ./...
 cd ../web
 npm test -- --run
 npm run build
+cd ../daemon-go/cli/assets/channel   # the experimental channel client
+bun install --frozen-lockfile
+bun test
 ```
 
-CI runs the same core gates.
+CI runs the same core gates, and typechecks the channel's shipped sources (`server.ts`, `daemon-session.ts`).
 
 ## Notes
 
