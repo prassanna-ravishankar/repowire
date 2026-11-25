@@ -155,6 +155,9 @@ type Inbox struct {
 	// retry is, per surface, when the Store trigger may next retry a
 	// release that failed, and the backoff that set it.
 	retry map[string]releaseBackoff
+	// releasing serializes releases per surface, so concurrent triggers
+	// deliver its backlog oldest first rather than interleaved.
+	releasing map[string]*sync.Mutex
 }
 
 // NewInbox wires the inbox. asks may be nil (no thread validation: items never
@@ -163,7 +166,7 @@ func NewInbox(store InboxStore, reg inboxRegistry, transport Transport, asks *As
 	ctx, cancel := context.WithCancel(context.Background())
 	return &Inbox{store: store, reg: reg, transport: transport, asks: asks, cfg: cfg,
 		pushTimeout: inboxPushTimeout, catchUpLimit: inboxCatchUpLimit, pushing: map[pushKey]struct{}{},
-		baseCtx: ctx, cancel: cancel, now: time.Now, mayHold: map[string]bool{}, cleared: map[string]bool{}, retry: map[string]releaseBackoff{}}
+		baseCtx: ctx, cancel: cancel, now: time.Now, mayHold: map[string]bool{}, cleared: map[string]bool{}, retry: map[string]releaseBackoff{}, releasing: map[string]*sync.Mutex{}}
 }
 
 // SetHuman records the registered human peer.

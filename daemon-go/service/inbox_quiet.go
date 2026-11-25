@@ -16,6 +16,7 @@ import (
 	"fmt"
 	"log"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -135,6 +136,9 @@ func (i *Inbox) releaseIfDue(target surfaceTarget, now time.Time) {
 // first (held → releasing), so a racing trigger skips it; one the human has
 // already handled is recorded skipped instead of pushed.
 func (i *Inbox) releaseHeld(target surfaceTarget) {
+	lock := i.releaseLock(target.name)
+	lock.Lock()
+	defer lock.Unlock()
 	ctx := i.baseCtx
 	items, err := i.store.HeldInboxItems(ctx, target.name)
 	if err != nil {
@@ -271,6 +275,19 @@ func (i *Inbox) settleRetry(surface string, failed bool) {
 	b.wait = min(max(b.wait*2, releaseRetryFirst), releaseRetryMax)
 	b.after = i.now().Add(b.wait)
 	i.retry[surface] = b
+}
+
+// releaseLock is surface's release mutex: one release at a time per surface,
+// so its held items arrive oldest first even when triggers race.
+func (i *Inbox) releaseLock(surface string) *sync.Mutex {
+	i.holdMu.Lock()
+	defer i.holdMu.Unlock()
+	l := i.releasing[surface]
+	if l == nil {
+		l = &sync.Mutex{}
+		i.releasing[surface] = l
+	}
+	return l
 }
 
 func (i *Inbox) setMayHold(surface string, may bool) {

@@ -392,3 +392,24 @@ func TestFailingReleaseBacksOff(t *testing.T) {
 		t.Fatalf("surface_release: %d attempts, want 3", attempts)
 	}
 }
+
+// Racing triggers deliver a backlog oldest first: releases are one at a time
+// per surface.
+func TestRacingReleasesKeepTheOrder(t *testing.T) {
+	f := newQuietFixture(t, false, nil, true)
+	var want []string
+	for _, text := range []string{"1", "2", "3"} {
+		want = append(want, f.store(t, InboxStoreParams{Text: text}))
+	}
+	f.at(7, 15)
+	var wg sync.WaitGroup
+	for n := 0; n < 4; n++ {
+		wg.Add(1)
+		go func() { defer wg.Done(); f.inbox.SurfaceRelease(f.telegram) }()
+	}
+	wg.Wait()
+	f.settle()
+	if got := strings.Join(f.pushedIDs(), ","); got != strings.Join(want, ",") {
+		t.Fatalf("pushed %s, want %s", got, strings.Join(want, ","))
+	}
+}
