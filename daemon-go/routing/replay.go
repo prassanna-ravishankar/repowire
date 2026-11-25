@@ -224,14 +224,14 @@ type Report struct {
 	Fidelity3    float64 `json:"fidelity_at_3"`
 	// Chance1 and Chance3 are the expected fidelity of a random ranking over
 	// the same scored rows, analytically (no seed). Read lift against these.
+	Chance1 float64 `json:"chance_at_1"`
+	Chance3 float64 `json:"chance_at_3"`
 	// RepeatRate is the share of scored asks whose declared target was the
 	// sender's most recent contact (the declared_recent_contact stratum).
 	// On DecisionBench it is the share of delegations to the previous
-	// delegate: the regime diagnostic that separates a stateless pool from a
-	// stateful mesh (#462).
+	// delegate in the same task: the regime diagnostic that separates a
+	// stateless pool from a stateful mesh (#462).
 	RepeatRate        float64        `json:"repeat_rate"`
-	Chance1           float64        `json:"chance_at_1"`
-	Chance3           float64        `json:"chance_at_3"`
 	AnsweredFidelity1 float64        `json:"answered_fidelity_at_1"`
 	AnsweredFidelity3 float64        `json:"answered_fidelity_at_3"`
 	MeanCandidates    float64        `json:"mean_candidates"`

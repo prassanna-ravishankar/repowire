@@ -71,36 +71,40 @@ func TestDelegationExamplesReplay(t *testing.T) {
 	}
 }
 
-// The trace order is the clock (#462): recent is "the previous delegate",
-// majority-past "the most frequent delegate so far", and the recency strata
-// and repeat rate come out as on the mesh. Delegations B B C B C C from A,
-// with D never chosen, worked by hand:
+// The trace order is the clock (#462). Recency is per task, majority-past
+// votes across the file. Tasks T1 = B B C and T2 = B C C from A, with D
+// never chosen and a failed delegation inside T1, worked by hand:
 //
-//	row  declared  previous  so far      recent  majority-past  stratum
-//	1    B         -         -           none    none           no_exchange_data
-//	2    B         B         B1          hit     hit            recent_contact
-//	3    C         B         B2          miss    miss           other
-//	4    B         C         B2 C1       miss    hit            other
-//	5    C         B         B3 C1       miss    miss           other
-//	6    C         C         B3 C2       hit     miss           recent_contact
+//	row  task  declared  previous   votes so far  recent  majority-past  stratum
+//	                     (in task)  (whole file)
+//	1    T1    B         -          -             none    none           no_exchange_data
+//	2    T1    B         B          B1            hit     hit            recent_contact
+//	3    T1    C         B          B2            miss    miss           other
+//	4    T2    B         -          B2 C1         none    hit            no_exchange_data
+//	5    T2    C         B          B3 C1         miss    miss           other
+//	6    T2    C         C          B3 C2         hit     miss           recent_contact
 func TestDecisionBenchTraceOrderDrivesTheHistoryBaselines(t *testing.T) {
 	cards, err := LoadCards(writeCards(t, "a", "b", "c", "d"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	var lines []string
-	for i, peer := range []string{"b", "b", "c", "b", "c", "c"} {
-		lines = append(lines, `{"task_id":"t`+string(rune('1'+i))+`","peer":"`+peer+`","subtask":"s","output":"o"}`)
+	line := func(task, peer, failure string) string {
+		if failure != "" {
+			return `{"task_id":"` + task + `","peer":"` + peer + `","subtask":"s","error":"` + failure + `"}`
+		}
+		return `{"task_id":"` + task + `","peer":"` + peer + `","subtask":"s","output":"o"}`
 	}
-	// A failed delegation in the middle is no exchange and no vote.
-	lines = append(lines[:3], append([]string{`{"task_id":"tx","peer":"d","subtask":"s","error":"Timeout"}`}, lines[3:]...)...)
+	lines := []string{
+		line("T1", "b", ""), line("T1", "b", ""), line("T1", "d", "Timeout"), line("T1", "c", ""),
+		line("T2", "b", ""), line("T2", "c", ""), line("T2", "c", ""),
+	}
 	examples, err := DelegationExamples(strings.NewReader(strings.Join(lines, "\n")), "a", cards)
 	if err != nil || len(examples) != 6 {
 		t.Fatalf("examples = %d, %v", len(examples), err)
 	}
 
 	// The clock strictly increases, and each candidate carries the last
-	// delegation to it before this one; earlier rows are not rewritten.
+	// delegation to it earlier in its task; earlier rows are not rewritten.
 	var prev time.Time
 	for i, ex := range examples {
 		at, err := time.Parse(time.RFC3339Nano, ex.Decision.DecidedAt)
@@ -117,10 +121,10 @@ func TestDecisionBenchTraceOrderDrivesTheHistoryBaselines(t *testing.T) {
 		}
 		return ""
 	}
-	if exchange(1, "b") != "" || exchange(2, "b") != examples[0].Decision.DecidedAt || exchange(4, "c") != examples[2].Decision.DecidedAt ||
-		exchange(6, "b") != examples[3].Decision.DecidedAt || exchange(6, "d") != "" {
-		t.Fatalf("exchange stamps: row1 b=%q row2 b=%q row4 c=%q row6 b=%q row6 d=%q",
-			exchange(1, "b"), exchange(2, "b"), exchange(4, "c"), exchange(6, "b"), exchange(6, "d"))
+	if exchange(1, "b") != "" || exchange(2, "b") != examples[0].Decision.DecidedAt || exchange(3, "d") != "" ||
+		exchange(4, "b") != "" || exchange(4, "c") != "" || exchange(6, "c") != examples[4].Decision.DecidedAt {
+		t.Fatalf("exchange stamps: row1 b=%q row2 b=%q row3 d=%q row4 b=%q row4 c=%q row6 c=%q (a new task starts with none)",
+			exchange(1, "b"), exchange(2, "b"), exchange(3, "d"), exchange(4, "b"), exchange(4, "c"), exchange(6, "c"))
 	}
 
 	arms := BaselineArms(examples, 600)
@@ -131,8 +135,8 @@ func TestDecisionBenchTraceOrderDrivesTheHistoryBaselines(t *testing.T) {
 		return rep
 	}
 	recent, past := run("recent"), run("majority-past")
-	if recent.Scored != 6 || recent.Fallbacks != 1 || recent.Hit1 != 2 {
-		t.Fatalf("recent = scored %d, fallbacks %d, hit@1 %d; want 6, 1, 2", recent.Scored, recent.Fallbacks, recent.Hit1)
+	if recent.Scored != 6 || recent.Fallbacks != 2 || recent.Hit1 != 2 {
+		t.Fatalf("recent = scored %d, fallbacks %d, hit@1 %d; want 6, 2, 2", recent.Scored, recent.Fallbacks, recent.Hit1)
 	}
 	if past.Scored != 6 || past.Fallbacks != 1 || past.Hit1 != 2 {
 		t.Fatalf("majority-past = scored %d, fallbacks %d, hit@1 %d; want 6, 1, 2", past.Scored, past.Fallbacks, past.Hit1)
@@ -141,7 +145,7 @@ func TestDecisionBenchTraceOrderDrivesTheHistoryBaselines(t *testing.T) {
 	for name, c := range recent.Recency {
 		strata[name] = c.Scored
 	}
-	if want := map[string]int{StratumNoExchange: 1, StratumRecentContact: 2, StratumOtherContact: 3}; !maps.Equal(strata, want) {
+	if want := map[string]int{StratumNoExchange: 2, StratumRecentContact: 2, StratumOtherContact: 2}; !maps.Equal(strata, want) {
 		t.Fatalf("strata = %v, want %v", strata, want)
 	}
 	if recent.RepeatRate != 2.0/6 || past.RepeatRate != recent.RepeatRate {
