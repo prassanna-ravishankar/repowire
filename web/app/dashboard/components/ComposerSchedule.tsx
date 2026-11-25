@@ -163,7 +163,9 @@ export function PeerSchedules({ peer, apiBase, refresh }: { peer: Peer; apiBase:
   const cancel = useCallback(
     async (id: string) => {
       const res = await fetch(`${apiBase}/schedules/${encodeURIComponent(id)}`, { method: "DELETE", credentials: "include" });
-      if (!res.ok) setError(`Cancel failed: ${res.status}`);
+      // 404: a one-shot that fired since the list was read (the daemon drops
+      // it then); the reload removes it, which is all a cancel could do.
+      if (!res.ok && res.status !== 404) setError(`Cancel failed: ${res.status}`);
       setReloads((n) => n + 1);
     },
     [apiBase],

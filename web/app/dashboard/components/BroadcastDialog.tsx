@@ -28,6 +28,9 @@ interface BroadcastResult {
   remote_queued?: string[];
   remote_failed?: string[];
   remote_uncertain?: string[];
+  // Machines whose agents could not be listed: whoever is there may not
+  // have been reached.
+  partial?: string[];
 }
 
 export function BroadcastDialog({ apiBase, peers, onClose }: { apiBase: string; peers: Peer[]; onClose: () => void }) {
@@ -82,6 +85,11 @@ export function BroadcastDialog({ apiBase, peers, onClose }: { apiBase: string; 
               </li>
             ))}
           </ul>
+        )}
+        {(result.partial ?? []).length > 0 && (
+          <p data-testid="broadcast-partial" className="mt-2 font-mono text-[11px] text-error">
+            could not list the agents on {result.partial!.join(", ")}: they may not have been reached
+          </p>
         )}
         {(
           [
