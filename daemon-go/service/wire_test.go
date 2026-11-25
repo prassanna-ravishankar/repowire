@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
@@ -19,6 +20,8 @@ var wireNow = time.Date(2026, 12, 1, 12, 0, 0, 0, time.UTC)
 
 type fakeWireLedger struct {
 	rows   map[string][]state.TraceRow
+	single int             // StagesFor calls
+	many   int             // StagesForMany calls
 	turns  map[string]int  // peer -> assistant turns in any window
 	queued map[string]bool // delivery ids still in the queue
 }
@@ -53,7 +56,19 @@ func (f *fakeWireLedger) TraceThreadsSince(_ context.Context, since time.Time) (
 }
 
 func (f *fakeWireLedger) StagesFor(_ context.Context, id string) ([]state.TraceRow, error) {
+	f.single++
 	return f.rows[id], nil
+}
+
+func (f *fakeWireLedger) StagesForMany(_ context.Context, ids []string) (map[string][]state.TraceRow, error) {
+	f.many++
+	out := map[string][]state.TraceRow{}
+	for _, id := range ids {
+		if rows, ok := f.rows[id]; ok {
+			out[id] = rows
+		}
+	}
+	return out, nil
 }
 
 func (f *fakeWireLedger) AssistantTurnsBetween(_ context.Context, peer string, _, _ time.Time) (int, error) {
@@ -325,5 +340,36 @@ func TestWireReadsTheStagesTheDaemonWrites(t *testing.T) {
 	ledger.add("route-1", "route", "route_decision", "", "", "", at, nil)
 	if _, ok, _ := w.Thread(ctx, "route-1"); ok {
 		t.Fatal("a non-thread trace was shown")
+	}
+}
+
+// A page of threads loads its stages with one grouped query per batch of
+// candidates, never one query per thread, and paging is unchanged (#576).
+func TestWireThreadsLoadStagesInBatches(t *testing.T) {
+	ctx := context.Background()
+	ledger := &fakeWireLedger{}
+	for i := range 250 {
+		ledger.add(fmt.Sprintf("ask-%03d", i), "ask", "created", "ok", "repow-b", "repow-a", wireNow.Add(-time.Duration(i)*time.Minute), provenance(recA, recB))
+	}
+	w, _ := newTestWire(ledger, testPeers())
+	seen := map[string]bool{}
+	cursor := ""
+	for range 10 {
+		page, err := w.Threads(ctx, WireFilter{Limit: 100, Since: 24 * time.Hour, Cursor: cursor})
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, th := range page.Threads {
+			if seen[th.ID] {
+				t.Fatalf("%s shown twice", th.ID)
+			}
+			seen[th.ID] = true
+		}
+		if cursor = page.Cursor; cursor == "" {
+			break
+		}
+	}
+	if len(seen) != 250 || ledger.single != 0 || ledger.many != 3 {
+		t.Fatalf("saw %d threads with %d single and %d grouped loads", len(seen), ledger.single, ledger.many)
 	}
 }

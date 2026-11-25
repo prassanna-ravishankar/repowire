@@ -34,6 +34,7 @@ import (
 type WireLedger interface {
 	TraceThreadsSince(ctx context.Context, since time.Time) ([]state.TraceThread, error)
 	StagesFor(ctx context.Context, traceID string) ([]state.TraceRow, error)
+	StagesForMany(ctx context.Context, traceIDs []string) (map[string][]state.TraceRow, error)
 	AssistantTurnsBetween(ctx context.Context, peerID string, from, to time.Time) (int, error)
 	// DeliveryQueued is the delivery queue's answer for a notify traced as
 	// pending: still waiting, or gone (drained or expired).
@@ -142,6 +143,7 @@ const (
 	wireDefaultLimit = 50
 	wireMaxLimit     = 100
 	wireMaxScan      = 1000 // threads reduced per call before handing back a cursor
+	wireStageBatch   = 100  // threads whose stages one ledger query loads
 )
 
 // Delivery stages that confirm the current assignment reached its holder.
@@ -172,13 +174,26 @@ func (w *Wire) Threads(ctx context.Context, f WireFilter) (WirePage, error) {
 	if err != nil {
 		return WirePage{}, err
 	}
+	if after != nil {
+		// Candidates are sorted newest first: skip to the first one past
+		// the cursor.
+		n := sort.Search(len(candidates), func(i int) bool { return candidates[i].before(*after) })
+		candidates = candidates[n:]
+	}
 	page := WirePage{Threads: []WireThread{}}
 	scanned := 0
+	var stages map[string][]state.TraceRow
 	for i, c := range candidates {
-		if after != nil && !c.before(*after) {
-			continue
+		if i%wireStageBatch == 0 {
+			ids := make([]string, 0, wireStageBatch)
+			for _, b := range candidates[i:min(i+wireStageBatch, len(candidates))] {
+				ids = append(ids, b.id)
+			}
+			if stages, err = w.ledger.StagesForMany(ctx, ids); err != nil {
+				return WirePage{}, err
+			}
 		}
-		t, ok, err := w.reduce(ctx, c.id, c.kind, false)
+		t, ok, err := w.reduceRows(ctx, c.id, c.kind, stages[c.id], false)
 		if err != nil {
 			return WirePage{}, err
 		}
@@ -306,6 +321,11 @@ func (w *Wire) reduce(ctx context.Context, traceID, kind string, withStages bool
 	if err != nil {
 		return WireThread{}, false, err
 	}
+	return w.reduceRows(ctx, traceID, kind, rows, withStages)
+}
+
+// reduceRows is reduce over stages already loaded.
+func (w *Wire) reduceRows(ctx context.Context, traceID, kind string, rows []state.TraceRow, withStages bool) (WireThread, bool, error) {
 	ask, tracked := w.asks.Get(traceID)
 	if len(rows) == 0 && !tracked {
 		return WireThread{}, false, nil

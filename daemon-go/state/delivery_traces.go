@@ -120,6 +120,41 @@ func (s *Store) StagesFor(ctx context.Context, traceID string) ([]TraceRow, erro
 	return out, nil
 }
 
+// StagesForMany returns the stages of each trace in ids, seq ascending, in
+// one query: the wire view loads a page of threads with it instead of one
+// StagesFor per thread. A trace with no stages is absent from the map.
+func (s *Store) StagesForMany(ctx context.Context, ids []string) (map[string][]TraceRow, error) {
+	out := make(map[string][]TraceRow, len(ids))
+	if len(ids) == 0 {
+		return out, nil
+	}
+	args := make([]any, len(ids))
+	for i, id := range ids {
+		args[i] = id
+	}
+	q := `SELECT trace_id, delivery_id, seq, kind, stage, status,
+		       peer_id, from_peer_id, ts, detail_json
+		FROM delivery_traces
+		WHERE trace_id IN (?` + strings.Repeat(",?", len(ids)-1) + `)
+		ORDER BY trace_id, seq ASC`
+	rows, err := s.db.QueryContext(ctx, q, args...)
+	if err != nil {
+		return nil, fmt.Errorf("load trace stages for %d traces: %w", len(ids), err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		tr, err := scanTraceRow(rows)
+		if err != nil {
+			return nil, err
+		}
+		out[tr.TraceID] = append(out[tr.TraceID], tr)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate trace stages: %w", err)
+	}
+	return out, nil
+}
+
 // defaultInboundStages are the terminal hook-receipt stages list_peers uses to
 // derive per-peer inbound health (last_success_at / last_failure_at).
 var defaultInboundStages = []string{"pane_injected", "thread_input_accepted", "injection_failed"}
