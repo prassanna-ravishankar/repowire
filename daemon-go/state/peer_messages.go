@@ -205,5 +205,5 @@ var (
 			return nil, content
 		},
 	}
-	peerMessageDeliveryRetention = tableRetention{tables: []string{"peer_message_delivery"}, exempt: "a peer's delivery mode is live configuration"}
+	peerMessageDeliveryRetention = tableRetention{tables: []string{"peer_message_delivery"}, exempt: "a peer's delivery mode is live configuration", closedWithPeer: true}
 )

@@ -318,7 +318,8 @@ session. `pull` sends a one-line nudge instead, and you fetch the body with
 ```
 
 An ask nudge keeps its correlation id and ack hint. The mode is kept per
-`peer_id` across daemon restarts.
+`peer_id` across daemon restarts, and dropped when the `peer_id` is closed
+for good (`kill_peer`, or the operator removing the peer).
 
 ### `set_wire_visibility`
 
@@ -330,8 +331,10 @@ Choose whether orchestrators may act on your threads. `visible` is the
 default. `private` protects every thread you take part in, earlier ones
 included: an orchestrator still sees its envelope in
 [`wire_query`](#wire_query) (who, state, age), never its text, and cannot act
-on it. Kept per `peer_id` across daemon restarts; a session that comes
-back under a new `peer_id` sets it again. Only you, or the operator
+on it. Kept per `peer_id` across daemon restarts, and dropped when the
+`peer_id` is closed for good; a session that comes back under a new
+`peer_id` sets it again. A closed peer's threads stay protected, since a
+party the daemon no longer knows protects them. Only you, or the operator
 (`repowire wire visibility`), can change it.
 
 ## Inspection

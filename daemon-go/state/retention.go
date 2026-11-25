@@ -69,11 +69,14 @@ type retentionCutoffs struct {
 // tableRetention is a domain's declaration for the tables it owns: the
 // rules it runs per class, or why the tables are exempt. Records rules of
 // every table run before any content rule, so content rules only see rows
-// that survive.
+// that survive. closedWithPeer marks tables of a peer's own settings, keyed
+// by peer_id: their rows go when the id is closed for good (Store.Retire,
+// hard), since no session can come back under it.
 type tableRetention struct {
-	tables []string
-	rules  func(c retentionCutoffs) (records, content []sweepRule)
-	exempt string
+	tables         []string
+	rules          func(c retentionCutoffs) (records, content []sweepRule)
+	exempt         string
+	closedWithPeer bool
 }
 
 // tableRetentions gathers every domain's declaration.

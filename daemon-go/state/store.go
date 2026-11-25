@@ -407,13 +407,34 @@ func (s *Store) LoadRetired(ctx context.Context, cutoff time.Time) (map[proto.Pe
 	return out, nil
 }
 
-// Retire records a terminal peer_id.
+// Retire records a terminal peer_id. A hard retirement closes the id for
+// good, so the peer's own settings (tables declared closedWithPeer) go in
+// the same transaction.
 func (s *Store) Retire(ctx context.Context, id proto.PeerID, at time.Time, hard bool) error {
-	_, err := s.db.ExecContext(ctx,
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("retire %s: %w", id, err)
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx,
 		`INSERT OR REPLACE INTO retired_peers (peer_id, retired_at, hard) VALUES (?, ?, ?)`,
 		string(id), formatTS(at), hard,
-	)
-	if err != nil {
+	); err != nil {
+		return fmt.Errorf("retire %s: %w", id, err)
+	}
+	if hard {
+		for _, t := range tableRetentions {
+			if !t.closedWithPeer {
+				continue
+			}
+			for _, table := range t.tables {
+				if _, err := tx.ExecContext(ctx, `DELETE FROM `+table+` WHERE peer_id = ?`, string(id)); err != nil {
+					return fmt.Errorf("retire %s: drop %s: %w", id, table, err)
+				}
+			}
+		}
+	}
+	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("retire %s: %w", id, err)
 	}
 	return nil
