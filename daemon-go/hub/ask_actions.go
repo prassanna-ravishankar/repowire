@@ -1,12 +1,13 @@
 package hub
 
 // Wire actions (rfcs/wire-actions.md): reassign, nudge and cancel an open
-// ask, for the operator. They live beside delegate in the ask lifecycle and
-// share its claim, move, deliver and undo path; the wire routes and the CLI
-// only reach them.
+// ask, for the operator and for orchestrators. They live beside delegate in
+// the ask lifecycle and share its claim, move, deliver and undo path; the
+// wire routes, the CLI and the MCP tools only reach them.
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -33,6 +34,71 @@ type WireActionResult struct {
 	Holder        string            `json:"holder,omitempty"`
 	Notified      map[string]string `json:"notified,omitempty"`
 	DroppedQueued int               `json:"dropped_queued,omitempty"`
+}
+
+// wireActor is who takes an action: the operator (peer nil), or a proven
+// orchestrator, whom the thread's records must admit.
+type wireActor struct {
+	peer *proto.Peer
+}
+
+var operator = wireActor{}
+
+// by is the actor as the hop, the trace and the event record it.
+func (a wireActor) by() string {
+	if a.peer == nil {
+		return operatorActor
+	}
+	return string(a.peer.PeerID)
+}
+
+// sender is who the parties hear the action from.
+func (a wireActor) sender() string {
+	if a.peer == nil {
+		return operatorSender
+	}
+	return string(a.peer.PeerID)
+}
+
+// label names the actor in the parties' notices.
+func (a wireActor) label() string {
+	if a.peer == nil {
+		return "the operator"
+	}
+	return "@" + string(a.peer.DisplayName)
+}
+
+// authorize admits the operator, and an orchestrator only where the wire view
+// allows it (service.Wire.OrchestratorMay). dest is a reassign's new holder.
+// Callers hold the ask's claim.
+func (h *Hub) authorize(ctx context.Context, a wireActor, cid string, dest *proto.Peer) error {
+	if a.peer == nil {
+		return nil
+	}
+	err := h.wire.AuthorizeOrchestrator(ctx, cid, a.peer.Circle, dest)
+	var refused service.WireRefusal
+	if errors.As(err, &refused) {
+		return routeErr(http.StatusForbidden, map[string]any{"error": "wire_refused", "correlation_id": cid, "reason": refused.Reason})
+	}
+	return err
+}
+
+// wireAction runs action on the thread id as the wire view shows it.
+func (h *Hub) wireAction(ctx context.Context, a wireActor, action, threadID string, req WireActionRequest) (WireActionResult, error) {
+	cid, ok, err := h.wire.Resolve(ctx, threadID)
+	if err != nil {
+		return WireActionResult{}, err
+	}
+	if !ok {
+		return WireActionResult{}, routeErr(http.StatusNotFound, "No thread: "+threadID)
+	}
+	switch action {
+	case "reassign":
+		return h.reassignAsk(ctx, a, cid, req.To, req.Reason)
+	case "cancel":
+		return h.cancelAsk(ctx, a, cid, req.Reason)
+	}
+	return h.nudgeAsk(ctx, a, cid, req.Note)
 }
 
 func actionText(field, value string, required bool) (string, error) {
@@ -71,10 +137,10 @@ func (h *Hub) actionableAsk(ctx context.Context, cid string) (*service.Ask, erro
 	return ask, nil
 }
 
-// operatorNotice tells a party about an action, best effort, and reports
-// what happened to the notice.
-func (h *Hub) operatorNotice(ctx context.Context, to proto.PeerID, text string) string {
-	res, err := h.ask.delivery.Notify(ctx, service.NotifyParams{FromPeer: operatorSender, ToPeer: string(to), Text: text, BypassCircle: true})
+// actionNotice tells a party about an action, best effort, and reports what
+// happened to the notice.
+func (h *Hub) actionNotice(ctx context.Context, a wireActor, to proto.PeerID, text string) string {
+	res, err := h.ask.delivery.Notify(ctx, service.NotifyParams{FromPeer: a.sender(), ToPeer: string(to), Text: text, BypassCircle: true})
 	switch {
 	case err != nil:
 		return "failed: " + err.Error()
@@ -100,8 +166,8 @@ func (h *Hub) dropQueuedCopies(ctx context.Context, cid string, holder proto.Pee
 	return n
 }
 
-// reassignAsk moves an open ask to another peer on the operator's authority.
-func (h *Hub) reassignAsk(ctx context.Context, cid, to, reason string) (WireActionResult, error) {
+// reassignAsk moves an open ask to another peer on a's authority.
+func (h *Hub) reassignAsk(ctx context.Context, a wireActor, cid, to, reason string) (WireActionResult, error) {
 	reason, err := actionText("reason", reason, true)
 	if err != nil {
 		return WireActionResult{}, err
@@ -129,31 +195,40 @@ func (h *Hub) reassignAsk(ctx context.Context, cid, to, reason string) (WireActi
 		return WireActionResult{}, resolveClaimErr(cid, err)
 	}
 	defer h.ask.asks.Release(cid)
+	if err := h.authorize(ctx, a, cid, target); err != nil {
+		return WireActionResult{}, err
+	}
 	moved, hop, err := h.ask.asks.Reassign(ctx, cid, service.ReassignParams{
-		By: operatorActor, To: target.PeerID, ToName: target.DisplayName,
+		By: a.by(), To: target.PeerID, ToName: target.DisplayName,
 		ToSessionID: h.sessionIDForPeer(ctx, string(target.PeerID)), Reason: reason,
 	})
 	if err != nil {
 		return WireActionResult{}, delegateErr(cid, ask, err)
 	}
+	// The acting orchestrator is recorded as a party: the thread passed
+	// through its circle. The operator is not a peer.
+	var actorID proto.PeerID
+	if a.peer != nil {
+		actorID = a.peer.PeerID
+	}
 	h.traceAsk(ctx, cid, "reassigned", "", moved, h.wire.WithProvenance(ctx, map[string]any{
-		"by": operatorActor, "from_peer_id": string(hop.FromPeerID), "to_peer_id": string(hop.ToPeerID),
+		"by": a.by(), "from_peer_id": string(hop.FromPeerID), "to_peer_id": string(hop.ToPeerID),
 		"reason": clipTraceText(reason), "hops": len(moved.Delegations),
-	}, hop.ToPeerID))
-	text := fmt.Sprintf("[reassigned by the operator from @%s for @%s: %s]\n%s", hop.FromName, moved.FromPeerName, reason, moved.Text)
-	if _, err := h.deliverHop(ctx, claimed, moved, hop, operatorSender, text); err != nil {
+	}, hop.ToPeerID, actorID))
+	text := fmt.Sprintf("[reassigned by %s from @%s for @%s: %s]\n%s", a.label(), hop.FromName, moved.FromPeerName, reason, moved.Text)
+	if _, err := h.deliverHop(ctx, claimed, moved, hop, a.sender(), text); err != nil {
 		return WireActionResult{}, err
 	}
 
 	// Both notices go out only once the new holder accepted the ask.
 	result := WireActionResult{CorrelationID: cid, Action: "reassign", Holder: string(hop.ToName), Notified: map[string]string{}}
 	result.DroppedQueued = h.dropQueuedCopies(ctx, cid, hop.FromPeerID, "reassigned")
-	result.Notified["@"+string(hop.FromName)] = h.operatorNotice(ctx, hop.FromPeerID, fmt.Sprintf(
-		"[ask #%s moved to @%s by the operator: %s] A reply from you to this ask will be refused.", cid, hop.ToName, reason))
-	result.Notified["@"+string(moved.FromPeerName)] = h.operatorNotice(ctx, moved.FromPeerID, fmt.Sprintf(
-		"[your ask #%s moved from @%s to @%s by the operator: %s]", cid, hop.FromName, hop.ToName, reason))
+	result.Notified["@"+string(hop.FromName)] = h.actionNotice(ctx, a, hop.FromPeerID, fmt.Sprintf(
+		"[ask #%s moved to @%s by %s: %s] A reply from you to this ask will be refused.", cid, hop.ToName, a.label(), reason))
+	result.Notified["@"+string(moved.FromPeerName)] = h.actionNotice(ctx, a, moved.FromPeerID, fmt.Sprintf(
+		"[your ask #%s moved from @%s to @%s by %s: %s]", cid, hop.FromName, hop.ToName, a.label(), reason))
 	h.ask.reg.AddEvent(ctx, "ask_reassigned", map[string]any{
-		"correlation_id": cid, "actor": operatorActor,
+		"correlation_id": cid, "actor": a.by(),
 		"from": string(hop.FromName), "from_peer_id": string(hop.FromPeerID),
 		"to": string(hop.ToName), "to_peer_id": string(hop.ToPeerID),
 		"asker": string(moved.FromPeerName), "asker_peer_id": string(moved.FromPeerID),
@@ -162,10 +237,10 @@ func (h *Hub) reassignAsk(ctx context.Context, cid, to, reason string) (WireActi
 	return result, nil
 }
 
-// cancelAsk closes an open ask on the operator's authority. The asker gets
-// the cancellation as the ask's outcome on its reply path; the holder is told
-// to stop.
-func (h *Hub) cancelAsk(ctx context.Context, cid, reason string) (WireActionResult, error) {
+// cancelAsk closes an open ask on a's authority. The asker gets the
+// cancellation as the ask's outcome on its reply path; the holder is told to
+// stop.
+func (h *Hub) cancelAsk(ctx context.Context, a wireActor, cid, reason string) (WireActionResult, error) {
 	reason, err := actionText("reason", reason, true)
 	if err != nil {
 		return WireActionResult{}, err
@@ -183,18 +258,21 @@ func (h *Hub) cancelAsk(ctx context.Context, cid, reason string) (WireActionResu
 		// it into both a reply and a cancellation.
 		return WireActionResult{}, resolveClaimErr(cid, service.ErrResultWaiting)
 	}
+	if err := h.authorize(ctx, a, cid, nil); err != nil {
+		return WireActionResult{}, err
+	}
 	holder, holderName := claimed.ToPeerID, claimed.ToPeerName
-	framed := fmt.Sprintf("[ask #%s cancelled by the operator] %s", cid, reason)
-	if err := h.deliverResolution(ctx, claimed, operatorSender, framed, "Cancelled: "+reason, "cancelled", reason, nil); err != nil {
+	framed := fmt.Sprintf("[ask #%s cancelled by %s] %s", cid, a.label(), reason)
+	if err := h.deliverResolution(ctx, claimed, a.sender(), framed, "Cancelled: "+reason, "cancelled", reason, nil); err != nil {
 		return WireActionResult{}, err
 	}
 
 	result := WireActionResult{CorrelationID: cid, Action: "cancel", Notified: map[string]string{}}
 	result.DroppedQueued = h.dropQueuedCopies(ctx, cid, holder, "cancelled")
-	result.Notified["@"+string(holderName)] = h.operatorNotice(ctx, holder, fmt.Sprintf(
-		"[ask #%s from @%s cancelled by the operator: %s] Stop work on it; a reply will be refused.", cid, claimed.FromPeerName, reason))
+	result.Notified["@"+string(holderName)] = h.actionNotice(ctx, a, holder, fmt.Sprintf(
+		"[ask #%s from @%s cancelled by %s: %s] Stop work on it; a reply will be refused.", cid, claimed.FromPeerName, a.label(), reason))
 	h.ask.reg.AddEvent(ctx, "ask_cancelled", map[string]any{
-		"correlation_id": cid, "actor": operatorActor, "holder": string(holderName), "holder_peer_id": string(holder),
+		"correlation_id": cid, "actor": a.by(), "holder": string(holderName), "holder_peer_id": string(holder),
 		"asker": string(claimed.FromPeerName), "asker_peer_id": string(claimed.FromPeerID), "reason": reason,
 	})
 	return result, nil
@@ -204,7 +282,7 @@ func (h *Hub) cancelAsk(ctx context.Context, cid, reason string) (WireActionResu
 // records the nudge on the ask's trace. It holds the ask's claim, so two
 // nudges cannot both pass the limit, and a holder whose reply already waits
 // for the asker is not nudged.
-func (h *Hub) nudgeAsk(ctx context.Context, cid, note string) (WireActionResult, error) {
+func (h *Hub) nudgeAsk(ctx context.Context, a wireActor, cid, note string) (WireActionResult, error) {
 	note, err := actionText("note", note, false)
 	if err != nil {
 		return WireActionResult{}, err
@@ -219,6 +297,9 @@ func (h *Hub) nudgeAsk(ctx context.Context, cid, note string) (WireActionResult,
 	defer h.ask.asks.Release(cid)
 	if ask.PendingReply != nil {
 		return WireActionResult{}, resolveClaimErr(cid, service.ErrResultWaiting)
+	}
+	if err := h.authorize(ctx, a, cid, nil); err != nil {
+		return WireActionResult{}, err
 	}
 	if h.store != nil {
 		rows, err := h.store.StagesFor(ctx, cid)
@@ -238,12 +319,12 @@ func (h *Hub) nudgeAsk(ctx context.Context, cid, note string) (WireActionResult,
 			break
 		}
 	}
-	text := fmt.Sprintf("[nudge from the operator: ask #%s from @%s, open %s]", cid, ask.FromPeerName, time.Since(ask.CreatedAt).Round(time.Minute))
+	text := fmt.Sprintf("[nudge from %s: ask #%s from @%s, open %s]", a.label(), cid, ask.FromPeerName, time.Since(ask.CreatedAt).Round(time.Minute))
 	if note != "" {
 		text = strings.TrimSuffix(text, "]") + ": " + note + "]"
 	}
 	result := WireActionResult{CorrelationID: cid, Action: "nudge", Holder: string(ask.ToPeerName), Notified: map[string]string{}}
-	result.Notified["@"+string(ask.ToPeerName)] = h.operatorNotice(ctx, ask.ToPeerID, text)
-	h.traceAsk(ctx, cid, "nudged", "", ask, map[string]any{"by": operatorActor, "note": clipTraceText(note)})
+	result.Notified["@"+string(ask.ToPeerName)] = h.actionNotice(ctx, a, ask.ToPeerID, text)
+	h.traceAsk(ctx, cid, "nudged", "", ask, map[string]any{"by": a.by(), "note": clipTraceText(note)})
 	return result, nil
 }

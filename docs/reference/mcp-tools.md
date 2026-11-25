@@ -417,7 +417,7 @@ The caller must be a registered peer with a proven identity and `role=orchestrat
 
 - **States** of an ask: `sent`, `queued`, `deferred`, `delivered` (to the current holder), `delegated`, `reply_stashed` (the asker went offline before the reply), a close reason when closed (`acked`, `declined`, `answered`, `cancelled`, `expired`, `send_failed`, ...), or `unknown` when the daemon lost the open ask without recording its close. A notify is `sent`, `queued` (waiting in the delivery queue for an offline recipient), `dequeued` (the queue handed it to the reconnected peer; not a receipt, and a drain is recorded before its response reaches the peer's hook, so a lost response still reads `dequeued`), `expired` or `dropped` (left the queue undelivered: its TTL passed, or the per-peer cap or a peer that cannot take input removed it), `delivered`, `failed`, `remote_<outcome>` across machines, or `unverified` (sent on a transport that returns no receipt, or queued before the queue recorded its outcomes); read state is not tracked yet.
 - **Stuck signals**, computed when read, never on a timer, with thresholds under [`wire.stuck`](configuration.md#wire): `ignored` (the holder is online and took `ignored_turns` turns since the ask was assigned to it), `slow` (no holder turn `slow_minutes` after assignment), `holder_offline`, `asker_gone` (a reply stashed `asker_gone_minutes` ago), and `undelivered` (a notify queued `undelivered_minutes` ago).
-- **`protected`** names why a thread is protected, or `-` when it is not: a party, now or as recorded when the thread was created or moved, is the `human`, a `service` surface, `private` (see [`set_wire_visibility`](#set_wire_visibility)) or unknown to the daemon (`unknown_party`); or the thread was recorded without its parties (`no_provenance`: anything from before provenance was recorded, `/query` asks and `ask_many` children). Future body reads and orchestrator interventions will refuse protected threads. The circles recorded for each party, not the parties' circles today, are what those checks use.
+- **`protected`** names why a thread is protected, or `-` when it is not: a party, now or as recorded when the thread was created or moved, is the `human`, a `service` surface, `private` (see [`set_wire_visibility`](#set_wire_visibility)) or unknown to the daemon (`unknown_party`); or the thread was recorded without its parties (`no_provenance`: anything from before provenance was recorded, `/query` asks and `ask_many` children). Orchestrator actions ([`reassign`](#reassign-nudge-cancel_ask)) refuse protected threads, and so will future body reads. The circles recorded for each party, not the parties' circles today, are what those checks use.
 
 ### `wire_show`
 
@@ -425,7 +425,31 @@ The caller must be a registered peer with a proven identity and `role=orchestrat
 wire_show(thread_id: str, cursor: int | None = None) -> str
 ```
 
-Orchestrator only. One thread's envelope and its stage timeline (`seq`, `at`, `stage`, `status`, `peer`, `close_reason`), oldest first, within 8,000 characters; a longer timeline ends with a `cursor` row naming the last `seq` shown. Same authorization and the same metadata-only rule as `wire_query`.
+Orchestrator only. One thread's envelope and its stage timeline (`seq`, `at`, `stage`, `status`, `peer`, `close_reason`), oldest first, within 8,000 characters; a longer timeline ends with a `cursor` row naming the last `seq` shown. Same authorization and the same metadata-only rule as `wire_query`. When you may act on the thread, the output ends with an `action`/`arguments` table: each action's tool name and its arguments as JSON, with the values you fill in shown in angle brackets.
+
+### `reassign` / `nudge` / `cancel_ask`
+
+```text
+reassign(thread_id: str, to: str, reason: str) -> str
+nudge(thread_id: str, note: str | None = None) -> str
+cancel_ask(thread_id: str, reason: str) -> str
+```
+
+Orchestrator only, with the same caller check as `wire_query`. They act on an open ask given its thread id from `wire_query`, as the operator's `repowire wire reassign|nudge|cancel` do, and the parties hear the action from you:
+
+- `reassign` moves the ask to `to`, never back to a former holder or to the asker. The new holder gets the ask, the former holder is told a reply from it will be refused, and the asker is told in one line.
+- `nudge` reminds the holder, at most once per 10 minutes per thread.
+- `cancel_ask` closes the ask: the asker gets the cancellation as its outcome (`wait_on_ack` returns `cancelled`), and the holder is told to stop.
+
+`reason` is required and `note` optional, at most 200 characters each. Each returns `{correlation_id, action, holder, notified, dropped_queued}` as JSON.
+
+An orchestrator, unlike the operator, is refused (`wire_refused`, with the reason) when:
+
+- the thread is protected (see `protected` under [`wire_query`](#wire_query));
+- any party the ask ever had (asker, each holder, each delegator, and an orchestrator that moved it) was recorded in a circle other than yours, or the asker, the holder or an earlier holder is in another circle now. A party with no circle matches none;
+- a reassign's `to` is outside your circle now, the human or a service surface, or private.
+
+The check runs under the ask's claim, so no hand-off can add a party between the check and the action; a party's circle, role or visibility is read at that moment. A reassign records you as a party, so an orchestrator of another circle cannot act on the thread afterwards. As a recorded party only, your own later visibility does not protect the thread; your recorded one does. Every action also refuses a closed ask, a cross-machine ask, a job's dispatch ask (use the job tools) and an ask whose reply waits for an offline asker.
 
 ## Lifecycle
 

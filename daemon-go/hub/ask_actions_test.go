@@ -33,12 +33,12 @@ func TestOperatorReassignMovesTheAskAndTellsEveryone(t *testing.T) {
 		"no reason": {"gamma", ""}, "to the asker": {"alpha", "x"}, "to the holder": {"beta", "x"}, "unknown peer": {"nobody", "x"},
 		"too long": {"gamma", strings.Repeat("x", maxActionReason+1)},
 	} {
-		if _, err := r.h.reassignAsk(ctx, cid, tc.to, tc.reason); err == nil {
+		if _, err := r.h.reassignAsk(ctx, operator, cid, tc.to, tc.reason); err == nil {
 			t.Fatalf("%s: reassign succeeded", name)
 		}
 	}
 
-	res, err := r.h.reassignAsk(ctx, cid, "gamma", "release owner")
+	res, err := r.h.reassignAsk(ctx, operator, cid, "gamma", "release owner")
 	if err != nil || res.Holder != "gamma" || res.DroppedQueued != 1 {
 		t.Fatalf("reassign: %+v %v", res, err)
 	}
@@ -63,7 +63,7 @@ func TestOperatorReassignMovesTheAskAndTellsEveryone(t *testing.T) {
 	if status, _ := r.ack(t, cid, beta, "stale"); status != http.StatusConflict {
 		t.Fatalf("beta's ack: %d", status)
 	}
-	if _, err := r.h.reassignAsk(ctx, cid, "beta", "back"); err == nil {
+	if _, err := r.h.reassignAsk(ctx, operator, cid, "beta", "back"); err == nil {
 		t.Fatal("moved back to a former holder")
 	}
 	if status, _ := r.ack(t, cid, gamma, "me"); status != http.StatusOK {
@@ -76,10 +76,10 @@ func TestOperatorCancelClosesTheAskAndTellsBothEnds(t *testing.T) {
 	alpha, beta := alphaPeer(), betaPeer()
 	r := newDelegateRig(t, alpha, beta)
 	cid := r.ask(t, alpha, beta, "review?")
-	if _, err := r.h.cancelAsk(ctx, cid, ""); err == nil {
+	if _, err := r.h.cancelAsk(ctx, operator, cid, ""); err == nil {
 		t.Fatal("cancel without a reason")
 	}
-	res, err := r.h.cancelAsk(ctx, cid, "no longer needed")
+	res, err := r.h.cancelAsk(ctx, operator, cid, "no longer needed")
 	if err != nil || res.Action != "cancel" {
 		t.Fatalf("cancel: %+v %v", res, err)
 	}
@@ -101,7 +101,7 @@ func TestOperatorCancelClosesTheAskAndTellsBothEnds(t *testing.T) {
 	if !r.asks.SetPendingReply(ctx, stashed, "[ack #"+stashed+" from @beta] done", nil, false) {
 		t.Fatal("stash refused")
 	}
-	if _, err := r.h.cancelAsk(ctx, stashed, "too late"); err == nil {
+	if _, err := r.h.cancelAsk(ctx, operator, stashed, "too late"); err == nil {
 		t.Fatal("cancelled an ask with a stashed result")
 	}
 }
@@ -112,13 +112,13 @@ func TestOperatorNudgeIsRateLimited(t *testing.T) {
 	r := newDelegateRig(t, alpha, beta)
 	r.h.deliveryTraces = r.store // the ledger, as in the daemon: the limit reads it
 	cid := r.ask(t, alpha, beta, "status?")
-	if _, err := r.h.nudgeAsk(ctx, cid, "any news?"); err != nil {
+	if _, err := r.h.nudgeAsk(ctx, operator, cid, "any news?"); err != nil {
 		t.Fatal(err)
 	}
 	if !hasPrefixed(frameTexts(r.wire.received(beta.PeerID)), "[nudge from the operator: ask #"+cid+" from @alpha, open") {
 		t.Fatalf("beta received %q", frameTexts(r.wire.received(beta.PeerID)))
 	}
-	if _, err := r.h.nudgeAsk(ctx, cid, ""); err == nil || !strings.Contains(err.Error(), "nudged_recently") {
+	if _, err := r.h.nudgeAsk(ctx, operator, cid, ""); err == nil || !strings.Contains(err.Error(), "nudged_recently") {
 		t.Fatalf("second nudge: %v", err)
 	}
 	// A holder whose reply already waits for the asker is not nudged.
@@ -126,7 +126,7 @@ func TestOperatorNudgeIsRateLimited(t *testing.T) {
 	if !r.asks.SetPendingReply(ctx, stashed, "[ack #"+stashed+" from @beta] done", nil, false) {
 		t.Fatal("stash refused")
 	}
-	if _, err := r.h.nudgeAsk(ctx, stashed, ""); err == nil {
+	if _, err := r.h.nudgeAsk(ctx, operator, stashed, ""); err == nil {
 		t.Fatal("nudged a holder whose reply is stashed")
 	}
 }

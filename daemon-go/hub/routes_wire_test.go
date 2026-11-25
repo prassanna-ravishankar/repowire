@@ -79,8 +79,16 @@ func TestWireViewAuthorizationAndEnvelope(t *testing.T) {
 	if res.IsError || !strings.Contains(res.Content[0].Text, "created") || strings.Contains(res.Content[0].Text, "SECRET") {
 		t.Fatalf("orchestrator wire_show: %+v", res)
 	}
+	// The thread was recorded without provenance, so it is protected and
+	// wire_show offers no action. It is not open either, so a nudge fails.
+	if strings.Contains(res.Content[0].Text, "action\targuments") {
+		t.Fatalf("wire_show offered actions on a protected thread: %s", res.Content[0].Text)
+	}
+	if res := call(orch, "nudge", map[string]any{"thread_id": "ask-wire1"}); !res.IsError {
+		t.Fatalf("orchestrator nudge on a protected thread: %+v", res)
+	}
 	for name, headers := range map[string]map[string]string{"agent": agent, "anonymous": nil} {
-		for _, tool := range []string{"wire_query", "wire_show"} {
+		for _, tool := range []string{"wire_query", "wire_show", "reassign", "nudge", "cancel_ask"} {
 			if res := call(headers, tool, map[string]any{"thread_id": "ask-wire1"}); !res.IsError {
 				t.Fatalf("%s %s was answered: %+v", name, tool, res)
 			}

@@ -1,6 +1,6 @@
 # Wire actions: reassign, nudge, cancel
 
-Status: step 1 (no way back, generations), step 2 (operator actions over HTTP and the CLI) and step 3 (provenance and `peer_wire_visibility`, see `wire-observability.md` "Provenance as built") are implemented (2026-11-24). Step 4 is design. The intervention slice of
+Status: implemented. Step 1 (no way back, generations), step 2 (operator actions over HTTP and the CLI) and step 3 (provenance and `peer_wire_visibility`, see `wire-observability.md` "Provenance as built") on 2026-11-24; step 4 (the orchestrator MCP tools, see "Orchestrator authority as built") on 2026-11-25. The intervention slice of
 `wire-observability.md` (section 4), made concrete. It builds on the
 read-only wire view (`service.Wire`) and on `delegate`
 (`hub/routes_ask_delegate.go`, `AskTracker.Delegate`).
@@ -177,6 +177,36 @@ fields.
    `peer_wire_visibility`.
 4. The MCP tools for orchestrators, behind the protected-thread and circle
    rules.
+
+## Orchestrator authority as built
+
+- **One path for both actors.** The HTTP routes and the MCP tools both call
+  `wireAction` (`hub/ask_actions.go`) with an actor: the operator, or the
+  proven orchestrator. The actor decides the sender, the attribution
+  (`by` on the hop, trace and event is the orchestrator's `peer_id`) and
+  the notices' wording; nothing else differs.
+- **The rule lives in the wire view.** `service.Wire.OrchestratorMay`
+  decides from the thread as reduced: an open ask, not protected, every
+  party in the orchestrator's circle both as recorded and as the registry
+  knows it now (a peer can change circle under the same `peer_id`, so
+  either side failing refuses), and for a reassign a destination that is
+  in that circle now, not human or service, and not private. A circle of
+  `""` is a missing one, as at registration, and matches nothing.
+  `AuthorizeOrchestrator` runs it at the moment of the action, under the
+  ask's claim, so a concurrent delegate cannot add a party between the
+  check and the move. The claim does not cover the registry: a circle,
+  role or visibility change can still land after the check.
+- **The acting orchestrator is a recorded party.** A reassign's stage
+  records the new holder and the orchestrator, so the thread carries the
+  circle it passed through. It is not among the thread's live parties, so
+  only its recorded circle and visibility count. Nudge and cancel add no
+  party. The operator is not a peer and records nothing.
+- **`wire_show`** ends with an `action`/`arguments` table, each row the
+  tool name and its arguments encoded as JSON, only when `OrchestratorMay`
+  admits the caller.
+- **Not done:** keying visibility by a durable identity rather than
+  `peer_id` (a resumed session under a new `peer_id` sets it again), and a
+  version on the recorded provenance. Neither changes a decision today.
 
 ## Decisions and open questions
 

@@ -156,11 +156,11 @@ func TestMCPToolsList(t *testing.T) {
 
 	want := map[string]bool{}
 	for _, name := range []string{
-		"ack", "answer", "ask", "ask_many", "ask_many_result", "broadcast", "decline", "delegate",
+		"ack", "answer", "ask", "ask_many", "ask_many_result", "broadcast", "cancel_ask", "decline", "delegate",
 		"job_cancel", "job_create", "job_list",
 		"job_result", "job_show", "job_status", "job_update", "kill_peer",
 		"list_messages", "list_peers", "mark_reviewed", "notify_peer", "orchestrator_status",
-		"read_message", "restart_peer", "review_queue", "revoke_share", "schedule_create", "schedule_cron",
+		"nudge", "read_message", "reassign", "restart_peer", "review_queue", "revoke_share", "schedule_create", "schedule_cron",
 		"schedule_delete", "schedule_list", "schedule_self", "set_description", "set_message_delivery", "set_name", "set_wire_visibility",
 		"share_session", "spawn_peer", "wait_on_ack", "whoami", "wire_query", "wire_show",
 	} {
