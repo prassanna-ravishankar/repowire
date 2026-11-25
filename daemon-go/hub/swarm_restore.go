@@ -370,7 +370,10 @@ func (p *issuedPlans) issue(plan SwarmPlan) string {
 }
 
 // consume accepts one placement: an unexpired plan, a launch slot for peer
-// not used before, and a pane in the slot's session and window.
+// not used before, and a pane in the slot's session and window. The window
+// is matched by name, which tmux does not keep unique within a session; that
+// is safe because the CLI only restores into sessions it creates itself (it
+// refuses any that exist), so every window it names was made by this plan.
 func (p *issuedPlans) consume(planID string, peer proto.PeerID, ev *service.TmuxPaneEvidence) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
