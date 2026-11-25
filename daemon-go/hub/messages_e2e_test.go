@@ -276,7 +276,7 @@ func TestMessageHTTPRoutes(t *testing.T) {
 	if status := getJSON(http.MethodPost, srv.URL+"/peers/"+string(name)+"/message-delivery", map[string]any{"mode": "sideways"}, nil); status != http.StatusUnprocessableEntity {
 		t.Fatalf("bad mode: %d", status)
 	}
-	if status := getJSON(http.MethodPost, srv.URL+"/peers/"+string(name)+"/message-delivery", map[string]any{"mode": "pull"}, nil); status != http.StatusOK || messages.Mode(ctx, id) != "pull" {
+	if status := getJSON(http.MethodPost, srv.URL+"/peers/"+string(name)+"/message-delivery", map[string]any{"mode": "pull"}, nil); status != http.StatusOK || messages.Mode(ctx, &proto.Peer{PeerID: id}) != "pull" {
 		t.Fatalf("set pull: %d", status)
 	}
 }

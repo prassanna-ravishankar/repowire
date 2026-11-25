@@ -77,21 +77,34 @@ func ValidMessageDelivery(mode string) bool {
 // NewNotifyDeliveryID mints a notify's delivery id, which is also its trace id.
 func NewNotifyDeliveryID() string { return "notif-delivery-" + uuid.NewString()[:8] }
 
-// Mode is id's delivery mode: the one the peer chose, else the default.
-func (m *Messages) Mode(ctx context.Context, id proto.PeerID) string {
-	if m == nil {
+// Mode is p's delivery mode: the one p chose, else the daemon default for a
+// peer that can follow a nudge (an agent or orchestrator calls read_message).
+// A peer that cannot, such as a service bridge, is pushed unless it chose
+// pull itself.
+func (m *Messages) Mode(ctx context.Context, p *proto.Peer) string {
+	if m == nil || p == nil {
 		return MessageDeliveryPush
+	}
+	fallback := MessageDeliveryPush
+	if canPull(p.Role) {
+		fallback = m.defaultMode
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if err := m.loadModesLocked(ctx); err != nil {
 		log.Printf("messages: load delivery modes: %v", err)
-		return m.defaultMode
+		return fallback
 	}
-	if mode := m.modes[id]; ValidMessageDelivery(mode) {
+	if mode := m.modes[p.PeerID]; ValidMessageDelivery(mode) {
 		return mode
 	}
-	return m.defaultMode
+	return fallback
+}
+
+// canPull reports whether a peer of role reads its own messages by id. An
+// unset role is a pre-role agent.
+func canPull(role proto.PeerRole) bool {
+	return role == "" || role == proto.RoleAgent || role == proto.RoleOrchestrator
 }
 
 // SetMode records id's delivery mode, push or pull. The write and the cache
@@ -175,10 +188,10 @@ func (m *Messages) Discard(ctx context.Context, msg *state.PeerMessage) {
 	}
 }
 
-// wireText is what goes on the wire for msg: the body, or for a pull
-// recipient a nudge naming the message. pull reports which.
-func (m *Messages) wireText(ctx context.Context, msg *state.PeerMessage, body string) (text string, pull bool) {
-	if msg == nil || m.Mode(ctx, proto.PeerID(msg.PeerID)) != MessageDeliveryPull {
+// wireText is what goes on the wire for msg: the body, or when pull a nudge
+// naming the message. It reports whether it nudged.
+func wireText(msg *state.PeerMessage, body string, pull bool) (string, bool) {
+	if msg == nil || !pull {
 		return body, false
 	}
 	return Nudge(msg), true

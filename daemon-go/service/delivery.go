@@ -127,6 +127,16 @@ func (d *PeerDelivery) WithMessages(messages *Messages) *PeerDelivery {
 	return d
 }
 
+// MessageMode is how messages reach p: its Messages mode, except that a peer
+// whose transport gives it no read_message is always pushed. An ACP session
+// is started without MCP tools, so it could not fetch a nudged body.
+func (d *PeerDelivery) MessageMode(ctx context.Context, p *proto.Peer) string {
+	if decision, ok := d.transport.ACPRoute(p); ok && decision != nil {
+		return MessageDeliveryPush
+	}
+	return d.messages.Mode(ctx, p)
+}
+
 func (d *PeerDelivery) WithOrchestratorRecall(settings config.OrchestratorRecallConfig) *PeerDelivery {
 	d.recall = settings
 	return d
@@ -310,7 +320,9 @@ func (d *PeerDelivery) Notify(ctx context.Context, params NotifyParams) (_ Notif
 		}
 	}()
 	var pull bool
-	params.Text, pull = d.messages.wireText(ctx, msg, params.Text)
+	// The spawn seed starts the session, before the peer could choose a mode
+	// or act on a nudge: it is always pushed.
+	params.Text, pull = wireText(msg, params.Text, !params.SkipSeedGate && d.MessageMode(ctx, target) == MessageDeliveryPull)
 	if pull {
 		params.Attachments = nil
 	}
@@ -590,7 +602,7 @@ func (d *PeerDelivery) DeliverAsk(ctx context.Context, params DeliverAskParams) 
 		}
 	}()
 	var pull bool
-	params.Text, pull = d.messages.wireText(ctx, msg, params.Text)
+	params.Text, pull = wireText(msg, params.Text, d.MessageMode(ctx, target) == MessageDeliveryPull)
 	if pull {
 		params.Attachments = nil
 	}

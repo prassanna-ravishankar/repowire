@@ -149,6 +149,15 @@ func (h *Hub) messagePeer(identifier string) (*proto.Peer, error) {
 	return p, nil
 }
 
+// messageMode is p's delivery mode as delivery applies it (ACP sessions are
+// pushed), or the recorded mode when delivery is not wired.
+func (h *Hub) messageMode(ctx context.Context, p *proto.Peer) string {
+	if h.ask != nil && h.ask.delivery != nil {
+		return h.ask.delivery.MessageMode(ctx, p)
+	}
+	return h.messages.Mode(ctx, p)
+}
+
 // listMessages is the typed list operation shared by HTTP and MCP callers.
 func (h *Hub) listMessages(ctx context.Context, identifier string, unreadOnly bool, limit int) (MessageListResponse, error) {
 	if err := h.messagesReady(); err != nil {
@@ -162,7 +171,7 @@ func (h *Hub) listMessages(ctx context.Context, identifier string, unreadOnly bo
 	if err != nil {
 		return MessageListResponse{}, routeErr(http.StatusInternalServerError, err.Error())
 	}
-	out := MessageListResponse{Peer: string(p.DisplayName), PeerID: string(p.PeerID), Delivery: h.messages.Mode(ctx, p.PeerID), Messages: make([]MessageView, 0, len(msgs))}
+	out := MessageListResponse{Peer: string(p.DisplayName), PeerID: string(p.PeerID), Delivery: h.messageMode(ctx, p), Messages: make([]MessageView, 0, len(msgs))}
 	for i := range msgs {
 		out.Messages = append(out.Messages, h.messageView(&msgs[i], false))
 	}

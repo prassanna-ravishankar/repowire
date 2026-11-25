@@ -39,7 +39,7 @@ func TestMessageDeliveryModeIsDurable(t *testing.T) {
 	ctx := context.Background()
 	store := newMessageStore(t)
 	m := NewMessages(store)
-	if got := m.Mode(ctx, "repow-b"); got != MessageDeliveryPush {
+	if got := m.Mode(ctx, agentPeer("repow-b")); got != MessageDeliveryPush {
 		t.Fatalf("default mode = %q", got)
 	}
 	if err := m.SetMode(ctx, "repow-b", "sideways"); err == nil {
@@ -48,15 +48,15 @@ func TestMessageDeliveryModeIsDurable(t *testing.T) {
 	if err := m.SetMode(ctx, "repow-b", MessageDeliveryPull); err != nil {
 		t.Fatal(err)
 	}
-	if got := m.Mode(ctx, "repow-b"); got != MessageDeliveryPull {
+	if got := m.Mode(ctx, agentPeer("repow-b")); got != MessageDeliveryPull {
 		t.Fatalf("mode after set = %q", got)
 	}
 	// A restart builds a fresh Messages over the same store.
-	if got := NewMessages(store).Mode(ctx, "repow-b"); got != MessageDeliveryPull {
+	if got := NewMessages(store).Mode(ctx, agentPeer("repow-b")); got != MessageDeliveryPull {
 		t.Fatalf("mode after restart = %q", got)
 	}
 	var nilMessages *Messages
-	if got := nilMessages.Mode(ctx, "repow-b"); got != MessageDeliveryPush {
+	if got := nilMessages.Mode(ctx, agentPeer("repow-b")); got != MessageDeliveryPush {
 		t.Fatalf("nil Messages mode = %q", got)
 	}
 }
@@ -209,7 +209,7 @@ func TestConcurrentModeChangesKeepCacheAndStoreAgreed(t *testing.T) {
 		}(i)
 	}
 	wg.Wait()
-	if live, restarted := m.Mode(ctx, "repow-b"), NewMessages(store).Mode(ctx, "repow-b"); live != restarted {
+	if live, restarted := m.Mode(ctx, agentPeer("repow-b")), NewMessages(store).Mode(ctx, agentPeer("repow-b")); live != restarted {
 		t.Fatalf("cache says %s, store says %s", live, restarted)
 	}
 }
@@ -220,21 +220,26 @@ func TestDefaultModeAppliesUntilAPeerChooses(t *testing.T) {
 	ctx := context.Background()
 	store := newMessageStore(t)
 	m := NewMessages(store).WithDefaultMode(MessageDeliveryPull)
-	if got := m.Mode(ctx, "repow-new"); got != MessageDeliveryPull {
+	if got := m.Mode(ctx, agentPeer("repow-new")); got != MessageDeliveryPull {
 		t.Fatalf("unchosen mode under a pull default = %q", got)
 	}
 	if err := m.SetMode(ctx, "repow-push", MessageDeliveryPush); err != nil {
 		t.Fatal(err)
 	}
-	if got := m.Mode(ctx, "repow-push"); got != MessageDeliveryPush {
+	if got := m.Mode(ctx, agentPeer("repow-push")); got != MessageDeliveryPush {
 		t.Fatalf("a peer that chose push = %q", got)
 	}
-	if got := NewMessages(store).WithDefaultMode(MessageDeliveryPull).Mode(ctx, "repow-push"); got != MessageDeliveryPush {
+	if got := NewMessages(store).WithDefaultMode(MessageDeliveryPull).Mode(ctx, agentPeer("repow-push")); got != MessageDeliveryPush {
 		t.Fatalf("a chosen push after restart = %q", got)
 	}
-	if got := NewMessages(store).WithDefaultMode("sideways").Mode(ctx, "repow-new"); got != MessageDeliveryPush {
+	if got := NewMessages(store).WithDefaultMode("sideways").Mode(ctx, agentPeer("repow-new")); got != MessageDeliveryPush {
 		t.Fatalf("an unknown default = %q", got)
 	}
+}
+
+// agentPeer is an agent-role recipient, which can follow a nudge.
+func agentPeer(id proto.PeerID) *proto.Peer {
+	return &proto.Peer{PeerID: id, Role: proto.RoleAgent}
 }
 
 func TestPullDefaultNudgesAPeerThatNeverChose(t *testing.T) {
@@ -252,5 +257,75 @@ func TestPullDefaultNudgesAPeerThatNeverChose(t *testing.T) {
 	text, _ := f.lastFrame.(map[string]any)["text"].(string)
 	if !strings.HasPrefix(text, "[message "+res.MessageID+": notify from @alpha") || strings.Contains(text, "the detail") {
 		t.Fatalf("frame text under a pull default = %q", text)
+	}
+}
+
+// The pull default covers only peers that can follow a nudge, and never the
+// spawn seed: a service bridge cannot call read_message, and the seed is the
+// task that starts a session that has not chosen anything yet.
+func TestPullDefaultPushesTheSeedAndPeersThatCannotPull(t *testing.T) {
+	ctx := context.Background()
+	alpha := peerWith("repow-default-aaaa", "alpha", "default", proto.StatusOnline)
+	beta := peerWith("repow-default-bbbb", "beta", "default", proto.StatusOnline)
+	bot := peerWith("repow-default-cccc", "bot", "default", proto.StatusOnline)
+	bot.Role = proto.RoleService
+	f := &fakeTransport{ackFrame: map[string]any{"status": "accepted"}}
+	d, messages, _ := deliveryWithMessages(t, f, nil, alpha, beta, bot)
+	messages.WithDefaultMode(MessageDeliveryPull)
+	body := "do the task\nwith the detail on line two"
+	sent := func(params NotifyParams) string {
+		t.Helper()
+		if _, err := d.Notify(ctx, params); err != nil {
+			t.Fatal(err)
+		}
+		text, _ := f.lastFrame.(map[string]any)["text"].(string)
+		return text
+	}
+
+	if text := sent(NotifyParams{FromPeer: "alpha", ToPeer: "beta", Text: body, BypassCircle: true, SkipSeedGate: true}); text != body {
+		t.Fatalf("seed under a pull default = %q", text)
+	}
+	if text := sent(NotifyParams{FromPeer: "alpha", ToPeer: "bot", Text: body}); text != body {
+		t.Fatalf("service peer under a pull default = %q", text)
+	}
+	if text := sent(NotifyParams{FromPeer: "alpha", ToPeer: "beta", Text: body}); !strings.HasPrefix(text, "[message ") || strings.Contains(text, "line two") {
+		t.Fatalf("agent under a pull default = %q", text)
+	}
+	if got := messages.Mode(ctx, bot); got != MessageDeliveryPush {
+		t.Fatalf("service peer's reported mode = %q", got)
+	}
+	// A service peer's own choice still wins.
+	if err := messages.SetMode(ctx, bot.PeerID, MessageDeliveryPull); err != nil {
+		t.Fatal(err)
+	}
+	if got := messages.Mode(ctx, bot); got != MessageDeliveryPull {
+		t.Fatalf("service peer that chose pull = %q", got)
+	}
+}
+
+// acpTransport routes every peer over ACP.
+type acpTransport struct{ *fakeTransport }
+
+func (acpTransport) ACPRoute(p *proto.Peer) (*ACPRouteDecision, bool) {
+	return &ACPRouteDecision{PeerID: p.PeerID}, true
+}
+
+// An ACP session is started without MCP tools, so it has no read_message:
+// it is pushed whatever the default or its recorded mode.
+func TestACPRecipientIsAlwaysPushed(t *testing.T) {
+	ctx := context.Background()
+	beta := peerWith("repow-default-bbbb", "beta", "default", proto.StatusOnline)
+	messages := NewMessages(newMessageStore(t)).WithDefaultMode(MessageDeliveryPull)
+	if err := messages.SetMode(ctx, beta.PeerID, MessageDeliveryPull); err != nil {
+		t.Fatal(err)
+	}
+	f := &fakeTransport{}
+	acp := NewPeerDelivery(&fakeRegistry{peers: []*proto.Peer{beta}}, newRouterWithFake(f), acpTransport{f}, NewAskTracker(0), nil).WithMessages(messages)
+	if got := acp.MessageMode(ctx, beta); got != MessageDeliveryPush {
+		t.Fatalf("ACP recipient's mode = %q", got)
+	}
+	ws := NewPeerDelivery(&fakeRegistry{peers: []*proto.Peer{beta}}, newRouterWithFake(f), f, NewAskTracker(0), nil).WithMessages(messages)
+	if got := ws.MessageMode(ctx, beta); got != MessageDeliveryPull {
+		t.Fatalf("WS recipient's mode = %q", got)
 	}
 }

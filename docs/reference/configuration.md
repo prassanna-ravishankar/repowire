@@ -150,11 +150,14 @@ killing it would destroy the window before tmux could place its replacement.
 
 ## `daemon.message_delivery`
 
-The delivery mode of every agent peer that has not chosen one with
-`set_message_delivery`: `push` (the default) puts each message body in the
+The delivery mode of every agent and orchestrator peer that has not chosen one
+with `set_message_delivery`: `push` (the default) puts each message body in the
 peer's session, `pull` sends a one-line nudge naming the message instead. A
 peer's own choice, `push` included, always wins over this default, and changing
-the default applies to every peer that never chose. An unknown value keeps
+the default applies to every peer that never chose. Service peers (bots and
+bridges, which cannot call `read_message`) are pushed unless they chose pull.
+ACP sessions, which have no `read_message`, and a spawned peer's opening
+message are always pushed. An unknown value keeps
 `push` and logs a warning. Environment: `REPOWIRE_DAEMON__MESSAGE_DELIVERY`.
 
 ## `daemon.mcp_http`
