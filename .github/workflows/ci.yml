@@ -47,6 +47,23 @@ jobs:
       - run: npm test -- --run
       - run: npm run build
 
+  # The experimental channel's client (embedded in the binary by cli/install.go):
+  # its tests and a strict typecheck of the shipped sources.
+  channel:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: daemon-go/cli/assets/channel
+    steps:
+      - uses: actions/checkout@v5
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.3.3"
+      - run: bun install --frozen-lockfile
+      - run: bun test
+      - name: Typecheck
+        run: bunx tsc --noEmit --strict --module esnext --moduleResolution bundler --target es2022 --types node --skipLibCheck server.ts daemon-session.ts
+
   image:
     runs-on: ubuntu-latest
     steps:
