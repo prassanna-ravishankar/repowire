@@ -36,7 +36,9 @@ const (
 	// InitiatorAgent: another agent spawned it (Codex threadSource "subagent").
 	InitiatorAgent PeerInitiator = "agent"
 	// InitiatorSystem: runtime machinery (Codex threadSource "system", e.g.
-	// helper threads the desktop app spins up). Hidden from the default view.
+	// helper threads the desktop app spins up). The codex bridge no longer
+	// registers such threads (codexbridge meshThread); the value stays valid
+	// for records older bridges wrote, which the default view hides.
 	InitiatorSystem PeerInitiator = "system"
 )
 

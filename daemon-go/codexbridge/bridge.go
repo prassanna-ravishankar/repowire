@@ -54,7 +54,10 @@ type Bridge struct {
 	threadsMu sync.Mutex
 	threads   map[string]*threadPeer
 	// closed tracks threads whose peer an operator closed (#530); guarded by threadsMu.
-	closed     map[string]tombstone
+	closed map[string]tombstone
+	// internal holds the runtime's own helper threads (see meshThread), so
+	// their status changes are not read again; guarded by threadsMu.
+	internal   map[string]bool
 	hintMu     sync.Mutex
 	daemonHTTP string
 	daemonWS   string
@@ -341,7 +344,7 @@ func (b *Bridge) loadExistingThreads(ctx context.Context) error {
 }
 
 func (b *Bridge) loadThread(ctx context.Context, id string, fresh bool) error {
-	if id == "" || b.thread(id) != nil {
+	if id == "" || b.thread(id) != nil || b.isInternal(id) {
 		return nil
 	}
 	threadRaw, err := b.call(ctx, "thread/read", map[string]any{"threadId": id})
@@ -404,7 +407,15 @@ func (b *Bridge) handleNotification(method string, params map[string]any) {
 func (b *Bridge) captureCompletedTurn(threadID string) {
 	ctx, cancel := context.WithTimeout(b.ctx, 5*time.Second)
 	defer cancel()
-	raw, err := b.call(ctx, "thread/read", map[string]any{"threadId": threadID, "includeTurns": true})
+	// The App Server keeps no turns for an ephemeral thread and refuses
+	// includeTurns (-32600); its turns arrive only as turn/completed.
+	ephemeral := false
+	if p := b.thread(threadID); p != nil {
+		p.mu.Lock()
+		ephemeral = p.provenance.Ephemeral
+		p.mu.Unlock()
+	}
+	raw, err := b.call(ctx, "thread/read", map[string]any{"threadId": threadID, "includeTurns": !ephemeral})
 	if err != nil {
 		log.Printf("codex bridge: reconcile completed turn for %s: %v", threadID, err)
 		return
@@ -461,6 +472,19 @@ func (b *Bridge) ensureThread(thread map[string]any) { b.addThread(thread, false
 func (b *Bridge) addThread(thread map[string]any, fresh bool) {
 	id, cwd := stringValue(thread, "id"), stringValue(thread, "cwd")
 	if id == "" || cwd == "" {
+		return
+	}
+	if !meshThread(thread) {
+		b.threadsMu.Lock()
+		first := !b.internal[id]
+		if b.internal == nil {
+			b.internal = map[string]bool{}
+		}
+		b.internal[id] = true
+		b.threadsMu.Unlock()
+		if first {
+			log.Printf("codex bridge: not registering %s: threadSource %q is the runtime's own", id, stringValue(thread, "threadSource"))
+		}
 		return
 	}
 	b.threadsMu.Lock()
@@ -537,6 +561,27 @@ func activeTurn(thread map[string]any) string {
 		}
 	}
 	return ""
+}
+
+func (b *Bridge) isInternal(id string) bool {
+	b.threadsMu.Lock()
+	defer b.threadsMu.Unlock()
+	return b.internal[id]
+}
+
+// meshThread reports whether a thread is a conversation the mesh may
+// register as a peer: one a person opened (threadSource "user") or an agent
+// spawned ("subagent"). Any other source is the runtime's own machinery (the
+// TUI's "thread_title" namer, the desktop app's "system" helpers, and
+// whatever a client names at thread/start); registering those minted
+// '<name>-2-codex' phantoms (#465, #475). A payload without threadSource,
+// from a runtime that predates it, counts as a conversation.
+func meshThread(thread map[string]any) bool {
+	switch stringValue(thread, "threadSource") {
+	case "", "user", "subagent":
+		return true
+	}
+	return false
 }
 
 func (b *Bridge) thread(id string) *threadPeer {
@@ -657,6 +702,7 @@ func (b *Bridge) closeThread(id string) {
 	b.threadsMu.Lock()
 	p := b.threads[id]
 	delete(b.threads, id)
+	delete(b.internal, id)
 	b.threadsMu.Unlock()
 	if p != nil {
 		p.cancel()

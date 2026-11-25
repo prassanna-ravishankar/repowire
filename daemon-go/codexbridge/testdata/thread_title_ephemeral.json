@@ -1,0 +1,15 @@
+{
+ "agentNickname": null,
+ "canAcceptDirectInput": true,
+ "cliVersion": "0.165.0",
+ "cwd": "/home/dev/projects/repowire",
+ "ephemeral": true,
+ "id": "01a213a9-1bdc-7a73-ae5b-e15b01ee1114",
+ "model": "gpt-5.6-luna",
+ "name": null,
+ "parentThreadId": null,
+ "preview": "",
+ "source": "vscode",
+ "status": {"type": "idle"},
+ "threadSource": "thread_title"
+}
