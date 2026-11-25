@@ -1261,8 +1261,13 @@ func (r *Registry) reclaimByTupleLocked(ctx context.Context, params AllocatePara
 			mappingPath = *m.Path
 		}
 		// A retired mapping is passed over before any process or session probe.
-		why := "retired"
-		if !claimMatchesIdentity(m.Backend, mappingPath, params.Backend, claimPath) || !r.isRetiredLocked(id) {
+		var why string
+		switch {
+		case !claimMatchesIdentity(m.Backend, mappingPath, params.Backend, claimPath):
+			why = "backend_or_path_mismatch"
+		case r.isRetiredLocked(id):
+			why = "retired"
+		default:
 			why = r.tupleRejectionLocked(ctx, params, id, m.Backend, mappingPath, claimPath)
 		}
 		if why != "" {
@@ -1912,19 +1917,27 @@ func (r *Registry) unretireLocked(ctx context.Context, id proto.PeerID) {
 // --- event/contradiction helpers ---
 
 func (r *Registry) appendEvent(ctx context.Context, e Event) {
-	if e.EventID == "" {
-		e.EventID = uuid.NewString()
-	}
-	if err := r.store.AppendEvent(ctx, e); err != nil {
-		// Fail loud: durable audit history is lost on error. Still mirror to the
-		// in-memory window (the live read surface) so the dashboard isn't blinded.
-		log.Printf("repowire: append event %q for %s failed: %v", e.Type, e.PeerID, err)
-	}
+	e = r.journal(ctx, e)
 	// Mirror the durable journal row into the in-memory dashboard window so a
 	// GET /events caller (and the SSE catch-up) sees lifecycle events alongside
 	// the route-emitted chat_turn/query/response events. The buffer is the live
 	// read surface; the store is the durable one.
 	r.evlog.appendStructured(e)
+}
+
+// journal writes e to the durable journal only, not the live window: for an
+// audit record the dashboard does not show (registration_decision).
+func (r *Registry) journal(ctx context.Context, e Event) Event {
+	if e.EventID == "" {
+		e.EventID = uuid.NewString()
+	}
+	if err := r.store.AppendEvent(ctx, e); err != nil {
+		// Fail loud: durable audit history is lost on error. appendEvent still
+		// mirrors to the in-memory window (the live read surface) so the
+		// dashboard isn't blinded.
+		log.Printf("repowire: append event %q for %s failed: %v", e.Type, e.PeerID, err)
+	}
+	return e
 }
 
 // emitContradiction records a fail-loud peer_contradiction when an illegal

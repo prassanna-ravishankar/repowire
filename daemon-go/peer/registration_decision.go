@@ -162,11 +162,15 @@ func (r *Registry) finishDecisionLocked(ctx context.Context, id proto.PeerID, na
 		}
 		payload["selected"] = selected
 	}
-	r.appendEvent(ctx, ev)
+	// An audit record for offline replay: the journal only, never the live
+	// window or its stream, where a restart would double every lifecycle line
+	// and push older events out.
+	r.journal(ctx, ev)
 }
 
-// pathKey is a stable opaque key for a workspace path, for analysis that
-// must not carry the path itself; null without a path.
+// pathKey is a stable opaque key for a workspace path. The local journal
+// keeps the raw path next to it; an export for analysis keeps the key and
+// drops the path. Null without a path.
 func pathKey(path string) any {
 	if path == "" {
 		return nil

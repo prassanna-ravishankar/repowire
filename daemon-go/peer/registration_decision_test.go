@@ -93,6 +93,13 @@ func TestRegistrationDecisionRecordsEvidenceAndTheSelectingStep(t *testing.T) {
 	wantNote(t, d, stepSessionBinding, "skipped", "", "session_not_bound")
 	wantNote(t, d, stepNameTuple, "skipped", "", "no_candidate")
 
+	// The record is for the journal, not the live window and its stream.
+	for _, e := range h.r.GetEvents() {
+		if e["type"] == "registration_decision" {
+			t.Fatalf("registration_decision reached the live window: %v", e)
+		}
+	}
+
 	// peer_online names the decision it came from.
 	online := eventsOfType(h.store, "peer_online")
 	last := online[len(online)-1].Payload

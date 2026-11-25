@@ -88,7 +88,7 @@ Every registration journals one `registration_decision` event, whether it went t
   - On success, `selected` gives the `peer_id`, `display_name` and `circle`, and the `step` that chose the id.
   - On refusal, `error` gives the reason, and the event is filed under the claimed id.
 
-The `peer_online` event a registration writes carries the same `run_id` and `decision_seq`. The record never holds birth-certificate nonces, tokens, metadata or message bodies. Like other journal rows, it is kept for `retention.records_days`.
+The `peer_online` event a registration writes carries the same `run_id` and `decision_seq`. The record never holds birth-certificate nonces, tokens, metadata or message bodies. It goes to the journal only, not to the dashboard's live feed. Like other journal rows, it is kept for `retention.records_days`. The journal is local and keeps the raw `path`; an export for analysis should keep `path_key` and drop `path`.
 
 ## Linking an orphan pane (link vs spawn)
 
