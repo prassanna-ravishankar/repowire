@@ -359,12 +359,13 @@ func runDaemon() {
 	// queue seam). The router (WS-only) is the one the hub minted in step 5.
 	asks := service.NewAskTracker(time.Duration(cfg.Daemon.PruneMaxAgeHours * float64(time.Hour)))
 	// Retention (rfcs/retention.md): the store sweeps its tables, attachment
-	// files plug in as a pass, and the sweep is journaled through the
+	// files plug in as a pass that keeps the files the store's messages
+	// still name, and the sweep is journaled through the
 	// registry; nothing younger than an open ask expires.
 	content, records := cfg.Retention.Durations()
 	retention := state.RetentionPolicy{Content: content, Records: records, AskLife: asks.TTL()}
-	h.WithRetention(retention)
-	if err := store.StartRetention(retention, state.RetentionPlugs{Passes: []func(context.Context, state.RetentionPolicy, time.Time) map[string]int{hub.ExpireAttachments}, Emit: reg.AddEvent}); err != nil {
+	h.WithRetention(retention, store)
+	if err := store.StartRetention(retention, state.RetentionPlugs{Passes: []func(context.Context, state.RetentionPolicy, time.Time) map[string]int{h.ExpireAttachments}, Emit: reg.AddEvent}); err != nil {
 		log.Printf("retention: %v", err)
 	}
 	messages := service.NewMessages(store)

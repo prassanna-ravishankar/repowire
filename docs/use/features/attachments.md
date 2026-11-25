@@ -40,7 +40,7 @@ Attachment metadata is carried with asks, notifications, and dashboard events; a
 ## Limits
 
 - Uploads are limited to 10 MB.
-- Attachments are kept for `retention.content_days` (7 days by default), as long as the messages that name them.
+- An attachment is kept while a stored message still names it (an agent's message, the human's inbox item, or a queued delivery), and that message's content lasts `retention.content_days` (7 days by default). A file uploaded long ago and attached to a new ask therefore lasts as long as the new ask. A file no message names is removed `content_days` after its upload. Dashboard events keep an attachment's metadata after its file goes, so an old event's preview can 404.
 - Repowire passes paths to agents; it does not force a runtime to inspect the file.
 - Slack file relay is not part of the current Slack surface.
 - Through the hosted relay, upload payloads tunnel back to the local daemon before the target agent sees the path.

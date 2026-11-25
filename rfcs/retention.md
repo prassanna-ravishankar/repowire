@@ -67,9 +67,14 @@ Each piece lives with what it expires, so its lifecycle has one owner.
   rule, in batches of 500 rows.
 - **Plugs:** what the store does not hold plugs into the same sweep
   (`RetentionPlugs`). The attachment routes, which own the directory,
-  provide `hub.ExpireAttachments` as a pass; the registry provides `Emit`,
+  provide `Hub.ExpireAttachments` as a pass; the registry provides `Emit`,
   so `retention_swept` reaches the journal and live subscribers like any
-  other event.
+  other event. A file's life runs from its latest reference, not its
+  upload (#573): the pass runs after the tables and keeps any file a stored
+  message (`peer_messages`, `inbox_items`, `queued_deliveries`) still names
+  by id or path (`Store.AttachmentReferences`). A file nothing names goes
+  once its mtime passes the content cutoff. If the lookup fails, every file
+  is kept.
 - **Open asks:** the policy. An open ask still reads its peer message,
   inbox item, refs, attachments and trace, so `RetentionPolicy` never lets
   either class expire anything younger than the ask lifetime

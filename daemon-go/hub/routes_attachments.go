@@ -10,12 +10,14 @@ package hub
 // Files live under ~/.repowire/attachments. Limits (matching Python): 10MB per
 // file (413), 200MB total directory cap (507), and expiry with other content
 // under the retention policy (ExpireAttachments, a pass of the store's
-// sweep).
+// sweep): a file lives while a stored message still names it, and a
+// content lifetime past its upload otherwise.
 
 import (
 	"context"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -92,8 +94,12 @@ func (h *Hub) uploadAttachment(w http.ResponseWriter, r *http.Request) {
 	// The store's sweep expires files hourly; an upload that would hit the
 	// cap clears expired files itself rather than wait for it.
 	used := attachmentDirSize(dir)
-	if used+max(header.Size, 0) > maxAttachmentDirSize && expireAttachments(dir, h.attachmentRetention.ContentCutoff(time.Now())) > 0 {
-		used = attachmentDirSize(dir)
+	if used+max(header.Size, 0) > maxAttachmentDirSize {
+		if n, err := expireAttachments(r.Context(), dir, h.attachmentRetention.ContentCutoff(time.Now()), h.attachmentRefs); err != nil {
+			log.Printf("attachments: kept every file at the cap: %v", err)
+		} else if n > 0 {
+			used = attachmentDirSize(dir)
+		}
 	}
 	if used >= maxAttachmentDirSize {
 		writeError(w, http.StatusInsufficientStorage,
@@ -198,37 +204,74 @@ func (h *Hub) getAttachment(w http.ResponseWriter, r *http.Request) {
 	writeError(w, http.StatusNotFound, "Attachment not found")
 }
 
+// attachmentReferrer lists the attachments stored messages still carry
+// (state.Store.AttachmentReferences).
+type attachmentReferrer interface {
+	AttachmentReferences(ctx context.Context) ([]state.AttachmentRef, error)
+}
+
 // WithRetention gives the attachment routes the retention policy, so an
-// upload that would hit the directory cap can expire files first.
-func (h *Hub) WithRetention(p state.RetentionPolicy) *Hub {
-	h.attachmentRetention = p
+// upload that would hit the directory cap can expire files first, and
+// where the files' references live. A nil refs means no message holds one.
+func (h *Hub) WithRetention(p state.RetentionPolicy, refs attachmentReferrer) *Hub {
+	h.attachmentRetention, h.attachmentRefs = p, refs
 	return h
 }
 
 // ExpireAttachments is the attachment files' retention pass, plugged into
-// the store's sweep (state.RetentionPlugs): it removes files modified before
-// the policy's content cutoff, which is never younger than an ask may stay
-// open. Best-effort.
-func ExpireAttachments(_ context.Context, p state.RetentionPolicy, now time.Time) map[string]int {
-	return map[string]int{"attachments.delete": expireAttachments(AttachmentsDir(), p.ContentCutoff(now))}
+// the store's sweep (state.RetentionPlugs). It runs after the tables, so the
+// references it reads are the content the sweep kept. Best-effort.
+func (h *Hub) ExpireAttachments(ctx context.Context, p state.RetentionPolicy, now time.Time) map[string]int {
+	n, err := expireAttachments(ctx, AttachmentsDir(), p.ContentCutoff(now), h.attachmentRefs)
+	if err != nil {
+		log.Printf("retention: kept every attachment: %v", err)
+	}
+	return map[string]int{"attachments.delete": n}
 }
 
-// expireAttachments removes regular files in dir modified before cutoff; a
-// zero cutoff keeps everything.
-func expireAttachments(dir string, cutoff time.Time) int {
+// expireAttachments removes regular files in dir modified before cutoff
+// that no stored message names. A file lives as long as the content that
+// references it, so one uploaded long ago and attached to a new ask lasts
+// as long as that ask's message (#573); a file nothing names goes a content
+// lifetime after its upload. A zero cutoff keeps everything, and so does a
+// failed lookup of the references. The references are read once, before
+// the removals: a file already past the cutoff that a send names in that
+// window, a few milliseconds, can still go. Closing it would mean holding
+// every send path behind the sweep, which costs more than the window.
+func expireAttachments(ctx context.Context, dir string, cutoff time.Time, refs attachmentReferrer) (int, error) {
 	if cutoff.IsZero() {
-		return 0
+		return 0, nil
 	}
 	entries, err := os.ReadDir(dir)
 	if err != nil {
-		return 0
+		return 0, nil
+	}
+	named := map[string]bool{}
+	if refs != nil {
+		list, err := refs.AttachmentReferences(ctx)
+		if err != nil {
+			return 0, err
+		}
+		for _, r := range list {
+			// An upload's id is its file's stem; its path ends in the file.
+			if r.ID != "" {
+				named[r.ID] = true
+			}
+			if r.Path != "" {
+				named[filepath.Base(r.Path)] = true
+			}
+		}
 	}
 	n := 0
 	for _, e := range entries {
+		name := e.Name()
+		if named[name] || named[strings.TrimSuffix(name, filepath.Ext(name))] {
+			continue
+		}
 		info, err := e.Info()
-		if err == nil && info.Mode().IsRegular() && info.ModTime().Before(cutoff) && os.Remove(filepath.Join(dir, e.Name())) == nil {
+		if err == nil && info.Mode().IsRegular() && info.ModTime().Before(cutoff) && os.Remove(filepath.Join(dir, name)) == nil {
 			n++
 		}
 	}
-	return n
+	return n, nil
 }

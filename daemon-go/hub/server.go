@@ -57,6 +57,9 @@ type Hub struct {
 	// attachmentRetention is the retention policy (WithRetention), for an
 	// upload that would hit the directory cap; the zero policy keeps files.
 	attachmentRetention state.RetentionPolicy
+	// attachmentRefs lists the attachments stored messages still name, so
+	// expiry keeps a file in use (WithRetention). nil → none are.
+	attachmentRefs attachmentReferrer
 	// messages is the agent peers' message record behind /messages, wired
 	// via WithMessages. nil → those routes 503.
 	messages *service.Messages
