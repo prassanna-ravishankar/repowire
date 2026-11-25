@@ -89,7 +89,8 @@ The daemon-owned human peer and its [inbox](../concepts/human-inbox.md).
 | --- | --- | --- |
 | `name` | `human` | The human peer's `display_name`. Must match `[A-Za-z0-9._-]{1,64}`; an invalid name falls back to `human` with a startup warning. |
 | `broadcast` | `false` | Store mesh broadcasts in the inbox. Off means a broadcast never reaches the user. |
-| `surfaces.<name>.broadcast` | `false` | Push stored broadcasts to that surface (`telegram`, `slack`, `dashboard`). |
+| `surfaces.<name>.broadcast` | `false` | Push stored broadcasts to that surface (`telegram`, `slack`, `dashboard`, `ios`). |
+| `surfaces.ios.preview` | `false` | Put up to 240 characters of the message text, and the lock-screen Allow, Deny and Reply actions, in the [iOS app](../use/features/ios-app.md#notifications)'s notifications. Off, a notification names only the sender and the kind of item. |
 
 Environment overrides: `REPOWIRE_HUMAN__NAME`, `REPOWIRE_HUMAN__BROADCAST`.
 

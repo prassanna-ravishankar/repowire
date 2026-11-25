@@ -350,6 +350,13 @@ var migrationStatements = []string{
 		mode TEXT NOT NULL,
 		updated_at TEXT NOT NULL
 	)`,
+	// APNs device tokens for the native app's inbox surface (v20).
+	`CREATE TABLE IF NOT EXISTS push_devices (
+		token TEXT PRIMARY KEY,
+		environment TEXT NOT NULL,
+		name TEXT NOT NULL DEFAULT '',
+		registered_at TEXT NOT NULL
+	)`,
 }
 
 // migrationLedger mirrors the schema_migrations rows database.py stamps, so a
@@ -378,6 +385,7 @@ var migrationLedger = []struct {
 	{17, "cross-machine asks: store epoch, inbound and outbound records, fences"},
 	{18, "agent peer messages addressable by id, per-peer delivery mode"},
 	{19, "per-peer wire visibility"},
+	{20, "APNs device tokens for native app push"},
 }
 
 // migrate applies the idempotent schema and stamps user_version. Safe to run on

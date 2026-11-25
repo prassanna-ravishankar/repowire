@@ -23,14 +23,22 @@ For the hosted relay at `repowire.io`, this means the operators *could* see your
 
 - The daemon authenticates to the relay with `relay.api_key`. The key is auto-generated and stored in `~/.repowire/config.yaml`.
 - The dashboard authenticates to the relay with a cookie set after submitting the same API key at `/auth`. Possession of the key grants dashboard access; treat it like a password.
+- Native clients such as the [iOS app](../use/features/ios-app.md) send the same key in `X-API-Key` and the `rw_token` cookie (current relays also accept `Authorization: Bearer`). Current relays strip all three before tunneling, so the daemon never receives the key; relays older than this change strip only the cookie. The app keeps it in the iOS Keychain, readable only on that device after first unlock.
 - Local-daemon `daemon.auth_token` is independent and gates the local WebSocket / HTTP API. `repowire setup` generates one because the MCP identity shim forwards to bearer-authenticated `/mcp`. Set or rotate it manually if other processes on the machine should not have free access.
 - The daemon-served localhost dashboard can use same-origin HTTP routes without exposing that token to browser JavaScript. Cross-origin, remote, WebSocket, and MCP callers remain bearer-gated.
+
+## Push notifications
+
+By default, push notifications are content-free. They carry the sender's name, the kind of item, and ids the app uses to fetch it; the message text stays in the tunnel. With `human.surfaces.ios.preview: true`, a notification also carries up to 240 characters of the text. That text passes through Apple Push Notification service and shows on the lock screen, which is wider exposure than the tunnel alone.
+
+Pushes go only to devices registered on your daemon (`/push/devices`), and only for items stored in the [human inbox](../concepts/human-inbox.md). The hosted relay sends a daemon's push only to tokens bound to the same relay key. A token binds only after the device echoes a nonce the relay sent it in a background push, so one tenant cannot claim, or take over, another tenant's phone by knowing its token. Anyone holding your relay key can register their own phone and receive your inbox's notifications. That is the same trust the key already grants for reading the inbox (`GET /inbox`) through the relay.
 
 ## Trust boundaries
 
 | Boundary | What protects it |
 | --- | --- |
-| Browser ↔ relay | TLS (you trust the relay's certificate) |
+| Browser or app ↔ relay | TLS (you trust the relay's certificate) |
+| Relay → device (push) | APNs token auth; you trust the relay and Apple with notification text |
 | Relay ↔ daemon | TLS-over-WSS (you trust the relay's network and process) |
 | Daemon ↔ agent (MCP) | Per-agent stdio identity proof, then localhost-only HTTP with bearer auth |
 | Daemon ↔ agent (hooks) | Local HTTP on `127.0.0.1`; gated by `daemon.auth_token` if set |

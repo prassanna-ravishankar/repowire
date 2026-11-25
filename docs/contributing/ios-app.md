@@ -1,0 +1,109 @@
+# iOS app
+
+The native client lives in `ios/`. It is a SwiftUI app that reaches a daemon through the relay, sends as `@dashboard`, and renders the human inbox as the `ios` surface, plus a Swift package with everything that does not need UIKit.
+
+| Path | Contents |
+| --- | --- |
+| `ios/RepowireKit/` | Swift package: models, `RelayAPI`, the SSE event stream, Keychain credentials, and `FixtureMesh` |
+| `ios/Repowire/` | App target: `App/` (model, push), `Design/` (tokens and shared components), `Features/` (screens) |
+| `ios/RepowireUITests/` | `FlowTests` (functional) and `ScreenshotTour` (design review captures) |
+| `ios/Config/` | `Base.xcconfig` (signing defaults) and your gitignored `Local.xcconfig` |
+| `ios/scripts/` | `check.sh`, `live-relay-e2e.sh`, `design-lint.py`, `contact-sheet.py`, `montage.swift`, `mark-dots.py`, `render-icon.swift` |
+
+Requirements: Xcode 26 or later with an iOS simulator runtime. The project uses folder-synchronized groups, so new Swift files under `ios/Repowire/` join the target without editing the project file.
+
+## Install on your iPhone
+
+1. In Xcode, add your Apple ID under **Settings → Accounts**. A free Apple ID works; push notifications need a paid Apple Developer account.
+2. Copy `ios/Config/Local.xcconfig.example` to `ios/Config/Local.xcconfig` and set `DEVELOPMENT_TEAM`. With a free Apple ID, also uncomment the two lines that drop the push entitlement and give the app a bundle id of your own.
+3. On the iPhone, turn on **Settings → Privacy & Security → Developer Mode**, then connect it to the Mac and trust the computer.
+4. Open `ios/Repowire.xcodeproj`, pick your iPhone as the run destination, and press Run. The first launch asks you to trust the developer under **Settings → General → VPN & Device Management**.
+
+Builds signed with a free Apple ID expire after 7 days; run again from Xcode to renew. For a build that lasts, use TestFlight (paid account).
+
+## Run it
+
+Open `ios/Repowire.xcodeproj` and run the `Repowire` scheme. To work without a relay, enable the `-fixtures` launch argument in the scheme: the app then serves `FixtureMesh`, a deterministic in-memory mesh whose answers and sends behave like a daemon's. With `-fixtures -onboarding`, any key ending in `demo` connects.
+
+From a terminal:
+
+```bash
+ios/scripts/check.sh
+```
+
+`--fast` runs only the package tests and the lint. `IOS_SIM_DEVICE` picks the simulator (default `iPhone 18 Pro`).
+
+## How it talks to the mesh
+
+All traffic goes through the relay tunnel with `Authorization: Bearer <relay key>`. The relay strips the key before forwarding, so the daemon never sees it.
+
+| Need | Route |
+| --- | --- |
+| Roster, transcript, jobs | `GET /peers`, `GET /peers/{name}/transcript`, `GET /jobs` |
+| Live updates | `GET /events/stream` (SSE), with `GET /events?since=<id>` to recover gaps after a reconnect |
+| Send | `POST /ask` or `POST /notify` with `from_peer: "dashboard"` |
+| Answer a question | `POST /answer` with `option_id`, `outcome`, or `text` |
+| Inbox | `GET /inbox`, `POST /inbox/{id}/read` and `POST /inbox/{id}/reply` with `surface: "ios"`; reloaded on `inbox_item` and `inbox_updated` events |
+| Push registration | `POST /push/devices` (tunneled to the daemon), then `POST /push/devices/verify` (answered by the relay) with the nonce from the relay's background push |
+
+Open questions are derived from the event log with the same rule the web dashboard uses: an `ask` carrying a `question` opens one, an `ack` with the same correlation id closes it. The **Messages** list is the inbox minus those questions.
+
+Push is the daemon's `ios` inbox surface (`daemon-go/push`). When an item is stored, the inbox calls the surface, which sends one frame through the relay with the alert and the registered tokens. The relay signs the APNs request with its key and answers with the outcome, which becomes the push's trace stage. The alert's `repowire` payload carries `item_id`, `kind`, `from`, and, for an ask, `correlation_id` and the question's `options`; the notification actions use them.
+
+## Quality gates
+
+`check.sh` tests three things: whether the app works, whether it stays consistent, and whether it looks right.
+
+### Function
+
+- `RepowireKit` tests (Swift Testing) cover the relay client against a `URLProtocol` stub: auth header, request bodies, error mapping, lossy event decoding, SSE framing, question derivation, and fixture behavior.
+- `FlowTests` drive the app on `FixtureMesh`: onboarding rejects a bad key and connects with a good one, Allow and Deny clear an approval, choosing an option answers a question, a sent message appears in the conversation, offline peers cannot be messaged, jobs list, and Disconnect returns to onboarding.
+
+- `LiveRelayTests` run the app against a real relay and daemon. `ios/scripts/live-relay-e2e.sh` starts both under a temporary `HOME` (your own daemon, config, and bots are untouched), raises a blocking tool-permission question on the daemon, and checks that it streams to the app, that tapping Allow resolves it on the daemon, and that the daemon's push frame reaches the relay. Outside that script the test skips.
+
+```bash
+ios/scripts/live-relay-e2e.sh
+```
+
+### Consistency
+
+`swift format lint --strict` (the formatter in the Swift toolchain, configured by `ios/.swift-format`) enforces layout and safety rules: no force unwraps, no `try!`, no implicitly unwrapped optionals, ordered imports, early `guard` exits. Run `swift format format -i -r <paths>` to apply the layout. A deliberate exception is marked inline with `// swift-format-ignore: <Rule>` and a reason. Builds in `check.sh` also treat compiler warnings as errors.
+
+`scripts/design-lint.py` fails when feature code bypasses the design system:
+
+| Rule | Catches |
+| --- | --- |
+| `raw-color` | `Color(red:…)`, `UIColor(…)`, `Color.blue`, `.foregroundStyle(.red)` |
+| `raw-space` | numeric padding, spacing, radii, frame sizes, and stroke widths |
+| `raw-font` | `.font(.system(size:))`, custom fonts |
+| `raw-motion` | animations that are not `Theme.Motion` |
+| `emoji`, `exclamation`, `title-case` | copy that breaks the Repowire voice |
+
+Tokens live in `ios/Repowire/Design/Theme.swift` and mirror [Design system](design-system.md): warm-paper neutrals, one cobalt accent, a 4pt grid, 10pt control and 14pt card radii, monospaced type for technical chrome (peer names, ids, timestamps, eyebrows). Add a token instead of a literal.
+
+`ScreenshotTour` also checks consistency across variants: it captures every screen in light, dark, and accessibility-large text, and `contact-sheet.py` lays them out as `ios/build/design-review/index.html` with screens as rows and variants as columns, so a screen that drifts in one variant stands out.
+
+`AccessibilityAuditTests` run Apple's accessibility audit on every screen in light and dark: contrast, hit regions, element descriptions, and clipped text. Exemptions are explicit in the test and each states its reason: text under translucent bars, disabled controls, the system search field, hostnames read as written, and Dynamic Type sizing, which the large-text screenshot variant checks instead.
+
+### Taste
+
+Taste is reviewed against the contact sheet, not asserted in code. Score each screen 0 to 2 on every criterion. A screen passes at 14 of 16 with no zeros. Record scores and fixes in the PR.
+
+| Criterion | 2 means |
+| --- | --- |
+| Purpose | The screen's main job is the most prominent thing on it. In the Inbox, what needs you comes first. |
+| Hierarchy | Weight, size, and spacing make the reading order clear without help from color. |
+| Restraint | One accent, used only for primary actions, selection, and links. Status colors only for status. |
+| Rhythm | Spacing follows the 4pt grid. Related things are closer together than unrelated things. Edges line up. |
+| Type | System text for prose, mono for identifiers. Large text wraps instead of truncating the important parts. |
+| Feedback | Every action responds on press, shows progress while busy, and shows an inline error when it fails. |
+| Wayfinding | You can tell where you are, what is tappable, and how to get back. Empty states say what to do next. |
+| Platform | Native navigation, lists, search, and sheets. Nothing a native app would not do. Dark mode reads as warm dark, not inverted. |
+
+## Onboarding mark
+
+The onboarding screen shares the relay landing page's dotted R and its one-time orb-to-mark reveal (`Repowire/Design/RelayMark.swift`). The dots are generated from `daemon-go/relayserver/assets/landing.html`; after changing the landing mark, run `ios/scripts/mark-dots.py`.
+
+## Push notifications
+
+The daemon decides what deserves a push and the relay sends it. See [Relay](../operate/relay.md#push-notifications) for relay configuration. In the app, notifications are requested from Settings, not at launch, and APPROVAL and QUESTION notifications can be answered from the lock screen.

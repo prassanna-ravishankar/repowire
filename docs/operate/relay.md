@@ -39,6 +39,33 @@ The `relay` block reports the real connection, not just the config flag:
 
 `relay_mode` remains the config intent (`relay.enabled`); `relay.status` is the truth. The relay client keeps an application-level keepalive ping so half-open connections are detected and reconnected rather than silently wedging.
 
+## Push notifications
+
+The relay sends APNs pushes for the [iOS app](../use/features/ios-app.md), which is the `ios` surface of the [human inbox](../concepts/human-inbox.md). The daemon decides what reaches the human and owns the device tokens (`/push/devices`, stored in its SQLite state); each push frame it sends over the relay WebSocket names its target tokens. The relay only holds the APNs key, and answers each frame with APNs' outcome, which the inbox records as the push's receipt.
+
+Configure the relay with all four variables, or none to leave push off:
+
+| Variable | Value |
+| --- | --- |
+| `REPOWIRE_RELAY_APNS_TEAM_ID` | Apple developer team id |
+| `REPOWIRE_RELAY_APNS_KEY_ID` | Key id of the `.p8` APNs auth key |
+| `REPOWIRE_RELAY_APNS_KEY_PATH` | Path to the `.p8` file |
+| `REPOWIRE_RELAY_APNS_TOPIC` | The app's bundle id (`io.repowire.app`) |
+| `REPOWIRE_RELAY_APNS_BINDINGS_DB` | Optional. SQLite path for device-token bindings, so they survive a relay restart. Without it they are kept in memory. |
+
+The relay sends a push only to device tokens bound to the pushing daemon's relay key. A token binds once the device proves it holds the token; knowing a token is not enough, because Apple treats tokens as identifiers, not secrets. The binding works like this:
+
+1. The app registers its token with `POST /push/devices` through the tunnel.
+2. Once the daemon accepts the registration, the relay sends that token a background push (no alert or sound) carrying a random nonce. Only the device that holds the token receives it.
+3. The app echoes the nonce to `POST /push/devices/verify {token, nonce}`. The relay answers this route itself; it is not tunneled.
+4. The token binds to the registering user only if the nonce matches within 10 minutes and the echo arrives under the same relay key. Each nonce works once.
+
+Another tenant who registers your token triggers a challenge on your phone that they cannot read, so they cannot take the binding. Each key has its own challenge per token, so their registrations cannot replace yours and block your phone from verifying. One key may have at most 20 open challenges. A verified registration under a different key does move the token, since only the phone's holder can complete one. A tunneled `DELETE /push/devices/{token}` unbinds the token for its owner. Challenges count toward the push rate limit.
+
+A token not bound to the pushing daemon's key is skipped and reported back as unbound. The daemon keeps it, and the app re-registers and re-verifies on its next launch. One key holds at most 20 bindings, and the oldest is dropped first.
+
+Each push names an environment per device (`sandbox` for development builds, `production` otherwise). The relay checks a rate limit of 30 pushes per minute per relay key as each frame arrives, and sends from a bounded queue (4 workers, 16 queued per daemon connection). It refuses at once anything over either limit, and sends to at most 10 devices per push. Tokens APNs rejects as unregistered or invalid are reported back to the daemon, which deletes them. Failures are recorded on the message's trace as `surface_failed` with `surface: ios`.
+
 ## Related
 
 - [Relay access](../use/features/relay-access.md)

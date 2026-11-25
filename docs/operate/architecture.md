@@ -41,8 +41,8 @@ OpenCode, and Pi load their bridge inside the agent session.
 | Hooks | `daemon-go/hooks/` | Runtime adapters, ws-hook supervision, Claude inbox/tmux delivery, chat extraction, remote approval |
 | Codex bridge | `daemon-go/codexbridge/` | App Server lifecycle, native thread steering, and chat events |
 | MCP | `daemon-go/hub/routes_mcp*.go`, `daemon-go/mcpstdio/` | Complete daemon-owned HTTP tool surface plus the per-runtime identity proxy |
-| Control surfaces | `web/`, `daemon-go/mobile/` | Dashboard and native Telegram/Slack human peers |
-| Human inbox | `daemon-go/service/inbox.go`, `daemon-go/state/inbox.go`, `daemon-go/hub/routes_inbox.go` | The human peer's durable inbox and surface pushes |
+| Control surfaces | `web/`, `daemon-go/mobile/`, `ios/` | Dashboard, native Telegram/Slack human peers, and the iOS app |
+| Human inbox | `daemon-go/service/inbox.go`, `daemon-go/state/inbox.go`, `daemon-go/hub/routes_inbox.go`, `daemon-go/push/` | The human peer's durable inbox and surface pushes, including APNs pushes to the iOS app through the relay |
 | Relay | `daemon-go/relayserver/`, `daemon-go/relay/` | Native hosted server plus the daemon's outbound tunnel client |
 
 ## Transports

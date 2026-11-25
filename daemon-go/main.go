@@ -39,6 +39,7 @@ import (
 	"github.com/repowire/repowire/daemon-go/mcpstdio"
 	"github.com/repowire/repowire/daemon-go/peer"
 	"github.com/repowire/repowire/daemon-go/proto"
+	"github.com/repowire/repowire/daemon-go/push"
 	"github.com/repowire/repowire/daemon-go/relay"
 	"github.com/repowire/repowire/daemon-go/routing"
 	"github.com/repowire/repowire/daemon-go/service"
@@ -509,6 +510,11 @@ func runDaemon() {
 	var relayClient *relay.Client
 	if relayCfg.Enabled {
 		relayClient = relay.NewClient(relayCfg.URL, relayCfg.APIKey, selfMachine, "http://"+*addr).WithAuthToken(cfg.Daemon.AuthToken)
+		// The iOS app renders the inbox as APNs alerts, which leave through
+		// the relay because it holds the APNs key.
+		if inbox != nil {
+			inbox.AddSurface(push.NewSurface(store, relayClient, cfg.Human.Surfaces[push.SurfaceName].Preview))
+		}
 	}
 
 	// (11) Wire EVERY route group onto the hub. Each With* gates a route group

@@ -1,0 +1,10 @@
+// Signing and identity for the Repowire app target. Put personal values in
+// Config/Local.xcconfig (gitignored; copy Local.xcconfig.example), not here.
+
+DEVELOPMENT_TEAM =
+PRODUCT_BUNDLE_IDENTIFIER = io.repowire.app
+CODE_SIGN_ENTITLEMENTS = Repowire.entitlements
+// Keys the generated Info.plist cannot express (background push modes).
+INFOPLIST_FILE = Config/Info.plist
+
+#include? "Local.xcconfig"

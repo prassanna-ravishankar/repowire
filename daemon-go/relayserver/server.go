@@ -31,7 +31,7 @@ const (
 var tunnelRoots = []string{
 	"/ack", "/acp", "/answer", "/ask", "/ask-many", "/asks", "/attachments",
 	"/broadcast", "/circles", "/deliveries", "/events", "/health", "/hooks", "/inbox",
-	"/jobs", "/kill-peer", "/notify", "/panes", "/peer", "/peers", "/query",
+	"/jobs", "/kill-peer", "/notify", "/panes", "/peer", "/peers", "/push", "/query",
 	"/questions", "/reviews", "/schedules", "/session", "/sessions",
 	"/shares", "/spawn", "/traces", "/work", "/ws",
 }
@@ -101,6 +101,8 @@ type Server struct {
 	pending     map[string]*pendingRequest
 	oauth       *relayOAuth
 	tokens      *tokenStore
+	apns        *apnsSender
+	pushOwners  *pushBindings // which relay user registered each APNs token
 	webOut      string
 	timeout     time.Duration
 	mux         *http.ServeMux
@@ -112,6 +114,7 @@ func New(webOut string) *Server {
 		users:       map[string]map[string]*daemonConn{},
 		pending:     map[string]*pendingRequest{},
 		tokens:      newTokenStore(),
+		pushOwners:  newPushBindings(),
 		webOut:      webOut,
 		timeout:     defaultTunnelTimeout,
 		mux:         http.NewServeMux(),
@@ -124,6 +127,7 @@ func (s *Server) Handler() http.Handler { return s.mux }
 
 func (s *Server) routes() {
 	s.mux.HandleFunc("POST /auth", s.auth)
+	s.mux.HandleFunc("POST /push/devices/verify", s.verifyPushDevice)
 	s.mux.HandleFunc("GET /dashboard", s.dashboard)
 	s.mux.HandleFunc("GET /health", s.health)
 	s.mux.HandleFunc("GET /events/stream", s.eventsStream)
@@ -331,8 +335,26 @@ func (s *Server) registerToken(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, s.tokens.register(req.UserID))
 }
 
+// headerKey reads the relay key a native client sends: X-API-Key or
+// Authorization: Bearer.
 func (s *Server) headerKey(r *http.Request) (APIKey, bool) {
-	return s.tokens.validate(r.Header.Get("X-API-Key"))
+	if key := r.Header.Get("X-API-Key"); key != "" {
+		return s.tokens.validate(key)
+	}
+	// The auth scheme is case-insensitive (RFC 7235).
+	header := r.Header.Get("Authorization")
+	if len(header) < 7 || !strings.EqualFold(header[:7], "bearer ") {
+		return APIKey{}, false
+	}
+	return s.tokens.validate(strings.TrimSpace(header[7:]))
+}
+
+// clientKey accepts a header key (native apps) or the dashboard cookie.
+func (s *Server) clientKey(r *http.Request) (APIKey, bool) {
+	if key, ok := s.headerKey(r); ok {
+		return key, true
+	}
+	return s.cookieKey(r)
 }
 
 func (s *Server) cookieKey(r *http.Request) (APIKey, bool) {
@@ -503,9 +525,13 @@ func (s *Server) cookieTunnel(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	key, ok := s.cookieKey(r)
+	key, ok := s.clientKey(r)
 	if !ok {
-		http.Redirect(w, r, "/", http.StatusFound)
+		if r.Header.Get("Authorization") != "" || r.Header.Get("X-API-Key") != "" {
+			writeError(w, http.StatusUnauthorized, "Invalid API key")
+		} else {
+			http.Redirect(w, r, "/", http.StatusFound)
+		}
 		return
 	}
 	conn := s.anyDaemon(key.UserID)
@@ -543,7 +569,7 @@ func (s *Server) tunnel(w http.ResponseWriter, r *http.Request, conn *daemonConn
 	headers := map[string]string{}
 	for name, values := range r.Header {
 		lower := strings.ToLower(name)
-		if lower == "host" || lower == "connection" || lower == "transfer-encoding" || lower == "cookie" {
+		if lower == "host" || lower == "connection" || lower == "transfer-encoding" || lower == "cookie" || lower == "authorization" || lower == "x-api-key" {
 			continue
 		}
 		headers[name] = strings.Join(values, ", ")
@@ -565,6 +591,7 @@ func (s *Server) tunnel(w http.ResponseWriter, r *http.Request, conn *daemonConn
 			return
 		}
 		writeTunnelResponse(w, response)
+		s.observePushRegistration(r.Method, path, body, intValue(response["status"], http.StatusOK), conn.userID)
 	case <-timer.C:
 		writeError(w, http.StatusGatewayTimeout, "Daemon did not respond in time")
 	case <-r.Context().Done():
@@ -572,7 +599,7 @@ func (s *Server) tunnel(w http.ResponseWriter, r *http.Request, conn *daemonConn
 }
 
 func (s *Server) eventsStream(w http.ResponseWriter, r *http.Request) {
-	key, ok := s.cookieKey(r)
+	key, ok := s.clientKey(r)
 	if !ok {
 		writeError(w, http.StatusUnauthorized, "Unauthorized")
 		return
@@ -734,6 +761,7 @@ func (s *Server) relayWebSocket(w http.ResponseWriter, r *http.Request) {
 	daemon := &daemonConn{userID: key.UserID, daemonID: daemonID, connectedAt: time.Now().UTC(), ws: conn}
 	ctx := r.Context()
 	work := s.startMachineWorkers(ctx, daemon)
+	pushes := s.startPushWorkers(ctx, daemon)
 	if old := s.registerConn(daemon); old != nil {
 		_ = old.ws.Close(websocket.StatusCode(4000), "Replaced by new connection")
 	}
@@ -760,8 +788,162 @@ func (s *Server) relayWebSocket(w http.ResponseWriter, r *http.Request) {
 			s.answerMachineList(ctx, daemon, msg)
 		case "machine_request":
 			work.admit(ctx, msg)
+		case "push":
+			pushes.admit(ctx, msg)
 		}
 	}
+}
+
+const (
+	pushWorkers = 4
+	pushQueue   = 16
+)
+
+// pushWork sends one connection's push frames on a bounded pool. Refusals
+// (push off, rate limit, full queue) are answered inline from the read loop,
+// so a flooding daemon costs a mutex check per frame, never a goroutine.
+type pushWork struct {
+	s      *Server
+	daemon *daemonConn
+	queue  chan map[string]any
+}
+
+func (s *Server) startPushWorkers(ctx context.Context, daemon *daemonConn) *pushWork {
+	p := &pushWork{s: s, daemon: daemon, queue: make(chan map[string]any, pushQueue)}
+	for range pushWorkers {
+		go func() {
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case msg := <-p.queue:
+					p.send(ctx, msg)
+				}
+			}
+		}()
+	}
+	return p
+}
+
+func (p *pushWork) admit(ctx context.Context, msg map[string]any) {
+	switch {
+	case p.s.apns == nil:
+		p.answer(ctx, msg, nil, nil, "push is not configured on this relay")
+	case !p.s.apns.allow(p.daemon.userID, time.Now()):
+		p.answer(ctx, msg, nil, nil, "push rate limit exceeded")
+	default:
+		select {
+		case p.queue <- msg:
+		default:
+			p.answer(ctx, msg, nil, nil, "push queue full, not sent")
+		}
+	}
+}
+
+// send delivers one frame to the devices this daemon's user registered.
+// Tokens bound to nobody or to another user are not sent to: they come back
+// as unbound_tokens (the daemon keeps them; the app re-registers on launch).
+// Tokens APNs reports dead come back as invalid_tokens.
+func (p *pushWork) send(ctx context.Context, msg map[string]any) {
+	raw, _ := json.Marshal(msg)
+	var frame pushFrame
+	if err := json.Unmarshal(raw, &frame); err != nil {
+		p.answer(ctx, msg, nil, nil, "invalid push frame")
+		return
+	}
+	owned := frame.Devices[:0]
+	var unbound []string
+	for _, device := range frame.Devices {
+		if p.s.pushOwners.owner(normalToken(device.Token)) == p.daemon.userID {
+			owned = append(owned, device)
+		} else {
+			unbound = append(unbound, device.Token)
+		}
+	}
+	frame.Devices = owned
+	if len(owned) == 0 {
+		p.answer(ctx, msg, nil, unbound, "no device token is registered to this relay key; open the app to register it")
+		return
+	}
+	invalid, err := p.s.apns.send(ctx, frame)
+	for _, token := range invalid {
+		p.s.pushOwners.unbind(normalToken(token), p.daemon.userID)
+	}
+	errText := ""
+	if err != nil {
+		errText = err.Error()
+	}
+	p.answer(ctx, msg, invalid, unbound, errText)
+}
+
+// answer replies under the frame's id; the daemon's inbox records it as the
+// push's receipt.
+func (p *pushWork) answer(ctx context.Context, msg map[string]any, invalid, unbound []string, errText string) {
+	result := map[string]any{"type": "push_result", "id": msg["id"]}
+	if len(invalid) > 0 {
+		result["invalid_tokens"] = invalid
+	}
+	if len(unbound) > 0 {
+		result["unbound_tokens"] = unbound
+	}
+	if errText != "" {
+		result["error"] = errText
+	}
+	_ = p.daemon.write(ctx, result)
+}
+
+// observePushRegistration follows the app's device registry through the
+// tunnel. An accepted registration opens a possession challenge (it never
+// binds by itself); a delete unbinds the token if this user holds it.
+func (s *Server) observePushRegistration(method, path string, body []byte, status int, user string) {
+	token, environment, removed := registration(method, path, body, status)
+	if token == "" || user == "" {
+		return
+	}
+	if removed {
+		s.pushOwners.unbind(token, user)
+		return
+	}
+	if s.apns == nil || !s.apns.allow(user, time.Now()) {
+		return // push is off, or this user is over its push rate
+	}
+	nonce, ok := s.pushOwners.open(token, user, time.Now())
+	if !ok {
+		log.Printf("relay APNs: challenge table full, not verifying a token for %s", user)
+		return
+	}
+	// Off the request, so the app's registration answers without waiting on
+	// APNs; the rate check above bounds how many of these run.
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		if err := s.apns.sendChallenge(ctx, token, environment, nonce); err != nil {
+			log.Printf("relay APNs: challenge push failed: %v", err)
+		}
+	}()
+}
+
+// verifyPushDevice completes a possession challenge: the app echoes the nonce
+// its device received, under the relay key that registered it.
+func (s *Server) verifyPushDevice(w http.ResponseWriter, r *http.Request) {
+	key, ok := s.clientKey(r)
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "Invalid API key")
+		return
+	}
+	var req struct {
+		Token string `json:"token"`
+		Nonce string `json:"nonce"`
+	}
+	if err := decodeJSON(r, &req); err != nil || req.Nonce == "" {
+		writeError(w, http.StatusBadRequest, "token and nonce are required")
+		return
+	}
+	if !s.pushOwners.verify(normalToken(req.Token), req.Nonce, key.UserID, time.Now()) {
+		writeError(w, http.StatusForbidden, "no matching challenge for this device")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "bound": true})
 }
 
 func writeTunnelResponse(w http.ResponseWriter, msg map[string]any) {
@@ -852,6 +1034,19 @@ func FindWebOutputDir() string {
 
 func ListenAndServe(ctx context.Context, addr, webOut string) error {
 	relay := New(webOut)
+	apns, err := apnsFromEnv()
+	if err != nil {
+		return err
+	}
+	if apns != nil {
+		owners, err := openPushBindings(os.Getenv("REPOWIRE_RELAY_APNS_BINDINGS_DB"))
+		if err != nil {
+			return fmt.Errorf("open APNs token bindings: %w", err)
+		}
+		defer owners.close()
+		relay.apns, relay.pushOwners = apns, owners
+		log.Printf("relay APNs: enabled for topic %s", apns.topic)
+	}
 	if issuer := os.Getenv("REPOWIRE_RELAY_OAUTH_ISSUER"); issuer != "" {
 		if err := relay.EnableMCP(issuer, os.Getenv("REPOWIRE_RELAY_OAUTH_DB")); err != nil {
 			return err

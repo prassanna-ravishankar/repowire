@@ -1,0 +1,6 @@
+build/
+*.xcuserstate
+xcuserdata/
+.build/
+.swiftpm/
+Config/Local.xcconfig

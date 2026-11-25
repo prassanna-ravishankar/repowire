@@ -25,11 +25,14 @@ A surface is a client that displays the inbox and answers on the human's behalf.
 | --- | --- | --- | --- | --- |
 | [Telegram](../use/features/telegram.md) | A chat message per item, threaded as a Telegram reply on its ask | Implicit: a message or tap from you in the chat marks read every item already in the chat | Telegram's **Reply** on any message (any chunk of a long one) | Only where a bot offers a choice: a choice question's options, or **✓ Ack** for an acknowledge question |
 | [Dashboard](../use/features/dashboard.md) | Live in the **Inbox** view while a dashboard is open, with the unread count in the nav | Opening an item | The reply box under the item | A choice question's options, **✓ Acknowledge** for an acknowledge question |
+| [iOS app](../use/features/ios-app.md) (`ios`) | An APNs notification per item, sent through the relay, while an install is registered and the relay is connected | Opening the notification, or the item's sender in the app | The app's reply box; **Reply** on a notification with `preview` on | **Allow** and **Deny** on a tool-permission request, with `preview` on (`human.surfaces.ios.preview`); notifications are content-free without it |
 | [CLI](../reference/cli.md#repowire-inbox) | No; it reads on demand | `repowire inbox read` | `repowire inbox reply` | None |
 
 Read state is shared. Marking an item read on one surface marks it read everywhere, and an open dashboard updates as it happens. A reply from any surface acks the open ask behind it, or answers it for a structured question, and marks the item replied. A reply to anything else asks its sender back.
 
-The dashboard has no peer of its own. Its channel is the event stream it already holds open (`GET /events/stream?surface=dashboard`, which the relay tunnels too), so it is a live surface while at least one dashboard is open, and a push to it is receipted once an open stream has flushed the item.
+The dashboard and the iOS app have no peer of their own. The iOS app's push is receipted (`surface_pushed`, `surface: ios`) once the relay reports that APNs accepted it for at least one install; a token APNs reports dead is forgotten.
+
+The dashboard's channel is the event stream it already holds open (`GET /events/stream?surface=dashboard`, which the relay tunnels too), so it is a live surface while at least one dashboard is open, and a push to it is receipted once an open stream has flushed the item.
 
 ## Addressing and the `telegram` alias
 

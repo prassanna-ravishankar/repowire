@@ -151,6 +151,11 @@ type HumanConfig struct {
 type HumanSurfaceConfig struct {
 	// Broadcast pushes stored broadcasts to this surface (default off).
 	Broadcast bool `yaml:"broadcast"`
+	// Preview puts the message text in the surface's notification. Only the
+	// ios surface reads it: off, an APNs alert names the sender and kind but
+	// carries no text, so nothing an agent wrote reaches Apple or the lock
+	// screen.
+	Preview bool `yaml:"preview"`
 }
 
 // PushesBroadcast reports whether surface opted in to broadcast pushes.
