@@ -191,6 +191,12 @@ func (s *Store) Sweep(ctx context.Context, p RetentionPolicy, now time.Time) (ma
 // over a large journal costs one pass, not one rescan per batch (#571).
 // The action repeats where, so a row that changed since it was selected is
 // left alone.
+//
+// The walk is in rowid order, so SQLite seeks the rowid, not a rule's time
+// index: a sweep costs one pass over the table rather than over the
+// matching rows. Retention bounds the tables, so that pass is cheap (about
+// 10ms on the live database in November 2026). If it ever is not, a (ts,
+// rowid) cursor for the time-keyed rules keeps both properties.
 func (s *Store) applyRule(ctx context.Context, rule sweepRule) (int, error) {
 	sel := `SELECT rowid FROM ` + rule.table + ` WHERE rowid > ? AND (` + rule.where + `) ORDER BY rowid LIMIT ` + strconv.Itoa(sweepBatch)
 	act := `DELETE FROM ` + rule.table
