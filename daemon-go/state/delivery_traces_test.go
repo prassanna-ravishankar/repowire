@@ -261,3 +261,25 @@ func TestClosedAskThreadsSince(t *testing.T) {
 		t.Fatalf("unbounded threads = %v, want ask-old first of 3", all)
 	}
 }
+
+// StagesForMany groups each trace's stages in seq order and leaves out a
+// trace with none.
+func TestStagesForManyGroupsByTrace(t *testing.T) {
+	s := newTempStore(t)
+	ctx := context.Background()
+	for _, r := range []struct{ trace, stage string }{{"t1", "created"}, {"t2", "created"}, {"t1", "delivered"}, {"t3", "created"}} {
+		if err := s.RecordTrace(ctx, r.trace, "ask", r.stage, "ok", r.trace, "p", "q", nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got, err := s.StagesForMany(ctx, []string{"t1", "t2", "none"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 || len(got["t1"]) != 2 || got["t1"][0].Stage != "created" || got["t1"][1].Stage != "delivered" || len(got["t2"]) != 1 {
+		t.Fatalf("grouped = %+v", got)
+	}
+	if empty, err := s.StagesForMany(ctx, nil); err != nil || len(empty) != 0 {
+		t.Fatalf("no ids: %v %v", empty, err)
+	}
+}

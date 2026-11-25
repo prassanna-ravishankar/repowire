@@ -95,17 +95,25 @@ func recordTrace(ctx context.Context, db execer, traceID, kind, stage, status, d
 
 // StagesFor returns all recorded stages for a trace, in seq order.
 func (s *Store) StagesFor(ctx context.Context, traceID string) ([]TraceRow, error) {
-	const q = `SELECT trace_id, delivery_id, seq, kind, stage, status,
-		       peer_id, from_peer_id, ts, detail_json
-		FROM delivery_traces
-		WHERE trace_id = ?
-		ORDER BY seq ASC`
-	rows, err := s.db.QueryContext(ctx, q, traceID)
+	out, err := s.queryStages(ctx, `trace_id = ?`, traceID)
 	if err != nil {
 		return nil, fmt.Errorf("load trace stages %s: %w", traceID, err)
 	}
-	defer rows.Close()
+	return out, nil
+}
 
+// queryStages is the one stage query: the rows where selects, ordered by
+// trace, then seq.
+func (s *Store) queryStages(ctx context.Context, where string, args ...any) ([]TraceRow, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT trace_id, delivery_id, seq, kind, stage, status,
+		       peer_id, from_peer_id, ts, detail_json
+		FROM delivery_traces
+		WHERE `+where+`
+		ORDER BY trace_id, seq ASC`, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
 	var out []TraceRow
 	for rows.Next() {
 		tr, err := scanTraceRow(rows)
@@ -116,6 +124,28 @@ func (s *Store) StagesFor(ctx context.Context, traceID string) ([]TraceRow, erro
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate trace stages: %w", err)
+	}
+	return out, nil
+}
+
+// StagesForMany returns the stages of each trace in ids, seq ascending, in
+// one query: the wire view loads a page of threads with it instead of one
+// StagesFor per thread. A trace with no stages is absent from the map.
+func (s *Store) StagesForMany(ctx context.Context, ids []string) (map[string][]TraceRow, error) {
+	out := make(map[string][]TraceRow, len(ids))
+	if len(ids) == 0 {
+		return out, nil
+	}
+	args := make([]any, len(ids))
+	for i, id := range ids {
+		args[i] = id
+	}
+	rows, err := s.queryStages(ctx, `trace_id IN (?`+strings.Repeat(",?", len(ids)-1)+`)`, args...)
+	if err != nil {
+		return nil, fmt.Errorf("load trace stages for %d traces: %w", len(ids), err)
+	}
+	for _, tr := range rows {
+		out[tr.TraceID] = append(out[tr.TraceID], tr)
 	}
 	return out, nil
 }
