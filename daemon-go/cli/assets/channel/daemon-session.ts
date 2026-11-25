@@ -205,11 +205,17 @@ export class DaemonSession {
         if (next === "stop") {
           this.stopped = true;
           console.error(`repowire: peer ${this.sessionId} was closed by the operator; not reconnecting`);
-          await this.onStop(
+          const notice =
             `Repowire closed this session's peer (${this.displayName}, ${this.sessionId}) at an operator's request. ` +
-              "It has left the mesh and will not reconnect: peers can no longer reach it, and its repowire tools will fail. " +
-              "Restart the session to rejoin as a new peer.",
-          );
+            "It has left the mesh and will not reconnect: peers can no longer reach it, and its repowire tools will fail. " +
+            "Restart the session to rejoin as a new peer.";
+          // A failing hook (stdio already gone) must not reject inside the ws
+          // listener: an unhandled rejection would exit the channel process.
+          try {
+            await this.onStop(notice);
+          } catch (err) {
+            console.error(`repowire: could not tell the session it left the mesh: ${err instanceof Error ? err.message : String(err)}`);
+          }
         } else if (next === "forget") {
           console.error(`repowire: peer ${this.sessionId} is retired; registering afresh`);
           this.sessionId = null;

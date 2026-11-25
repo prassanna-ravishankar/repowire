@@ -61,6 +61,19 @@ describe("DaemonSession refusals (#628)", () => {
     expect(notices.length).toBe(1);
   });
 
+  test("a notice that cannot be delivered does not crash the session", async () => {
+    const daemon = fakeDaemon((_frame, _n, ws) => refuse(ws, true));
+    cleanup.push(daemon.close);
+    let tried = 0;
+    new DaemonSession({ daemonUrl: daemon.url, reconnectMs: 20 }).connect(() => {}, async () => {
+      tried++;
+      throw new Error("stdio closed");
+    });
+    expect(await until(() => tried === 1)).toBe(true);
+    await new Promise((r) => setTimeout(r, 200));
+    expect(daemon.frames.length).toBe(1); // still stopped
+  });
+
   test("a soft retirement reconnects without the claim and says nothing", async () => {
     const daemon = fakeDaemon((_frame, n, ws) => {
       if (n === 1) {
