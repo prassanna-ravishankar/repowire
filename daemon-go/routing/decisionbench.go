@@ -13,6 +13,14 @@ package routing
 //     forbids self-delegation), with the card body as the claimed description
 //     and no attested state, since the substrate has none.
 //
+//   - the trace order is the clock: each delegation is decided one second after
+//     the line before it (from a fixed epoch), and a candidate's
+//     last_exchange_with_sender_at is when the orchestrator last delegated to
+//     it earlier in the file. So recent ("the previous delegate"),
+//     majority-past ("the most frequent delegate so far") and the recency
+//     stratum compute exactly as on the mesh (#462). Time thresholds then read
+//     as delegation counts: novelty's 600 seconds is 600 lines.
+//
 // The label is therefore agreement with the orchestrator, the same quantity
 // our static track measures against a human sender. DecisionBench's own
 // dominant-skill precision label is not reconstructible from the released
@@ -28,7 +36,12 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 )
+
+// traceEpoch is the clock of a DecisionBench trace: line n is decided n
+// seconds after it. Only the order is meaningful.
+var traceEpoch = time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC)
 
 // Card is one DecisionBench profile card.
 type Card struct {
@@ -104,6 +117,7 @@ func DelegationExamples(r io.Reader, orchestrator string, cards []Card) ([]Examp
 		}
 	}
 	var out []Example
+	lastTo := map[string]time.Time{} // candidate → the orchestrator's last delegation to it
 	scanner := bufio.NewScanner(r)
 	scanner.Buffer(make([]byte, 1<<20), 16<<20)
 	for n := 0; scanner.Scan(); n++ {
@@ -115,6 +129,18 @@ func DelegationExamples(r io.Reader, orchestrator string, cards []Card) ([]Examp
 			continue
 		}
 		peer := d.Peer
+		at := traceEpoch.Add(time.Duration(n) * time.Second)
+		// This delegation's candidates, each stamped with the orchestrator's
+		// last delegation to it so far (none yet: no exchange data).
+		seen := make([]Candidate, len(candidates))
+		for i, c := range candidates {
+			if t, ok := lastTo[c.PeerID]; ok {
+				stamp := t.Format(time.RFC3339Nano)
+				c.LastExchangeAt = &stamp
+			}
+			seen[i] = c
+		}
+		lastTo[peer] = at
 		sender := Candidate{PeerID: orchestrator, DisplayName: orchestrator}
 		if c, ok := byModel[orchestrator]; ok {
 			sender.Description = clip(c.Body, maxTextBytes)
@@ -123,11 +149,12 @@ func DelegationExamples(r io.Reader, orchestrator string, cards []Card) ([]Examp
 			TraceID: fmt.Sprintf("decisionbench:%s:%s:%d", orchestrator, d.TaskID, n),
 			Decision: Decision{
 				Schema: SchemaV1, Surface: "decisionbench", Mode: "off", Arm: ArmExplicit,
-				Sender: &sender, SenderRaw: orchestrator,
+				DecidedAt: at.Format(time.RFC3339Nano),
+				Sender:    &sender, SenderRaw: orchestrator,
 				Declared:   Declared{Raw: &peer, PeerID: &peer, Resolution: ResolutionResolved},
 				Chosen:     &Chosen{PeerID: peer, DisplayName: peer},
 				Request:    NewRequest(d.Subtask, nil, nil, false, false, 0),
-				Candidates: candidates, RegistrySize: len(cards),
+				Candidates: seen, RegistrySize: len(cards),
 			},
 			Shadow: map[string]RouterResult{},
 		})
