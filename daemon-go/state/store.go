@@ -409,7 +409,10 @@ func (s *Store) LoadRetired(ctx context.Context, cutoff time.Time) (map[proto.Pe
 
 // Retire records a terminal peer_id. A hard retirement closes the id for
 // good, so the peer's own settings (tables declared closedWithPeer) go in
-// the same transaction.
+// the same transaction. "For good" outlives this row: retirements expire
+// (pruneRetired), but every hard close also unregisters the peer, which
+// deletes its session mapping, so an expired id has nothing to reclaim it
+// through.
 func (s *Store) Retire(ctx context.Context, id proto.PeerID, at time.Time, hard bool) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -428,6 +431,8 @@ func (s *Store) Retire(ctx context.Context, id proto.PeerID, at time.Time, hard 
 				continue
 			}
 			for _, table := range t.tables {
+				// table comes from the static declarations, never from input;
+				// TestClosedWithPeerTablesHaveAPeerID pins the column.
 				if _, err := tx.ExecContext(ctx, `DELETE FROM `+table+` WHERE peer_id = ?`, string(id)); err != nil {
 					return fmt.Errorf("retire %s: drop %s: %w", id, table, err)
 				}
