@@ -485,7 +485,7 @@ func TestFrontierSpendLimitsAreBilling(t *testing.T) {
 				_, _ = w.Write([]byte(tc.body))
 			}))
 			t.Cleanup(srv.Close)
-			cfg := config.RouterConfig{TimeoutSeconds: 5, Frontier: config.RouterModel{APIKey: "k", Model: "claude-opus-5-5", BaseURL: srv.URL}}
+			cfg := config.RouterConfig{TimeoutSeconds: 5, Frontier: config.RouterFrontier{RouterModel: config.RouterModel{APIKey: "k", Model: "claude-opus-5-5", BaseURL: srv.URL}}}
 			r, err := NewRouter(cfg, nil)
 			if err != nil {
 				t.Fatal(err)
@@ -622,7 +622,7 @@ func frontierRouter(t *testing.T, answer func(call int) string) *Router {
 		_, _ = w.Write([]byte(`{"id":"m","type":"message","role":"assistant","model":"claude-opus-5-5","content":[{"type":"text","text":"` + answer(calls) + `"}],"stop_reason":"end_turn","usage":{"input_tokens":1200,"output_tokens":30}}`))
 	}))
 	t.Cleanup(srv.Close)
-	r, err := NewRouter(config.RouterConfig{TimeoutSeconds: 5, Frontier: config.RouterModel{APIKey: "k", Model: "claude-opus-5-5", BaseURL: srv.URL}}, nil)
+	r, err := NewRouter(config.RouterConfig{TimeoutSeconds: 5, Frontier: config.RouterFrontier{RouterModel: config.RouterModel{APIKey: "k", Model: "claude-opus-5-5", BaseURL: srv.URL}}}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

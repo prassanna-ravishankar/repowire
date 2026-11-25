@@ -21,7 +21,7 @@ func Arms(cfg config.RouterConfig) map[string]Arm {
 		flash.Family, flash.Model = ClefFlashFamily, cfg.Clef.FlashModel
 		for _, arm := range []Arm{
 			Jev{View: view, APIKey: cfg.Jev.APIKey, Model: cfg.Jev.Model, BaseURL: cfg.Jev.BaseURL, HTTP: httpClient},
-			Frontier{View: view, APIKey: cfg.Frontier.APIKey, Model: cfg.Frontier.Model, BaseURL: cfg.Frontier.BaseURL, HTTP: httpClient},
+			Frontier{View: view, APIKey: cfg.Frontier.APIKey, Model: cfg.Frontier.Model, BaseURL: cfg.Frontier.BaseURL, HTTP: httpClient, KeyedMax: cfg.Frontier.KeyedScoresMaxCandidates},
 			clef, flash,
 		} {
 			arms[arm.Name()] = arm

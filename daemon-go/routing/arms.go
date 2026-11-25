@@ -28,7 +28,13 @@ const (
 	// FallbackAbstained: a valid answer that declines to choose (see
 	// abstained in frontier.go). A miss in replay, but a well-formed answer,
 	// so it does not count against the provider's breaker.
-	FallbackAbstained    = "abstained"
+	FallbackAbstained = "abstained"
+	// FallbackIncomplete: a well-formed answer that does not score every
+	// candidate exactly once (a key missing, repeated or unknown). Only an
+	// answer whose schema cannot require every key (the frontier arm's
+	// listed scores, #484) can be incomplete. Like abstained, it does not
+	// count against the provider's breaker.
+	FallbackIncomplete   = "incomplete"
 	FallbackNoCandidates = "no_candidates"
 	FallbackUnconfigured = "unconfigured"
 	FallbackUnknownArm   = "unknown_arm"
@@ -117,7 +123,11 @@ func Run(ctx context.Context, arm Arm, in Input, timeout time.Duration) RouterRe
 		if ctx.Err() != nil && generic(err) {
 			err = fail(FallbackTimeout)
 		}
-		out := withIdentity(arm, fallback(arm.Name(), start, err))
+		failed := fallback(arm.Name(), start, err)
+		// An arm whose template depends on the input (frontier's listed
+		// scores) names the one it sent; Identity is only the default.
+		failed.TemplateSHA256 = res.TemplateSHA256
+		out := withIdentity(arm, failed)
 		out.Signals = res.Signals
 		out.NeverAskedSource = res.NeverAskedSource
 		return out

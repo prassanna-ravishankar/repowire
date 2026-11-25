@@ -711,6 +711,9 @@ func normalize(cfg *Config) {
 	if cfg.Routing.TimeoutSeconds <= 0 {
 		cfg.Routing.TimeoutSeconds = 8
 	}
+	if cfg.Routing.Frontier.KeyedScoresMaxCandidates <= 0 {
+		cfg.Routing.Frontier.KeyedScoresMaxCandidates = 69
+	}
 	if cfg.Experiments.RemoteToolApproval.TimeoutSeconds <= 0 {
 		cfg.Experiments.RemoteToolApproval.TimeoutSeconds = 45
 	}

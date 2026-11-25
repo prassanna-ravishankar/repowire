@@ -364,3 +364,22 @@ func TestClefCredentialProblemsWarnNotRefuse(t *testing.T) {
 		})
 	}
 }
+
+// routing.frontier.keyed_scores_max_candidates: default 69, file and env
+// override, and a value of zero or less keeps the default (#484).
+func TestFrontierKeyedScoresMaxCandidates(t *testing.T) {
+	t.Setenv("REPOWIRE_ROUTING__FRONTIER__KEYED_SCORES_MAX_CANDIDATES", "")
+	if got := loadYAML(t, "daemon:\n  port: 9100\n").Routing.Frontier.KeyedScoresMaxCandidates; got != 69 {
+		t.Fatalf("default = %d", got)
+	}
+	if got := loadYAML(t, "routing:\n  frontier:\n    model: claude-sonnet-5-5\n    keyed_scores_max_candidates: 40\n").Routing.Frontier; got.KeyedScoresMaxCandidates != 40 || got.Model != "claude-sonnet-5-5" {
+		t.Fatalf("file value = %+v", got)
+	}
+	if got := loadYAML(t, "routing:\n  frontier:\n    keyed_scores_max_candidates: 0\n").Routing.Frontier.KeyedScoresMaxCandidates; got != 69 {
+		t.Fatalf("zero = %d, want the default", got)
+	}
+	t.Setenv("REPOWIRE_ROUTING__FRONTIER__KEYED_SCORES_MAX_CANDIDATES", "30")
+	if got := loadYAML(t, "routing:\n  frontier:\n    keyed_scores_max_candidates: 40\n").Routing.Frontier.KeyedScoresMaxCandidates; got != 30 {
+		t.Fatalf("env override = %d", got)
+	}
+}

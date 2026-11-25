@@ -92,7 +92,7 @@ func printRouting(w io.Writer, effective, requested config.RouterConfig, warning
 	fmt.Fprintf(w, "  service targets allowed  %t\n", effective.AllowServiceTargets)
 	fmt.Fprintf(w, "  human targets allowed    %t\n", effective.AllowHumanTargets || effective.AllowServiceTargets)
 	fmt.Fprintf(w, "  jev          %s, %s\n", effective.Jev.Model, keyState(effective.Jev))
-	fmt.Fprintf(w, "  frontier     %s, %s\n", effective.Frontier.Model, keyState(effective.Frontier))
+	fmt.Fprintf(w, "  frontier     %s, %s\n", effective.Frontier.Model, keyState(effective.Frontier.RouterModel))
 	fmt.Fprintf(w, "  clef         %s, %s, %s\n", effective.Clef.Model, effective.Clef.FlashModel, clefState(effective.Clef))
 	var ignored []string
 	if requested.Strategy != effective.Strategy {
@@ -419,6 +419,8 @@ func printReplayTable(w io.Writer, reports []routing.Report) {
 	printFallbackReasons(w, reports)
 	printSplit(w, "cohort", reports, func(rep routing.Report) map[string]*routing.Cohort { return rep.Cohorts })
 	printSplit(w, "recency", reports, func(rep routing.Report) map[string]*routing.Cohort { return rep.Recency })
+	printSplit(w, "model", reports, func(rep routing.Report) map[string]*routing.Cohort { return rep.Models })
+	printSplit(w, "scores", reports, func(rep routing.Report) map[string]*routing.Cohort { return rep.ScoresShapes })
 }
 
 // printFallbackReasons breaks each arm's fallbacks down by reason, so an arm
