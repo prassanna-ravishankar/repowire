@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/repowire/repowire/daemon-go/peer"
 	"github.com/repowire/repowire/daemon-go/proto"
@@ -118,6 +119,7 @@ func TestSwarmPlanRelaunchesOnlyWhatCanComeBackAsItself(t *testing.T) {
 	r.offline(fork)
 	r.sessionFile("fork")
 	holder := r.register("holder", "", proto.RoleAgent, "")
+	r.offline(holder) // bound to an offline peer still skips: the binding would bring the relaunch back as it
 	holderID, forkPath, forkSession := string(holder), "/work/fork", "sess-fork"
 	if _, err := r.store.UpsertObservation(r.ctx, state.Observation{PeerID: &holderID, Backend: "claude-code", ProjectPath: &forkPath, RuntimeSessionID: &forkSession}); err != nil {
 		t.Fatal(err)
@@ -160,7 +162,7 @@ func TestSwarmPlanRelaunchesOnlyWhatCanComeBackAsItself(t *testing.T) {
 		!strings.Contains(launch.Command, "sess-ok") || !strings.Contains(launch.Command, "--permission-mode plan") {
 		t.Fatalf("launch pane = %+v", launch)
 	}
-	wantSkip := map[int]string{1: "online now", 2: "closed by an operator", 3: "executor of live job", 4: "held by live peer " + string(holder),
+	wantSkip := map[int]string{1: "online now", 2: "closed by an operator", 3: "executor of live job", 4: "bound to peer " + string(holder),
 		5: "no resumable session file", 6: "not modeled", 7: "orchestrator"}
 	for i, want := range wantSkip {
 		p := plan.Panes[i]
@@ -182,35 +184,79 @@ func TestSwarmPlanRelaunchesOnlyWhatCanComeBackAsItself(t *testing.T) {
 }
 
 // A placed pane is recorded as spawn records one, from the daemon's own
-// mapping. Verify then reports each agent: back under its own peer_id in its
-// new pane, a twin (another identity in its pane), awaiting its first turn
-// (Codex), or missing. It never rebinds anything.
+// mapping, and only when a plan this daemon issued placed it: its slot for
+// that peer, once, with the pane where the plan said, before the plan
+// expires (an ownership record is kill and restart proof). Verify then
+// reports each agent: back under its own peer_id in its new pane, a twin
+// (another identity in its pane), awaiting its first turn (Codex, by the
+// daemon's own record of its backend), or missing. It never rebinds.
 func TestSwarmPlacedAndVerify(t *testing.T) {
 	r := newSwarmRig(t)
 	back := r.register("back", "", proto.RoleAgent, "")
 	r.offline(back)
+	r.sessionFile("back")
 	twin := r.register("twin", "", proto.RoleAgent, "")
 	r.offline(twin)
-	codex := r.register("codex", "", proto.RoleAgent, "")
-	r.offline(codex)
 	missing := r.register("missing", "", proto.RoleAgent, "")
 	r.offline(missing)
-	for _, pane := range []string{"%20", "%21", "%22", "%23"} {
-		r.tmux.evidence[pane] = &service.TmuxPaneEvidence{PaneID: pane, PanePID: "1"}
+	codexPath := "/work/codex"
+	codex, _, err := r.reg.AllocateAndRegister(r.ctx, peer.AllocateParams{Circle: "work", Backend: proto.AgentCodex, Path: &codexPath,
+		Machine: "test-host", Role: proto.RoleAgent, Metadata: map[string]any{"runtime_session_id": "thread-codex"}})
+	if err != nil {
+		t.Fatal(err)
 	}
+	r.offline(codex)
+	at := func(pane, window string) {
+		r.tmux.evidence[pane] = &service.TmuxPaneEvidence{PaneID: pane, PanePID: "1", SessionName: "work", TmuxSession: "work:" + window}
+	}
+	at("%20", "agents")
+	at("%21", "agents")
+	at("%22", "agents")
+	at("%23", "agents")
+	at("%24", "elsewhere")
 
-	if err := r.h.swarmPlaced(SwarmPlaced{PaneID: "%20", PeerID: back, TmuxSession: "work"}); err != nil {
+	plan, err := r.h.swarmPlan(r.ctx, SwarmManifest{Schema: SwarmSchema, Panes: []SwarmPane{
+		{PaneGeometry: service.PaneGeometry{Session: "work", WindowIndex: 1, WindowName: "agents", PaneID: "%1"}, Agent: agentFor(back, "back", proto.RoleAgent)},
+	}})
+	if err != nil || plan.PlanID == "" || plan.Panes[0].Action != SwarmLaunch {
+		t.Fatalf("plan = %+v %v", plan, err)
+	}
+	place := func(planID, pane string, id proto.PeerID) error {
+		return r.h.swarmPlaced(SwarmPlaced{PlanID: planID, PaneID: pane, PeerID: id, TmuxSession: "work"})
+	}
+	if err := place(plan.PlanID, "%24", back); err == nil {
+		t.Fatal("recorded a pane in a window the plan did not put it in")
+	}
+	if err := place(plan.PlanID, "%20", back); err != nil {
 		t.Fatal(err)
 	}
 	if !r.h.spawn.svc.Ownership().IsSpawned("%20") {
 		t.Fatal("the placed pane is not recorded as spawned")
 	}
-	if err := r.h.swarmPlaced(SwarmPlaced{PaneID: "%20", PeerID: "repow-work-nobody"}); err == nil {
-		t.Fatal("recorded a pane for an unknown peer")
+	for name, try := range map[string]error{
+		"a second placement of the same slot": place(plan.PlanID, "%21", back),
+		"a peer the plan does not launch":     place(plan.PlanID, "%21", twin),
+		"a plan the daemon never issued":      place("swarm-forged", "%21", back),
+		"no plan at all":                      place("", "%21", back),
+		"a pane that is not live":             place(plan.PlanID, "%99", back),
+	} {
+		if try == nil {
+			t.Errorf("recorded %s", name)
+		}
 	}
-	if err := r.h.swarmPlaced(SwarmPlaced{PaneID: "%99", PeerID: back}); err == nil {
-		t.Fatal("recorded a pane that is not live")
+	// A plan stops accepting placements once it expires.
+	again, err := r.h.swarmPlan(r.ctx, SwarmManifest{Schema: SwarmSchema, Panes: []SwarmPane{
+		{PaneGeometry: service.PaneGeometry{Session: "work", WindowIndex: 1, WindowName: "agents", PaneID: "%1"}, Agent: agentFor(back, "back", proto.RoleAgent)},
+	}})
+	if err != nil {
+		t.Fatal(err)
 	}
+	issued := r.h.swarmIssued()
+	issued.now = func() time.Time { return time.Now().Add(swarmPlanTTL + time.Minute) }
+	if err := place(again.PlanID, "%21", back); err == nil || !strings.Contains(err.Error(), "plan the restore again") {
+		t.Fatalf("an expired plan: %v", err)
+	}
+	issued.now = time.Now
 
 	// back re-registers in its new pane through its claim, as its binding
 	// would bring it; a stranger registers in twin's pane.
@@ -219,7 +265,7 @@ func TestSwarmPlacedAndVerify(t *testing.T) {
 
 	got := r.h.swarmVerify([]SwarmPlaced{
 		{PaneID: "%20", PeerID: back}, {PaneID: "%21", PeerID: twin}, {PaneID: "%22", PeerID: codex}, {PaneID: "%23", PeerID: missing},
-	}, map[proto.PeerID]bool{codex: true})
+	})
 	want := []string{SwarmBack, SwarmTwin, SwarmAwaitsFirstTurn, SwarmMissing}
 	for i, v := range got {
 		if v.Outcome != want[i] {
