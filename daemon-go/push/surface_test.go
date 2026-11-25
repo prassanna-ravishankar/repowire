@@ -3,6 +3,7 @@ package push
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/repowire/repowire/daemon-go/relay"
@@ -52,7 +53,7 @@ func TestAlertMapsInboxItems(t *testing.T) {
 	approval := Alert(&state.InboxItem{
 		ID: "inb-1", Kind: "ask", FromName: "backend", CorrelationID: "ask-1", Text: "Run rm -rf build?",
 		Question: map[string]any{"scope": "tool_permission", "options": []any{map[string]any{"id": "allow", "title": "Allow"}}},
-	})
+	}, true)
 	if approval["category"] != "APPROVAL" || approval["title"] != "@backend needs approval" || approval["push_id"] != "inb-1" || approval["thread_id"] != "ask-1" {
 		t.Fatalf("approval = %v", approval)
 	}
@@ -68,7 +69,7 @@ func TestAlertMapsInboxItems(t *testing.T) {
 		{state.InboxItem{ID: "inb-4", Kind: "answer", FromName: "ci", CorrelationID: "ask-9", Text: "done"}, "@ci replied", "MESSAGE"},
 		{state.InboxItem{ID: "inb-5", Kind: "broadcast", Text: "hello"}, "@repowire", "MESSAGE"},
 	} {
-		got := Alert(&tc.item)
+		got := Alert(&tc.item, true)
 		if got["title"] != tc.title || got["category"] != tc.category {
 			t.Errorf("%s: title %v category %v", tc.item.ID, got["title"], got["category"])
 		}
@@ -77,14 +78,14 @@ func TestAlertMapsInboxItems(t *testing.T) {
 	for i := range long {
 		long[i] = 'x'
 	}
-	if body := []rune(Alert(&state.InboxItem{Text: string(long)})["body"].(string)); len(body) != maxBody {
+	if body := []rune(Alert(&state.InboxItem{Text: string(long)}, true)["body"].(string)); len(body) != maxBody {
 		t.Fatalf("body length = %d, want %d", len(body), maxBody)
 	}
 }
 
 func TestSurfaceLiveNeedsRelayAndADevice(t *testing.T) {
 	devices, relayFake := &fakeDevices{}, &fakeRelay{connected: true}
-	s := NewSurface(devices, relayFake)
+	s := NewSurface(devices, relayFake, true)
 	if s.Name() != "ios" || s.Live() {
 		t.Fatalf("no devices: name %q live %v", s.Name(), s.Live())
 	}
@@ -101,7 +102,7 @@ func TestSurfaceLiveNeedsRelayAndADevice(t *testing.T) {
 func TestSurfacePushSendsToEveryDeviceAndForgetsDeadTokens(t *testing.T) {
 	devices := &fakeDevices{devices: []state.PushDevice{{Token: "live", Environment: "production"}, {Token: "dead", Environment: "sandbox"}}}
 	relayFake := &fakeRelay{connected: true, result: relay.PushResult{InvalidTokens: []string{"dead"}}}
-	s := NewSurface(devices, relayFake)
+	s := NewSurface(devices, relayFake, true)
 
 	if err := s.Push(context.Background(), &state.InboxItem{ID: "inb-1", Kind: "notify", FromName: "ci", Text: "hi"}); err != nil {
 		t.Fatalf("push with one live device = %v", err)
@@ -124,8 +125,26 @@ func TestSurfacePushSendsToEveryDeviceAndForgetsDeadTokens(t *testing.T) {
 
 func TestSurfacePushReportsRelayErrors(t *testing.T) {
 	devices := &fakeDevices{devices: []state.PushDevice{{Token: "t", Environment: "production"}}}
-	s := NewSurface(devices, &fakeRelay{err: relay.ErrRelayDown})
+	s := NewSurface(devices, &fakeRelay{err: relay.ErrRelayDown}, true)
 	if err := s.Push(context.Background(), &state.InboxItem{ID: "inb-1"}); !errors.Is(err, relay.ErrRelayDown) {
 		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestAlertIsContentFreeWithoutPreview(t *testing.T) {
+	item := &state.InboxItem{
+		ID: "inb-1", Kind: "ask", FromName: "backend", CorrelationID: "ask-1", Text: "rm -rf build && cat .env",
+		Question: map[string]any{"scope": "tool_permission", "options": []any{map[string]any{"id": "allow", "title": "Allow"}}},
+	}
+	got := Alert(item, false)
+	if got["title"] != "@backend needs approval" || got["category"] != "MESSAGE" {
+		t.Fatalf("title %v category %v", got["title"], got["category"])
+	}
+	if body := got["body"].(string); strings.Contains(body, "rm -rf") || strings.Contains(body, ".env") {
+		t.Fatalf("content-free alert leaked text: %q", body)
+	}
+	data := got["data"].(map[string]any)
+	if data["item_id"] != "inb-1" || data["options"] != nil {
+		t.Fatalf("data = %v", data)
 	}
 }

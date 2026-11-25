@@ -12,7 +12,6 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
-	"math/big"
 	"net/http"
 	"os"
 	"strings"
@@ -87,9 +86,15 @@ func newAPNsSender(teamID, keyID, topic string, pemKey []byte) (*apnsSender, err
 }
 
 // allow is a fixed-window limit per relay user so one key cannot flood APNs.
+// Expired windows are swept as it runs, so the map holds only recent senders.
 func (a *apnsSender) allow(userID string, now time.Time) bool {
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	for user, w := range a.window {
+		if now.Sub(w.start) >= pushWindowLength {
+			delete(a.window, user)
+		}
+	}
 	w := a.window[userID]
 	if now.Sub(w.start) >= pushWindowLength {
 		w = pushWindow{start: now}
@@ -206,12 +211,4 @@ func (a *apnsSender) post(ctx context.Context, host, token, bearer, pushID strin
 		return true, nil
 	}
 	return false, fmt.Errorf("APNs %d %s", resp.StatusCode, reason.Reason)
-}
-
-func validDeviceToken(token string) bool {
-	if len(token) < 32 || len(token) > 200 {
-		return false
-	}
-	_, ok := new(big.Int).SetString(token, 16)
-	return ok
 }

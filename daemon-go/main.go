@@ -513,7 +513,7 @@ func runDaemon() {
 		// The iOS app renders the inbox as APNs alerts, which leave through
 		// the relay because it holds the APNs key.
 		if inbox != nil {
-			inbox.AddSurface(push.NewSurface(store, relayClient))
+			inbox.AddSurface(push.NewSurface(store, relayClient, cfg.Human.Surfaces[push.SurfaceName].Preview))
 		}
 	}
 

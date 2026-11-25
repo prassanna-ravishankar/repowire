@@ -6,7 +6,7 @@ The Repowire iOS app is a native client for your mesh. It connects through the r
 
 From the app you can:
 
-- Answer questions and approve or deny tool calls, including from the lock screen.
+- Answer questions and approve or deny tool calls; from the lock screen too when previews are on.
 - Read the human inbox and reply to it, with read state shared with Telegram and the dashboard.
 - Browse peers by circle and read each peer's recent conversation.
 - Send a peer an ask (expects an ack) or a notification (fire and forget).
@@ -27,18 +27,27 @@ The app is not on the App Store yet. Build it onto your iPhone from Xcode: see [
 2. Copy `relay.api_key` from `~/.repowire/config.yaml`.
 3. In the app, enter the relay host (`relay.repowire.io` for the hosted relay) and paste the key. The app checks the key against the relay before saving it to the Keychain.
 
-To receive notifications, open **Settings → Turn on notifications**. The app asks for permission there, not at launch.
+To receive notifications, open **Settings → Turn on notifications**. The app asks for permission there, not at launch. Once permitted, it re-registers its device token on every launch, which keeps the relay's record of whose phone it is current.
 
 ## Notifications
 
 Every item stored in the human inbox is pushed to each registered install, while the relay is connected:
 
-| Item | Notification | Actions |
+| Item | Notification | Actions with `preview: true` |
 | --- | --- | --- |
 | Tool permission request | `@peer needs approval` | Allow, Deny |
 | Ask or question | `@peer asks` | Reply |
 | Reply to an ask you sent | `@peer replied` | Opens the app |
 | Notify | `@peer` | Opens the app |
+
+By default a notification is content-free: it names the sender and the kind of item, and nothing an agent wrote leaves the mesh for Apple or your lock screen. Tapping it opens the app, which reads the item through the relay. You approve or answer from the app, where you can see what you are approving. To put up to 240 characters of the text in the notification and get the lock-screen actions above, set:
+
+```yaml
+human:
+  surfaces:
+    ios:
+      preview: true
+```
 
 Broadcasts reach the phone only with `human.broadcast: true` and `human.surfaces.ios.broadcast: true`. Each push's outcome is on the message's trace (`surface_pushed` or `surface_failed`, `surface: ios`).
 

@@ -29,7 +29,9 @@ For the hosted relay at `repowire.io`, this means the operators *could* see your
 
 ## Push notifications
 
-Push notifications carry the sender's name and up to 240 characters of the message or question text. The text passes through the relay and Apple Push Notification service to reach the device, which is wider exposure than the tunnel alone. Pushes go only to devices registered on your daemon (`/push/devices`), and only for items stored in the [human inbox](../concepts/human-inbox.md). The relay trusts the daemon's list of tokens: any holder of a relay key can push to a token it knows, within the relay's rate limit.
+By default, push notifications are content-free. They carry the sender's name, the kind of item, and ids the app uses to fetch it; the message text stays in the tunnel. With `human.surfaces.ios.preview: true`, a notification also carries up to 240 characters of the text. That text passes through Apple Push Notification service and shows on the lock screen, which is wider exposure than the tunnel alone.
+
+Pushes go only to devices registered on your daemon (`/push/devices`), and only for items stored in the [human inbox](../concepts/human-inbox.md). The hosted relay sends a daemon's push only to tokens registered through the tunnel under the same relay key, so one tenant cannot put alerts on another tenant's phone. Anyone holding your relay key can register their own phone and receive your inbox's notifications. That is the same trust the key already grants for reading the inbox (`GET /inbox`) through the relay.
 
 ## Trust boundaries
 

@@ -51,8 +51,11 @@ Configure the relay with all four variables, or none to leave push off:
 | `REPOWIRE_RELAY_APNS_KEY_ID` | Key id of the `.p8` APNs auth key |
 | `REPOWIRE_RELAY_APNS_KEY_PATH` | Path to the `.p8` file |
 | `REPOWIRE_RELAY_APNS_TOPIC` | The app's bundle id (`io.repowire.app`) |
+| `REPOWIRE_RELAY_APNS_BINDINGS_DB` | Optional. SQLite path for device-token bindings, so they survive a relay restart. Without it they are kept in memory. |
 
-Each push names an environment per device (`sandbox` for development builds, `production` otherwise). The relay sends at most 30 pushes per minute per relay key and 10 devices per push. Tokens APNs rejects as unregistered or invalid are reported back to the daemon, which deletes them. Failures are recorded on the message's trace as `surface_failed` with `surface: ios`.
+The relay sends a push only to tokens registered under the same relay key. It sees each `POST /push/devices` the app makes through the tunnel, and once the daemon accepts it, it binds the token to that key's user. A tunneled `DELETE /push/devices/{token}` unbinds it. A registration under a different key moves the token to that key. A token not bound to the pushing daemon's key is skipped and reported back as unbound; the daemon keeps it, and the app's next launch re-registers it. One key holds at most 20 bindings, and the oldest is dropped first.
+
+Each push names an environment per device (`sandbox` for development builds, `production` otherwise). The relay checks a rate limit of 30 pushes per minute per relay key as each frame arrives, and sends from a bounded queue (4 workers, 16 queued per daemon connection). It refuses at once anything over either limit, and sends to at most 10 devices per push. Tokens APNs rejects as unregistered or invalid are reported back to the daemon, which deletes them. Failures are recorded on the message's trace as `surface_failed` with `surface: ios`.
 
 ## Related
 

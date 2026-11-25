@@ -37,11 +37,13 @@ type Relay interface {
 type Surface struct {
 	devices Devices
 	relay   Relay
+	preview bool
 }
 
 // NewSurface wires the surface to the device store and the relay client.
-func NewSurface(devices Devices, relay Relay) *Surface {
-	return &Surface{devices: devices, relay: relay}
+// preview (human.surfaces.ios.preview) puts message text in the alert.
+func NewSurface(devices Devices, relay Relay, preview bool) *Surface {
+	return &Surface{devices: devices, relay: relay, preview: preview}
 }
 
 // Name is the surface name the inbox records.
@@ -68,7 +70,7 @@ func (s *Surface) Push(ctx context.Context, item *state.InboxItem) error {
 	if len(devices) == 0 {
 		return errors.New("no registered devices")
 	}
-	frame := Alert(item)
+	frame := Alert(item, s.preview)
 	targets := make([]map[string]any, 0, len(devices))
 	for _, device := range devices {
 		targets = append(targets, map[string]any{"token": device.Token, "environment": device.Environment})
@@ -89,7 +91,11 @@ func (s *Surface) Push(ctx context.Context, item *state.InboxItem) error {
 // Alert maps an inbox item to the relay's push frame. The app reads the item
 // itself through GET /inbox/{id}; the alert carries what the lock screen shows
 // and what its actions need.
-func Alert(item *state.InboxItem) map[string]any {
+//
+// Without preview the alert is content-free: a title naming the sender and
+// kind, no text, no question options, and the MESSAGE category, so approving
+// or answering means opening the app and reading what is being approved.
+func Alert(item *state.InboxItem, preview bool) map[string]any {
 	from := strings.TrimPrefix(item.FromName, "@")
 	if from == "" {
 		from = "repowire"
@@ -114,10 +120,15 @@ func Alert(item *state.InboxItem) map[string]any {
 	if item.CorrelationID != "" {
 		thread = item.CorrelationID
 	}
+	body := truncate(item.Text, maxBody)
+	if !preview {
+		body, category = "Open Repowire to read it.", "MESSAGE"
+		delete(data, "options")
+	}
 	return map[string]any{
 		"push_id":   item.ID,
 		"title":     title,
-		"body":      truncate(item.Text, maxBody),
+		"body":      body,
 		"thread_id": thread,
 		"category":  category,
 		"data":      data,

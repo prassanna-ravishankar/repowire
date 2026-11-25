@@ -82,6 +82,7 @@ func TestRelayPushSendsToAPNsAndReportsDeadTokens(t *testing.T) {
 	relay := New("")
 	sender, seen := testAPNs(t)
 	relay.apns = sender
+	bindToken(t, relay, "rw_test-push-key", liveToken, deadToken)
 	server := httptest.NewServer(relay.Handler())
 	t.Cleanup(server.Close)
 	conn := connectDaemon(t, server.URL, "rw_test-push-key")
@@ -108,6 +109,172 @@ func TestRelayPushSendsToAPNsAndReportsDeadTokens(t *testing.T) {
 	first := <-seen
 	if first.Header.Get("apns-topic") != "io.repowire.app" || first.Header.Get("apns-push-type") != "alert" || first.ProtoMajor != 2 {
 		t.Fatalf("apns request headers = %v proto=%d", first.Header, first.ProtoMajor)
+	}
+	if relay.pushOwners.owner(deadToken) != "" {
+		t.Fatal("a dead token should lose its binding")
+	}
+}
+
+// bindToken records tokens as registered by key's user, as a tunneled
+// POST /push/devices would.
+func bindToken(t *testing.T, s *Server, key string, tokens ...string) {
+	t.Helper()
+	apiKey, ok := s.tokens.validate(key)
+	if !ok {
+		t.Fatalf("key %q not valid", key)
+	}
+	for _, token := range tokens {
+		s.pushOwners.bind(token, apiKey.UserID, time.Now())
+	}
+}
+
+// One tenant's daemon cannot put an alert on a phone another tenant
+// registered (review of #607): the relay sends only to tokens its own user
+// registered and reports the rest as unbound.
+func TestRelayPushSkipsTokensAnotherUserRegistered(t *testing.T) {
+	relay := New("")
+	sender, seen := testAPNs(t)
+	relay.apns = sender
+	bindToken(t, relay, "rw_victim-key-with-entropy", liveToken)
+	server := httptest.NewServer(relay.Handler())
+	t.Cleanup(server.Close)
+	conn := connectDaemon(t, server.URL, "rw_attacker-key-with-entropy")
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	_ = wsjson.Write(ctx, conn, map[string]any{
+		"type": "push", "id": "req-1", "title": "@backend needs approval", "category": "APPROVAL",
+		"devices": []map[string]any{{"token": liveToken, "environment": "production"}},
+	})
+	var result map[string]any
+	if err := wsjson.Read(ctx, conn, &result); err != nil {
+		t.Fatal(err)
+	}
+	unbound, _ := result["unbound_tokens"].([]any)
+	if len(unbound) != 1 || unbound[0] != liveToken || !strings.Contains(stringValue(result["error"]), "no device token") {
+		t.Fatalf("result = %v", result)
+	}
+	select {
+	case req := <-seen:
+		t.Fatalf("APNs was called for another user's token: %v", req.URL)
+	default:
+	}
+}
+
+// A rate-limited daemon is refused from the read loop, before any work is
+// queued (review of #607).
+func TestRelayPushRateLimitIsCheckedInline(t *testing.T) {
+	relay := New("")
+	sender, seen := testAPNs(t)
+	relay.apns = sender
+	key := "rw_test-push-flood"
+	bindToken(t, relay, key, liveToken)
+	apiKey, _ := relay.tokens.validate(key)
+	for range pushesPerMinute {
+		sender.allow(apiKey.UserID, time.Now())
+	}
+	server := httptest.NewServer(relay.Handler())
+	t.Cleanup(server.Close)
+	conn := connectDaemon(t, server.URL, key)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	_ = wsjson.Write(ctx, conn, map[string]any{"type": "push", "id": "req-9", "devices": []map[string]any{{"token": liveToken, "environment": "production"}}})
+	var result map[string]any
+	if err := wsjson.Read(ctx, conn, &result); err != nil {
+		t.Fatal(err)
+	}
+	if result["id"] != "req-9" || !strings.Contains(stringValue(result["error"]), "rate limit") {
+		t.Fatalf("result = %v", result)
+	}
+	select {
+	case <-seen:
+		t.Fatal("a rate-limited push reached APNs")
+	default:
+	}
+}
+
+// The relay binds a token when the daemon accepts a tunneled registration,
+// and unbinds it on a tunneled delete; a refused registration binds nothing.
+func TestTunnelRegistrationBindsTheToken(t *testing.T) {
+	relay := New("")
+	server := httptest.NewServer(relay.Handler())
+	t.Cleanup(server.Close)
+	key := "rw_test-push-register"
+	conn := connectDaemon(t, server.URL, key)
+	apiKey, _ := relay.tokens.validate(key)
+	status := make(chan int, 1)
+	go func() {
+		for {
+			var request map[string]any
+			if wsjson.Read(context.Background(), conn, &request) != nil {
+				return
+			}
+			_ = wsjson.Write(context.Background(), conn, map[string]any{
+				"type": "http_response", "request_id": request["request_id"], "status": <-status,
+				"headers": map[string]string{"Content-Type": "application/json"}, "body": base64.StdEncoding.EncodeToString([]byte(`{"ok":true}`)),
+			})
+		}
+	}()
+	do := func(method, path, body string, daemonStatus int) {
+		t.Helper()
+		status <- daemonStatus
+		req, _ := http.NewRequest(method, server.URL+path, strings.NewReader(body))
+		req.Header.Set("Authorization", "bearer "+key)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = resp.Body.Close()
+		if resp.StatusCode != daemonStatus {
+			t.Fatalf("%s %s = %d", method, path, resp.StatusCode)
+		}
+	}
+
+	do(http.MethodPost, "/push/devices", `{"token":"`+deadToken+`","environment":"production"}`, http.StatusBadRequest)
+	if relay.pushOwners.owner(deadToken) != "" {
+		t.Fatal("a registration the daemon refused must not bind")
+	}
+	do(http.MethodPost, "/push/devices", `{"token":"`+strings.ToUpper(liveToken)+`","environment":"production"}`, http.StatusOK)
+	if relay.pushOwners.owner(liveToken) != apiKey.UserID {
+		t.Fatalf("owner = %q, want %q", relay.pushOwners.owner(liveToken), apiKey.UserID)
+	}
+	do(http.MethodDelete, "/push/devices/"+liveToken, "", http.StatusOK)
+	if relay.pushOwners.owner(liveToken) != "" {
+		t.Fatal("a tunneled delete should unbind")
+	}
+}
+
+func TestPushBindingsPersistAndCapPerUser(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "bindings.db")
+	b, err := openPushBindings(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	start := time.Now()
+	for i := range maxTokensPerUser + 2 {
+		b.bind(strings.Repeat(string(rune('a'+i%6)), 63)+string(rune('0'+i%10)), "u1", start.Add(time.Duration(i)*time.Second))
+	}
+	b.bind(liveToken, "u2", start)
+	b.unbind(liveToken, "u1") // not u1's: no effect
+	b.close()
+
+	reopened, err := openPushBindings(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reopened.close()
+	if reopened.owner(liveToken) != "u2" {
+		t.Fatal("binding did not survive a restart")
+	}
+	count := 0
+	for _, o := range reopened.owners {
+		if o.user == "u1" {
+			count++
+		}
+	}
+	if count != maxTokensPerUser {
+		t.Fatalf("u1 holds %d tokens, want the cap %d", count, maxTokensPerUser)
 	}
 }
 
@@ -183,7 +350,8 @@ func TestInboxSurfacePushRoundTripsThroughTheRelay(t *testing.T) {
 	t.Cleanup(client.Stop)
 	waitForDaemon(t, server.URL, key, "laptop")
 
-	surface := push.NewSurface(store, client)
+	bindToken(t, relayServer, key, liveToken, deadToken)
+	surface := push.NewSurface(store, client, true)
 	if !surface.Live() {
 		t.Fatal("surface with a registered device and a connected relay should be live")
 	}
@@ -198,10 +366,5 @@ func TestInboxSurfacePushRoundTripsThroughTheRelay(t *testing.T) {
 	devices, _ := store.ListPushDevices(ctx)
 	if len(devices) != 1 || devices[0].Token != liveToken {
 		t.Fatalf("devices after push = %+v", devices)
-	}
-
-	relayServer.apns = nil
-	if err := surface.Push(ctx, item); err == nil || !strings.Contains(err.Error(), "not configured") {
-		t.Fatalf("push through a relay without APNs = %v", err)
 	}
 }

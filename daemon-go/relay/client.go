@@ -223,9 +223,12 @@ func (c *Client) EnsureRunning(parent context.Context) bool {
 }
 
 // PushResult is the relay's answer to one push: the device tokens APNs
-// reported dead, which the daemon should forget.
+// reported dead, which the daemon should forget, and the tokens the relay did
+// not send to because they are not registered to this relay key (kept: the
+// app re-registers them on its next launch).
 type PushResult struct {
 	InvalidTokens []string
+	UnboundTokens []string
 }
 
 // Push hands an APNs push frame to the relay, which holds the APNs key, and
@@ -244,17 +247,22 @@ func (c *Client) Push(ctx context.Context, frame map[string]any) (PushResult, er
 	if err != nil {
 		return PushResult{}, err
 	}
-	var result PushResult
-	raw, _ := r.frame["invalid_tokens"].([]any)
-	for _, value := range raw {
-		if token, ok := value.(string); ok && token != "" {
-			result.InvalidTokens = append(result.InvalidTokens, token)
-		}
-	}
+	result := PushResult{InvalidTokens: stringList(r.frame["invalid_tokens"]), UnboundTokens: stringList(r.frame["unbound_tokens"])}
 	if text := stringField(r.frame, "error"); text != "" {
 		return result, errors.New(text)
 	}
 	return result, nil
+}
+
+func stringList(raw any) []string {
+	values, _ := raw.([]any)
+	var out []string
+	for _, value := range values {
+		if text, ok := value.(string); ok && text != "" {
+			out = append(out, text)
+		}
+	}
+	return out
 }
 
 // Stop signals shutdown and blocks until the loop exits.

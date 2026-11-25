@@ -49,6 +49,13 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
         let center = UNUserNotificationCenter.current()
         center.delegate = self
         center.setNotificationCategories(PushCategory.all)
+        // Re-register on every launch once permitted: Apple may rotate the
+        // token, and the relay binds a token to the key that last registered it.
+        Task {
+            if await Notifications.status() == .authorized {
+                await MainActor.run { application.registerForRemoteNotifications() }
+            }
+        }
         return true
     }
 
