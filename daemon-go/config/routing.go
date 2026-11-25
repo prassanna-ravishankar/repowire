@@ -37,10 +37,10 @@ type RouterConfig struct {
 	// AllowHumanTargets lets a strategy deliver a targetless ask to the
 	// human peer (its inbox) while service peers stay excluded. Off by
 	// default until the policy is decided.
-	AllowHumanTargets bool        `yaml:"allow_human_targets"`
-	Jev               RouterModel `yaml:"jev"`
-	Frontier          RouterModel `yaml:"frontier"`
-	Clef              RouterClef  `yaml:"clef"`
+	AllowHumanTargets bool           `yaml:"allow_human_targets"`
+	Jev               RouterModel    `yaml:"jev"`
+	Frontier          RouterFrontier `yaml:"frontier"`
+	Clef              RouterClef     `yaml:"clef"`
 }
 
 // RouterModel is one model-backed arm's endpoint.
@@ -48,6 +48,15 @@ type RouterModel struct {
 	APIKey  string `yaml:"api_key"`
 	Model   string `yaml:"model"`
 	BaseURL string `yaml:"base_url"`
+}
+
+// RouterFrontier is the frontier-* arms' endpoint and answer shape.
+type RouterFrontier struct {
+	RouterModel `yaml:",inline"`
+	// KeyedScoresMaxCandidates is the most candidates scored as one required
+	// property per key; larger sets are scored as a list the parser checks
+	// for completeness (#484). Zero or less means the default, 69 (the largest set seen to compile, #484).
+	KeyedScoresMaxCandidates int `yaml:"keyed_scores_max_candidates"`
 }
 
 // RouterClef is the Cloudflare Workers AI endpoint behind the clef-* arms
@@ -73,7 +82,7 @@ func defaultRouting() RouterConfig {
 	return RouterConfig{
 		Strategy: StrategyStatic, RecordText: true, TimeoutSeconds: 8,
 		Jev:      RouterModel{Model: "jev-1.13.0", BaseURL: "https://api.typesafe.ai"},
-		Frontier: RouterModel{Model: "claude-opus-5-5"},
+		Frontier: RouterFrontier{RouterModel: RouterModel{Model: "claude-opus-5-5"}, KeyedScoresMaxCandidates: 69},
 		Clef: RouterClef{
 			RouterModel: RouterModel{Model: "@cf/cloudflare/clef", BaseURL: "https://api.cloudflare.com/client/v4"},
 			FlashModel:  "@cf/cloudflare/clef-flash",
@@ -94,7 +103,7 @@ const (
 )
 
 // routerEnvKeys are the per-field routing env vars, after their prefix.
-var routerEnvKeys = []string{"RECORD", "RECORD_TEXT", "SHADOW_ARMS", "TIMEOUT_SECONDS", "ALLOW_SERVICE_TARGETS", "JEV__API_KEY", "JEV__MODEL", "JEV__BASE_URL", "FRONTIER__API_KEY", "FRONTIER__MODEL", "FRONTIER__BASE_URL"}
+var routerEnvKeys = []string{"RECORD", "RECORD_TEXT", "SHADOW_ARMS", "TIMEOUT_SECONDS", "ALLOW_SERVICE_TARGETS", "JEV__API_KEY", "JEV__MODEL", "JEV__BASE_URL", "FRONTIER__API_KEY", "FRONTIER__MODEL", "FRONTIER__BASE_URL", "FRONTIER__KEYED_SCORES_MAX_CANDIDATES"}
 
 // The rule for this block: an optional feature's configuration must never
 // stop the daemon from starting. Legacy keys are migrated in memory with a
@@ -268,7 +277,7 @@ func (l legacyRouter) migrate() (RouterConfig, error) {
 
 // redactedYAML renders the block as a routing: section with keys hidden.
 func (r RouterConfig) redactedYAML() string {
-	for _, m := range []*RouterModel{&r.Jev, &r.Frontier, &r.Clef.RouterModel} {
+	for _, m := range []*RouterModel{&r.Jev, &r.Frontier.RouterModel, &r.Clef.RouterModel} {
 		if m.APIKey != "" {
 			m.APIKey = "<set>"
 		}
@@ -308,6 +317,7 @@ func applyRouterEnv(r *RouterConfig, prefix string) {
 	setStringEnv(&r.Frontier.APIKey, prefix+"FRONTIER__API_KEY")
 	setStringEnv(&r.Frontier.Model, prefix+"FRONTIER__MODEL")
 	setStringEnv(&r.Frontier.BaseURL, prefix+"FRONTIER__BASE_URL")
+	setIntEnv(&r.Frontier.KeyedScoresMaxCandidates, prefix+"FRONTIER__KEYED_SCORES_MAX_CANDIDATES")
 }
 
 // applyRoutingEnv applies REPOWIRE_ROUTING__* and the provider key vars.

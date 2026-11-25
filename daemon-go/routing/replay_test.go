@@ -218,3 +218,28 @@ func TestLoadExamplesReadsSkipsFromDecision(t *testing.T) {
 		t.Fatalf("skipped = %v", rep.Skipped)
 	}
 }
+
+// Replay splits the fallback rate by model and by the frontier answer shape
+// (#484): here a keyed refusal on one model and a listed answer on another.
+func TestReplaySplitsFallbacksByModelAndScoresShape(t *testing.T) {
+	refused := RouterResult{Model: "claude-sonnet-5-5", Fallback: true, FallbackReason: FallbackRequestError, HTTPStatus: 400,
+		Signals: map[string]float64{"scores_listed": 0}}
+	listed := ranked("repow-b")
+	listed.Model, listed.Signals = "claude-opus-5-5", map[string]float64{"scores_listed": 1}
+	plain := ranked("repow-b") // an arm with neither: counted in neither split
+	answers := map[string]RouterResult{"ask-1": refused, "ask-2": listed, "ask-3": plain}
+	examples := []Example{example("ask-1", "repow-b", ArmExplicit, nil), example("ask-2", "repow-b", ArmExplicit, nil), example("ask-3", "repow-b", ArmExplicit, nil)}
+	rep, rows := Replay(context.Background(), examples, "stub", func(_ context.Context, in Input) RouterResult { return answers[in.TraceID] }, Options{})
+	if c := rep.Models["claude-sonnet-5-5"]; c == nil || c.Scored != 1 || c.Fallbacks != 1 {
+		t.Fatalf("models = %+v", rep.Models)
+	}
+	if c := rep.Models["claude-opus-5-5"]; c == nil || c.Scored != 1 || c.Fallbacks != 0 || c.Hit1 != 1 {
+		t.Fatalf("models = %+v", rep.Models)
+	}
+	if k, l := rep.ScoresShapes["keyed"], rep.ScoresShapes["listed"]; k == nil || l == nil || k.Fallbacks != 1 || l.Fallbacks != 0 || len(rep.ScoresShapes) != 2 {
+		t.Fatalf("shapes = %+v", rep.ScoresShapes)
+	}
+	if rows[0].ScoresShape != "keyed" || rows[1].ScoresShape != "listed" || rows[2].ScoresShape != "" {
+		t.Fatalf("rows = %+v", rows)
+	}
+}

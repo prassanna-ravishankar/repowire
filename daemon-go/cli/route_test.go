@@ -116,3 +116,20 @@ func TestRouteShowPrintsEffectiveConfigAfterDegradation(t *testing.T) {
 		t.Fatalf("route show printed the rejected strategy as running:\n%s", text)
 	}
 }
+
+// The table splits by model and by the frontier answer shape (#484).
+func TestReplayTableSplitsByModelAndScoresShape(t *testing.T) {
+	var out strings.Builder
+	printReplayTable(&out, []routing.Report{{
+		Arm: "frontier-claimed", Source: "rerun", Decisions: 2, Scored: 2, Fallbacks: 1,
+		Skipped: map[string]int{}, Cohorts: map[string]*routing.Cohort{},
+		Models:       map[string]*routing.Cohort{"claude-sonnet-5-5": {Scored: 2, Fallbacks: 1}},
+		ScoresShapes: map[string]*routing.Cohort{"keyed": {Scored: 1, Fallbacks: 1}, "listed": {Scored: 1}},
+	}})
+	text := out.String()
+	for _, want := range []string{"model claude-sonnet-5-5", "scored 2, fallbacks 1", "scores keyed", "scores listed"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("table missing %q:\n%s", want, text)
+		}
+	}
+}

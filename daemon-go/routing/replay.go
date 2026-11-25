@@ -179,8 +179,13 @@ type Result struct {
 	// never-asked verdicts (field, ledger or mixed).
 	NeverAskedSource string `json:"never_asked_source,omitempty"`
 	Candidates       int    `json:"candidates"`
-	Fallback         bool   `json:"fallback,omitempty"`
-	FallbackReason   string `json:"fallback_reason,omitempty"`
+	// Model is the model that answered, or the configured one on a failure.
+	Model string `json:"model,omitempty"`
+	// ScoresShape is the frontier arm's answer shape: keyed (one required
+	// property per candidate) or listed (above its keyed maximum, #484).
+	ScoresShape    string `json:"scores_shape,omitempty"`
+	Fallback       bool   `json:"fallback,omitempty"`
+	FallbackReason string `json:"fallback_reason,omitempty"`
 	// FallbackStatus, FallbackProvider and FallbackCode attribute a failure
 	// (our request or their service). No recorded text is ever exported.
 	FallbackStatus   int     `json:"fallback_status,omitempty"`
@@ -239,6 +244,11 @@ type Report struct {
 	// recent contact. The rows where it did not are the real test of an
 	// attested arm.
 	Recency map[string]*Cohort `json:"recency"`
+	// Models and ScoresShapes split the scored asks by model and by the
+	// frontier arm's answer shape, so a fallback rate can be read per model
+	// and per shape (#484).
+	Models       map[string]*Cohort `json:"models,omitempty"`
+	ScoresShapes map[string]*Cohort `json:"scores_shapes,omitempty"`
 }
 
 // Recency strata.
@@ -329,6 +339,10 @@ func Replay(ctx context.Context, examples []Example, armName string, runner func
 			continue
 		}
 		r.Fallback, r.FallbackReason, r.LatencyMS = res.Fallback, res.FallbackReason, res.LatencyMS
+		r.Model = res.Model
+		if listed, ok := res.Signals["scores_listed"]; ok {
+			r.ScoresShape = map[bool]string{false: "keyed", true: "listed"}[listed == 1]
+		}
 		r.NeverAskedSource = res.NeverAskedSource
 		if res.Fallback {
 			r.FallbackStatus, r.FallbackCode = Attribution(res)
@@ -383,6 +397,18 @@ func Replay(ctx context.Context, examples []Example, armName string, runner func
 		}
 		tally(rep.Cohorts, ex.Outcome.Delivery, r)
 		tally(rep.Recency, r.Recency, r)
+		if r.Model != "" {
+			if rep.Models == nil {
+				rep.Models = map[string]*Cohort{}
+			}
+			tally(rep.Models, r.Model, r)
+		}
+		if r.ScoresShape != "" {
+			if rep.ScoresShapes == nil {
+				rep.ScoresShapes = map[string]*Cohort{}
+			}
+			tally(rep.ScoresShapes, r.ScoresShape, r)
+		}
 		if n := float64(r.Candidates); n > 0 {
 			rep.Chance1 += 1 / n
 			rep.Chance3 += min(3, n) / n
