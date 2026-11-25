@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log"
 	"regexp"
+	"slices"
 	"sort"
 	"sync"
 	"time"
@@ -513,16 +514,23 @@ func (i *Inbox) threadable(cid string) string {
 	return cid
 }
 
-// progressThread keeps cid as a progress notify's thread when it is
-// threadable and sender is the ask's asker or current holder, so a peer
-// outside the ask cannot post into the human's thread. Like threadable, a
-// cid that does not qualify yields an unthreaded item, never an error.
+// progressThread keeps cid as a progress notify's thread when it names an
+// open ask between the human and sender, its asker or current holder, so a
+// peer outside the ask cannot post into the human's thread and nothing posts
+// under an ask already closed. One snapshot answers every test: the ask can
+// be pruned at any moment. Like threadable, a cid that does not qualify
+// yields an unthreaded item, never an error.
 func (i *Inbox) progressThread(cid, sender string) string {
-	if i.threadable(cid) == "" || sender == "" {
+	if cid == "" || sender == "" || i.asks == nil {
 		return ""
 	}
-	ask, _ := i.asks.Get(cid)
-	if string(ask.FromPeerID) != sender && string(ask.ToPeerID) != sender {
+	ask, ok := i.asks.Get(cid)
+	if !ok || ask.Closed {
+		return ""
+	}
+	human, _ := i.Human()
+	parties := []proto.PeerID{ask.FromPeerID, ask.ToPeerID}
+	if !slices.Contains(parties, human) || !slices.Contains(parties, proto.PeerID(sender)) {
 		return ""
 	}
 	return cid

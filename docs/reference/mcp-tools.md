@@ -243,7 +243,7 @@ notify_peer("telegram", "CI is running, 3 of 5 green", correlation_id="ask-1a2b3
 # notif-delivery-5e6f7a8b inbox_item=inb-9c0d1e2f surfaces=telegram thread=ask-1a2b3c4d
 ```
 
-It stays a notify: it never answers, acks or closes the ask (use `ack` for that). It threads only when the daemon still tracks the ask, the user is a party to it, and you asked it or hold it now. Otherwise it is delivered unthreaded and the result ends with `thread=none`. A `correlation_id` on a notify to anyone but the user is refused, and so is one on a `name@machine` address. The `dashboard` already sees agent turns; you do not need to notify it.
+It stays a notify: it never answers, acks or closes the ask (use `ack` for that). It threads only while the ask is open, the user is a party to it, and you asked it or hold it now. Otherwise it is delivered unthreaded and the result ends with `thread=none`. A `correlation_id` on a notify to anyone but the user is refused, and so is one on a `name@machine` address. The `dashboard` already sees agent turns; you do not need to notify it.
 
 `ask`, reply `ack`, and `notify_peer` accept optional attachment metadata
 objects (`id`, `path`, `filename`, `size`, `content_type`). Text-only calls are

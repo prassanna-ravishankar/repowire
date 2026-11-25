@@ -91,4 +91,17 @@ func TestNotifyProgressThreadsUnderTheHumansAsk(t *testing.T) {
 	if ask, _ := s.asks.Get(cid); ask.Closed {
 		t.Fatal("progress notifies closed the ask")
 	}
+
+	// Once the ask is closed, progress no longer threads under it, though
+	// the tracker still holds it for its TTL.
+	if _, ok := s.asks.Resolve(ctx, cid, "ack", nil, nil); !ok {
+		t.Fatal("resolve")
+	}
+	if code, res := notify(string(alpha.id), "prass", cid); code != http.StatusOK || res["thread_id"] != nil {
+		t.Fatalf("progress on a closed ask: %d %+v", code, res)
+	}
+	got, err = s.h.mcpNotifyPeer(ctx, s.mcpDel, mcpNotifyPeerArgs{PeerName: "prass", Message: "done?", CorrelationID: cid}, string(alpha.id))
+	if err != nil || !strings.HasSuffix(mcpText(t, got), " thread=none") {
+		t.Fatalf("mcp progress on a closed ask: %v %v", got, err)
+	}
 }
