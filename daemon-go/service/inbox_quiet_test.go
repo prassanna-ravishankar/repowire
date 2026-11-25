@@ -313,3 +313,48 @@ func TestPresenceReportsQuietAndHeld(t *testing.T) {
 		t.Fatalf("telegram presence = %v", tg)
 	}
 }
+
+// A surface that reconnects inside its window is held what it missed, as a
+// live Store would have held it.
+func TestReconnectInTheWindowHoldsWhatItMissed(t *testing.T) {
+	f := newQuietFixture(t, false, nil, true)
+	f.transport.mu.Lock()
+	f.transport.connected[f.telegram.PeerID] = false
+	f.transport.mu.Unlock()
+	id := f.store(t, InboxStoreParams{Text: "sent while the bridge was down"})
+	f.transport.mu.Lock()
+	f.transport.connected[f.telegram.PeerID] = true
+	f.transport.mu.Unlock()
+	f.at(23, 30)
+	f.inbox.CatchUp(f.telegram, f.clk.Add(-time.Hour))
+	f.settle()
+	if ids := f.pushedIDs(); len(ids) != 0 || f.status(t, id) != state.PushHeld {
+		t.Fatalf("reconnect in the window pushed %v (status %q), want held", ids, f.status(t, id))
+	}
+}
+
+// A release whose push fails returns the item to held, and the next trigger
+// delivers it: a failure never strands an item the human did not see.
+func TestFailedReleaseIsHeldAgain(t *testing.T) {
+	f := newQuietFixture(t, false, nil, true)
+	id := f.store(t, InboxStoreParams{Text: "retry me"})
+	f.transport.mu.Lock()
+	f.transport.receipts[f.telegram.PeerID] = func(map[string]any) map[string]any {
+		return map[string]any{"status": "failed", "error_class": "network"}
+	}
+	f.transport.mu.Unlock()
+	f.at(7, 0)
+	f.release()
+	if got := f.status(t, id); got != state.PushHeld {
+		t.Fatalf("after a failed release the status is %q, want held", got)
+	}
+	f.transport.mu.Lock()
+	f.transport.receipts[f.telegram.PeerID] = func(map[string]any) map[string]any {
+		return map[string]any{"status": "pushed", "surface_ref": "777"}
+	}
+	f.transport.mu.Unlock()
+	f.release()
+	if got := f.status(t, id); got != state.PushPushed {
+		t.Fatalf("the retry left status %q", got)
+	}
+}

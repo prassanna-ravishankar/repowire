@@ -1,6 +1,7 @@
 package hub
 
 import (
+	"net/http"
 	"sync"
 	"testing"
 	"time"
@@ -65,5 +66,15 @@ func TestQuietHoursOverTheWire(t *testing.T) {
 	pushed := bridge.waitFrame(ofType("inbox_item"))
 	if item, _ := pushed["item"].(map[string]any); item["text"] != "the nightly build passed" {
 		t.Fatalf("released %+v", pushed)
+	}
+	// GET /inbox reads presence fresh: the window has ended.
+	resp, err := http.Get(s.srv.URL + "/inbox")
+	if err != nil {
+		t.Fatal(err)
+	}
+	listed := decodeBody(t, resp)
+	surfaces, _ := listed["surfaces"].(map[string]any)
+	if tg, _ := surfaces["telegram"].(map[string]any); tg["quiet"] != false {
+		t.Fatalf("telegram presence after the window = %v", tg)
 	}
 }

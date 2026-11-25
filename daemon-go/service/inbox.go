@@ -520,10 +520,18 @@ func (i *Inbox) CatchUp(p *proto.Peer, liveSince time.Time) {
 			log.Printf("inbox: catch-up for %s: %v", target.name, err)
 			return
 		}
+		now := i.now()
 		for n := len(items) - 1; n >= 0 && i.baseCtx.Err() == nil; n-- {
-			if i.claimPush(i.baseCtx, items[n].ID, target.name) {
-				i.push(&items[n], target)
+			if !i.claimPush(i.baseCtx, items[n].ID, target.name) {
+				continue
 			}
+			// A reconnect in the surface's quiet window holds what it
+			// missed, as a live Store would have.
+			if i.holds(&items[n], target, now) {
+				i.hold(&items[n], target, now)
+				continue
+			}
+			i.push(&items[n], target)
 		}
 	})
 	// A reconnect is a release trigger too: outside its window the backlog

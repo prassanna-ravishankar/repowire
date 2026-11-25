@@ -168,9 +168,10 @@ func (i *Inbox) releaseHeld(target surfaceTarget) {
 	}
 	for n := range individual {
 		item := individual[n]
-		i.trace(ctx, &item, "surface_released", "", map[string]any{"item_id": item.ID, "surface": target.name, "outcome": "pushed"})
-		i.claim(item.ID, target.name) // push releases it
-		i.push(&item, target)
+		i.claim(item.ID, target.name)
+		out := i.deliver(&item, target)
+		i.release(item.ID, target.name)
+		i.recordRelease(&item, target.name, out, "")
 	}
 	if n, err := i.store.HeldInboxCount(ctx, target.name); err == nil {
 		i.setMayHold(target.name, n > 0)
@@ -203,10 +204,32 @@ func (i *Inbox) pushDigest(target surfaceTarget, items []state.InboxItem) {
 	out := i.deliver(summary, target)
 	out.refs = nil
 	for n := range items {
-		item := items[n]
-		i.trace(i.baseCtx, &item, "surface_released", "", map[string]any{"item_id": item.ID, "surface": target.name, "outcome": "digest", "digest_id": summary.ID})
-		i.recordPush(&item, target.name, out)
+		i.recordRelease(&items[n], target.name, out, summary.ID)
 	}
+}
+
+// recordRelease records a released item's push. A release that failed
+// (the bridge went away, a full queue) returns the item to held, so the next
+// trigger tries again: a failure must not strand an item the human never
+// saw. digestID names the summary it went in, if any.
+func (i *Inbox) recordRelease(item *state.InboxItem, surface string, out pushOutcome, digestID string) {
+	detail := map[string]any{"item_id": item.ID, "surface": surface, "outcome": "pushed"}
+	if digestID != "" {
+		detail["outcome"], detail["digest_id"] = "digest", digestID
+	}
+	if out.err != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := i.store.RecordInboxPush(ctx, item.ID, state.InboxPush{Surface: surface, Status: state.PushHeld, ErrorClass: out.errorClass}); err != nil {
+			log.Printf("inbox: return %s to held on %s: %v", item.ID, surface, err)
+		}
+		i.setMayHold(surface, true)
+		detail["outcome"], detail["error_class"] = "held_again", out.errorClass
+		i.trace(ctx, item, "surface_released", "fail", detail)
+		return
+	}
+	i.trace(i.baseCtx, item, "surface_released", "", detail)
+	i.recordPush(item, surface, out)
 }
 
 func (i *Inbox) setMayHold(surface string, may bool) {
