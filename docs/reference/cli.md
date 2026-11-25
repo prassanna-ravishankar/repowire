@@ -251,6 +251,7 @@ Experimental (`experiments.swarm_snapshot`, see [#505](https://github.com/prassa
 
 ```bash
 repowire swarm snapshot [-o FILE] [--force]
+repowire swarm restore FILE [--apply] [--socket PATH | --allow-default-server]
 ```
 
 `snapshot` records every pane of the tmux server the daemon reaches (its default socket; panes on a server started with `-L` or `-S` are not seen) and the agent in each. It only reads; nothing is created, changed or stopped. With `-o` it writes the manifest owner-only (0600) and refuses to replace an existing file unless `--force`; otherwise it prints the JSON.
@@ -261,7 +262,16 @@ For each pane the manifest records its session, window index, name and layout (`
 - the current runtime session id, and `resume_ok`: whether that session's file exists now;
 - the model, the spawn profile, and the permission mode read from the live process (`permission.source` is `argv`, `hook` or `backend_default`), since after a reboot there is no process to read.
 
-Each agent also records `running`: whether its process was in the pane when the snapshot was taken. An agent the user quit leaves its pane mapped to an offline peer; it is recorded as not running and excluded. The orchestrator, the human and service peers, and sub-agents are recorded with an `exclude` reason too: a restore leaves those panes as plain shells. The manifest never holds message content, credentials, certificates, metadata, environment or a shell's command. Restore is a later step.
+Each agent also records `running`: whether its process was in the pane when the snapshot was taken. An agent the user quit leaves its pane mapped to an offline peer; it is recorded as not running and excluded. The orchestrator, the human and service peers, and sub-agents are recorded with an `exclude` reason too: a restore leaves those panes as plain shells. The manifest never holds message content, credentials, certificates, metadata, environment or a shell's command.
+
+`restore` asks the daemon to plan the snapshot against its state now (`POST /swarm/plan`) and prints the plan. The snapshot only says where panes go and which peer goes in each: what a launch resumes (backend, path, runtime session) comes from the daemon's own records, and an entry that disagrees with them is not relaunched. Each pane in its place is either a `launch`, the agent's resume in its registered path, or a shell, with the reason an agent is not relaunched: it is online, closed, a live job's executor, its session is bound to another peer, it has no session file, its permissions are not modeled, or it was excluded at snapshot time. Without `--apply` nothing else happens.
+
+With `--apply` the CLI builds the plan on a tmux server, starting it in your own environment:
+- **It never picks a server itself.** Name one with `--socket PATH`. The default server, where your agents run, needs `--allow-default-server`, even when named with `--socket`. Every tmux call names the server with `-S`.
+- **It is create-only.** If any session the plan names already exists there, nothing is created. No pane is ever killed, respawned or typed into: agent panes are created running their command.
+- **Placement:** each window gets its recorded index, name and layout, and each pane its cwd.
+- **Stagger:** an agent whose path an earlier one shares starts after that one has registered (bounded), so two sessions in one folder do not race into twins.
+- **Report:** each launched pane is reported to the daemon (`POST /swarm/placed`, accepted only for this plan's slots) and verified (`POST /swarm/verify`). Each agent is listed as `back`, `awaits_first_turn` (Codex registers on its first turn; restore never prompts it), `twin` (another identity came up in its pane) or `missing`. Nothing is rebound. A launch the daemon did not record is listed as `unrecorded` and fails the command: without the ownership record, `kill_peer` and restart cannot act on that pane.
 
 ## `repowire session`
 

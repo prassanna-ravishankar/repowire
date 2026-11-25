@@ -96,6 +96,7 @@ func newRootCommand() *cobra.Command {
 	root.AddCommand(wire)
 	root.AddCommand(group("swarm", "Snapshot the tmux layout and its agents (experiments.swarm_snapshot)", runSwarm, []leaf{
 		{"snapshot [-o FILE] [--force]", "Record every pane's place and the agent in it (read-only); 0600 file, or JSON to stdout"},
+		{"restore FILE [--apply] [--socket PATH | --allow-default-server]", "Plan a restore (dry run); --apply creates the sessions and resumes each agent, create-only"},
 	}))
 	root.AddCommand(group("container", "Spawned agents' container (rfcs/agent-container.md)", runContainer, []leaf{
 		{"report [--since 7d] [--db PATH] [--json]", "Summarise the exit-watch soak: tmux offline signals the agent's own exit confirmed or refuted"},

@@ -24,8 +24,10 @@ func runSwarm(argv []string) int {
 }
 
 func swarmCommand(c *client, argv []string) int {
-	a := parse(argv[1:], "force")
+	a := parse(argv[1:], "force", "apply", "allow-default-server")
 	switch argv[0] {
+	case "restore":
+		return swarmRestore(c, a)
 	case "snapshot":
 		result, err := c.request(http.MethodGet, "/swarm/snapshot", nil)
 		if err != nil {
@@ -46,7 +48,7 @@ func swarmCommand(c *client, argv []string) int {
 		fmt.Printf("wrote %s (%d panes)\n", out, len(panes))
 		return 0
 	}
-	return usage("swarm snapshot [-o FILE] [--force]")
+	return usage("swarm snapshot [-o FILE] [--force] | swarm restore FILE [--apply] [--socket PATH | --allow-default-server]")
 }
 
 // writeSnapshot writes the manifest owner-only (it names paths and session

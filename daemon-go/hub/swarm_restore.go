@@ -79,13 +79,19 @@ func (h *Hub) swarmPlan(ctx context.Context, m SwarmManifest) (SwarmPlan, error)
 		pane := SwarmPlanPane{PaneGeometry: p.PaneGeometry, Action: SwarmShell, CWD: p.CWD}
 		if a := p.Agent; a != nil {
 			pane.PeerID, pane.Backend = a.PeerID, a.Backend
-			if skip := h.swarmSkip(ctx, a, executors); skip != "" {
-				pane.Skip = skip
-			} else if cmd, skip := h.swarmCommand(a); skip != "" {
+			t, skip := h.swarmTrusted(ctx, a)
+			if skip == "" {
+				skip = h.swarmSkip(ctx, t, executors)
+			}
+			cmd := ""
+			if skip == "" {
+				cmd, skip = h.swarmCommand(t)
+			}
+			if skip != "" {
 				pane.Skip = skip
 			} else {
-				pane.Action, pane.CWD, pane.Command = SwarmLaunch, a.Path, cmd
-				pane.AwaitsFirstTurn = proto.AgentType(a.Backend) == proto.AgentCodex
+				pane.Action, pane.CWD, pane.Command = SwarmLaunch, t.Path, cmd
+				pane.AwaitsFirstTurn = proto.AgentType(t.Backend) == proto.AgentCodex
 			}
 		}
 		plan.Panes = append(plan.Panes, pane)
@@ -94,11 +100,45 @@ func (h *Hub) swarmPlan(ctx context.Context, m SwarmManifest) (SwarmPlan, error)
 	return plan, nil
 }
 
+// swarmTrusted is a with what a launch acts on (backend, path, runtime
+// session) taken from the daemon's own records, or why not. The manifest is
+// a file the user can edit; it decides only where panes go and which peer
+// goes in each. A manifest that disagrees with the daemon (an edit, or a
+// session that rotated since the snapshot) is not relaunched: a launch never
+// resumes a session as a peer, or in a directory, the daemon does not hold
+// for it.
+func (h *Hub) swarmTrusted(ctx context.Context, a *SwarmAgent) (*SwarmAgent, string) {
+	if a.Exclude != "" {
+		return a, a.Exclude
+	}
+	p := h.swarmPeer(a)
+	if p == nil {
+		return a, "unknown to this daemon"
+	}
+	// Recomputed from the daemon's record, so a manifest whose exclude was
+	// cleared cannot relaunch the orchestrator, a service or a sub-agent. A
+	// manifest exclude is still honoured above ("not running" is only
+	// knowable at snapshot time); honouring it only makes restore stricter.
+	if ex := swarmExclusion(p); ex != "" {
+		return a, ex
+	}
+	in := h.resumeInputsFor(ctx, p)
+	switch {
+	case string(p.Backend) != a.Backend:
+		return a, fmt.Sprintf("the snapshot says backend %s, the daemon's record says %s", a.Backend, p.Backend)
+	case in.cwd != a.Path:
+		return a, fmt.Sprintf("the snapshot says path %q, the daemon's record says %q", a.Path, in.cwd)
+	case in.resumeID != a.RuntimeSessionID:
+		return a, fmt.Sprintf("the snapshot's session %q is not the one the daemon holds for it (%q)", a.RuntimeSessionID, in.resumeID)
+	}
+	t := *a
+	t.Backend, t.Path, t.RuntimeSessionID = string(p.Backend), in.cwd, in.resumeID
+	return &t, ""
+}
+
 // swarmSkip is why an agent is not relaunched, or "".
 func (h *Hub) swarmSkip(ctx context.Context, a *SwarmAgent, executors map[proto.PeerID]string) string {
 	switch {
-	case a.Exclude != "":
-		return a.Exclude
 	case h.reg.Retirement(a.PeerID) == "hard":
 		return "closed by an operator"
 	case a.Path == "":
@@ -144,7 +184,7 @@ func (h *Hub) swarmPeer(a *SwarmAgent) *proto.Peer {
 	if !ok {
 		return nil
 	}
-	p := &proto.Peer{PeerID: a.PeerID, Backend: m.Backend, Circle: m.Circle, Role: m.Role, DisplayName: m.DisplayName}
+	p := &proto.Peer{PeerID: a.PeerID, Backend: m.Backend, Circle: m.Circle, Role: m.Role, DisplayName: m.DisplayName, Provenance: m.Provenance}
 	if m.Path != nil {
 		p.Path = *m.Path
 	}
@@ -370,7 +410,10 @@ func (p *issuedPlans) issue(plan SwarmPlan) string {
 }
 
 // consume accepts one placement: an unexpired plan, a launch slot for peer
-// not used before, and a pane in the slot's session and window.
+// not used before, and a pane in the slot's session and window. The window
+// is matched by name, which tmux does not keep unique within a session; that
+// is safe because the CLI only restores into sessions it creates itself (it
+// refuses any that exist), so every window it names was made by this plan.
 func (p *issuedPlans) consume(planID string, peer proto.PeerID, ev *service.TmuxPaneEvidence) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
