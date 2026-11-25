@@ -125,6 +125,11 @@ func TestJevFailuresFallBack(t *testing.T) {
 			if !res.Fallback || res.FallbackReason != tc.want || len(res.Scores) != 0 {
 				t.Fatalf("result = %+v, want fallback %s", res, tc.want)
 			}
+			// A refused or unreadable answer still says how large the
+			// request was (#462): a size limit reads as request_error at N.
+			if res.Signals["request_bytes"] <= 0 {
+				t.Fatalf("signals = %v, want request_bytes", res.Signals)
+			}
 		})
 	}
 	if res := Run(context.Background(), Jev{View: ViewClaimed}, testInput(), time.Second); res.FallbackReason != FallbackUnconfigured {
@@ -703,5 +708,32 @@ func TestFrontierAbstentionDefinition(t *testing.T) {
 				t.Fatalf("got %q, want %q (%+v)", got, tc.want, res)
 			}
 		})
+	}
+}
+
+// DecisionBench's c1 cards (about 125 KB for ten candidates) were refused with
+// 400 on every row (#462): the row is a request_error that says how large
+// the request was, and a served answer keeps the size beside its tokens.
+func TestJevRecordsItsRequestSize(t *testing.T) {
+	big := testInput()
+	for i := range big.Candidates {
+		big.Candidates[i].Description = strings.Repeat("card text ", 6400) // ~64 KB each
+	}
+	refuse := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	defer refuse.Close()
+	res := Run(context.Background(), Jev{View: ViewClaimed, APIKey: "k", BaseURL: refuse.URL}, big, time.Second)
+	if res.FallbackReason != FallbackRequestError || res.HTTPStatus != 400 || res.Signals["request_bytes"] < 100_000 {
+		t.Fatalf("large refused request = reason %s status %d signals %v", res.FallbackReason, res.HTTPStatus, res.Signals)
+	}
+	answer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"model":"jev-1","answers":{"c1":{"type":"noul","noul":0.7},"c2":{"type":"noul","noul":0.2}},"usage":{"input_tokens":120,"output_tokens":4}}`))
+	}))
+	defer answer.Close()
+	ok := Run(context.Background(), Jev{View: ViewClaimed, APIKey: "k", BaseURL: answer.URL}, testInput(), time.Second)
+	if ok.Fallback || ok.Signals["request_bytes"] <= 0 || ok.Signals["input_tokens"] != 120 || ok.Signals["output_tokens"] != 4 {
+		t.Fatalf("answered = %+v", ok)
 	}
 }

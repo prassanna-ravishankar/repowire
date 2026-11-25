@@ -36,27 +36,32 @@ func (j Jev) Rank(ctx context.Context, in Input) (RouterResult, error) {
 	if err != nil {
 		return RouterResult{}, fail(FallbackError)
 	}
+	// Every row that built a request records its size: a provider refusing
+	// a large card set (DecisionBench c1, about 125 KB, 400 on every row,
+	// #462) is then read as request_error at that size, not a bare 400.
+	signals := map[string]float64{"request_bytes": float64(len(body))}
 	status, raw, err := postJSON(ctx, j.HTTP, strings.TrimRight(j.BaseURL, "/")+"/v1/systemone", j.APIKey, body)
 	if err != nil {
-		return RouterResult{}, err
+		return RouterResult{Signals: signals}, err
 	}
 	if status >= 300 {
-		return RouterResult{}, failHTTP(statusReason(status), status, jevCode(raw))
+		return RouterResult{Signals: signals}, failHTTP(statusReason(status), status, jevCode(raw))
 	}
 	var decoded systemOneResponse
 	if err := json.Unmarshal(raw, &decoded); err != nil {
-		return RouterResult{}, fail(FallbackUnparseable)
+		return RouterResult{Signals: signals}, fail(FallbackUnparseable)
 	}
+	signals = decoded.tokens(signals)
 	scores, err := decoded.scores(keys)
 	if err != nil {
-		return RouterResult{Signals: decoded.tokens(nil)}, err
+		return RouterResult{Signals: signals}, err
 	}
 	model := decoded.Model
 	if model == "" {
 		model = j.Model
 	}
 	top := topScore(scores)
-	res := RouterResult{Model: model, TemplateSHA256: j.TemplateSHA256(), Scores: scores, Confidence: &top, Signals: decoded.tokens(nil)}
+	res := RouterResult{Model: model, TemplateSHA256: j.TemplateSHA256(), Scores: scores, Confidence: &top, Signals: signals}
 	return res, nil
 }
 
