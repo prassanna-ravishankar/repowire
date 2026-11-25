@@ -2,6 +2,7 @@ package relay
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"testing"
 	"time"
@@ -83,5 +84,61 @@ func TestExpiredQueuedRequestIsNotRun(t *testing.T) {
 	})
 	if hits != 0 {
 		t.Fatalf("an expired queued request reached the daemon %d time(s)", hits)
+	}
+}
+
+// Long-polls may hold at most half the workers: one more is refused at once,
+// and an ordinary request still gets a worker while they wait.
+func TestLongPollsCannotTakeEveryWorker(t *testing.T) {
+	release := make(chan struct{})
+	local := fakeLocal(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/asks/a/wait" {
+			select {
+			case <-release:
+			case <-r.Context().Done():
+			}
+		}
+		w.WriteHeader(http.StatusOK)
+	})
+	defer close(release)
+	statuses := make(chan [2]any, maxLongPolls+2)
+	relay, _ := startRelay(t, func(ctx context.Context, c *websocket.Conn) {
+		for i := 0; i <= maxLongPolls; i++ {
+			_ = wsjson.Write(ctx, c, map[string]any{"type": "http_request", "request_id": fmt.Sprintf("long-%d", i), "method": "POST", "path": "/asks/a/wait", "timeout_ms": float64(60000)})
+		}
+		_ = wsjson.Write(ctx, c, map[string]any{"type": "http_request", "request_id": "plain", "method": "GET", "path": "/health"})
+		for {
+			var resp map[string]any
+			if wsjson.Read(ctx, c, &resp) != nil {
+				return
+			}
+			statuses <- [2]any{resp["request_id"], resp["status"]}
+		}
+	})
+	c := NewClient(wsURL(relay.URL), "rw_test", "d1", local.URL)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	c.Start(ctx)
+	defer c.Stop()
+	got := map[any]float64{}
+	for len(got) < 2 {
+		select {
+		case s := <-statuses:
+			got[s[0]] = s[1].(float64)
+		case <-time.After(5 * time.Second):
+			t.Fatalf("answered so far: %v; want one long-poll refused and the plain request served", got)
+		}
+	}
+	refused := 0
+	for id, status := range got {
+		switch {
+		case id == "plain" && status != http.StatusOK:
+			t.Fatalf("the plain request got %v while long-polls waited", status)
+		case id != "plain" && status == http.StatusTooManyRequests:
+			refused++
+		}
+	}
+	if refused != 1 || got["plain"] != http.StatusOK {
+		t.Fatalf("answers = %v, want one long-poll refused (429) and plain served", got)
 	}
 }
