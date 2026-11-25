@@ -399,6 +399,17 @@ func printReplayTable(w io.Writer, reports []routing.Report) {
 			fmt.Fprintf(w, "masked (%s, re-run): %s\n", rep.Arm, strings.Join(rep.Mask, ","))
 		}
 	}
+	// A property of the asks, not the arm: read it off the widest report
+	// (arms that skip rows score fewer).
+	widest := -1
+	for i, rep := range reports {
+		if rep.Scored > 0 && (widest < 0 || rep.Scored > reports[widest].Scored) {
+			widest = i
+		}
+	}
+	if widest >= 0 {
+		fmt.Fprintf(w, "repeat rate (declared = sender's most recent contact, %d asks): %.3f\n", reports[widest].Scored, reports[widest].RepeatRate)
+	}
 	for _, rep := range reports {
 		if h := rep.History; h != nil {
 			fmt.Fprintf(w, "history (%s votes from): %d labelled asks, %s to %s\n", rep.Arm, h.Asks, h.From, h.To)

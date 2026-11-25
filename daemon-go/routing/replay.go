@@ -224,8 +224,14 @@ type Report struct {
 	Fidelity3    float64 `json:"fidelity_at_3"`
 	// Chance1 and Chance3 are the expected fidelity of a random ranking over
 	// the same scored rows, analytically (no seed). Read lift against these.
-	Chance1           float64        `json:"chance_at_1"`
-	Chance3           float64        `json:"chance_at_3"`
+	Chance1 float64 `json:"chance_at_1"`
+	Chance3 float64 `json:"chance_at_3"`
+	// RepeatRate is the share of scored asks whose declared target was the
+	// sender's most recent contact (the declared_recent_contact stratum).
+	// On DecisionBench it is the share of delegations to the previous
+	// delegate in the same task: the regime diagnostic that separates a
+	// stateless pool from a stateful mesh (#462).
+	RepeatRate        float64        `json:"repeat_rate"`
 	AnsweredFidelity1 float64        `json:"answered_fidelity_at_1"`
 	AnsweredFidelity3 float64        `json:"answered_fidelity_at_3"`
 	MeanCandidates    float64        `json:"mean_candidates"`
@@ -422,6 +428,9 @@ func Replay(ctx context.Context, examples []Example, armName string, runner func
 		rep.Fidelity3 = (float64(rep.Hit3) + rep.ExpectedHit3) / float64(rep.Scored)
 		rep.MeanLatencyMS = latency / float64(rep.Scored)
 		rep.MeanCandidates = candidates / float64(rep.Scored)
+	}
+	if c := rep.Recency[StratumRecentContact]; c != nil && rep.Scored > 0 {
+		rep.RepeatRate = float64(c.Scored) / float64(rep.Scored)
 	}
 	if answered := rep.Scored - rep.Fallbacks; answered > 0 {
 		rep.AnsweredFidelity1 = (float64(rep.Hit1) + rep.ExpectedHit1) / float64(answered)
