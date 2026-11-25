@@ -174,6 +174,9 @@ type ExperimentsConfig struct {
 	// GitTrailers enables the repository prepare-commit-msg hook installed by
 	// setup --git-hooks to add Repowire-Thread / Repowire-Session trailers.
 	GitTrailers bool `yaml:"git_trailers"`
+	// SwarmSnapshot enables `repowire swarm snapshot` and its route (#505):
+	// a read-only record of the tmux layout and the agents running in it.
+	SwarmSnapshot bool `yaml:"swarm_snapshot"`
 }
 
 type RemoteToolApprovalConfig struct {
@@ -625,6 +628,7 @@ func applyEnv(cfg *Config) {
 	setBoolEnv(&cfg.Experiments.ACPBrokerClient, "REPOWIRE_EXPERIMENTS__ACP_BROKER_CLIENT")
 	setBoolEnv(&cfg.Experiments.ChatTurnStreaming, "REPOWIRE_EXPERIMENTS__CHAT_TURN_STREAMING")
 	setBoolEnv(&cfg.Experiments.GitTrailers, "REPOWIRE_EXPERIMENTS__GIT_TRAILERS")
+	setBoolEnv(&cfg.Experiments.SwarmSnapshot, "REPOWIRE_EXPERIMENTS__SWARM_SNAPSHOT")
 	setBoolEnv(&cfg.Experiments.RemoteToolApproval.Enabled, "REPOWIRE_EXPERIMENTS__REMOTE_TOOL_APPROVAL__ENABLED")
 	setFloatEnv(&cfg.Experiments.RemoteToolApproval.TimeoutSeconds, "REPOWIRE_EXPERIMENTS__REMOTE_TOOL_APPROVAL__TIMEOUT_SECONDS")
 	applyRoutingEnv(cfg)
