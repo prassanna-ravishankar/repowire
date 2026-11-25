@@ -64,6 +64,16 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
         Task { await model?.register(token: token) }
     }
 
+    /// The relay's possession challenge arrives as a background push; echoing
+    /// its nonce binds this device's token to this relay key.
+    func application(_ application: UIApplication, didReceiveRemoteNotification userInfo: [AnyHashable: Any]) async
+        -> UIBackgroundFetchResult
+    {
+        guard let nonce = (userInfo["repowire"] as? [String: Any])?["verify"] as? String, let model else { return .noData }
+        await model.verifyDevice(nonce: nonce)
+        return .newData
+    }
+
     func application(_ application: UIApplication, didFailToRegisterForRemoteNotificationsWithError error: Error) {
         model?.lastError = "Notifications unavailable: \(error.localizedDescription)"
     }

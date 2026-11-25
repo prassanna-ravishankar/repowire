@@ -4,5 +4,7 @@
 DEVELOPMENT_TEAM =
 PRODUCT_BUNDLE_IDENTIFIER = io.repowire.app
 CODE_SIGN_ENTITLEMENTS = Repowire.entitlements
+// Keys the generated Info.plist cannot express (background push modes).
+INFOPLIST_FILE = Config/Info.plist
 
 #include? "Local.xcconfig"

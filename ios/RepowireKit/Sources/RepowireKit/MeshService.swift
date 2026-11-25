@@ -21,6 +21,9 @@ public protocol MeshService: Sendable {
     func reply(itemId: String, text: String, optionId: String?) async throws
     func jobs() async throws -> [Job]
     func registerDevice(token: String, environment: String, name: String) async throws
+    /// Echoes the nonce the relay sent this device in a background push, which
+    /// proves the app holds the token it registered.
+    func verifyDevice(token: String, nonce: String) async throws
 }
 
 public enum MeshError: LocalizedError, Equatable {

@@ -178,6 +178,8 @@ public actor FixtureMesh: MeshService {
         registeredDevices.append(token)
     }
 
+    public func verifyDevice(token: String, nonce: String) async throws {}
+
     private func subscribe(_ id: UUID, _ continuation: AsyncThrowingStream<MeshEvent, Error>.Continuation) {
         continuations[id] = continuation
     }

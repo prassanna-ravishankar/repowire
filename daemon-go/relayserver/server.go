@@ -114,7 +114,7 @@ func New(webOut string) *Server {
 		users:       map[string]map[string]*daemonConn{},
 		pending:     map[string]*pendingRequest{},
 		tokens:      newTokenStore(),
-		pushOwners:  &pushBindings{owners: map[string]binding{}},
+		pushOwners:  newPushBindings(),
 		webOut:      webOut,
 		timeout:     defaultTunnelTimeout,
 		mux:         http.NewServeMux(),
@@ -127,6 +127,7 @@ func (s *Server) Handler() http.Handler { return s.mux }
 
 func (s *Server) routes() {
 	s.mux.HandleFunc("POST /auth", s.auth)
+	s.mux.HandleFunc("POST /push/devices/verify", s.verifyPushDevice)
 	s.mux.HandleFunc("GET /dashboard", s.dashboard)
 	s.mux.HandleFunc("GET /health", s.health)
 	s.mux.HandleFunc("GET /events/stream", s.eventsStream)
@@ -590,7 +591,7 @@ func (s *Server) tunnel(w http.ResponseWriter, r *http.Request, conn *daemonConn
 			return
 		}
 		writeTunnelResponse(w, response)
-		s.pushOwners.observe(r.Method, path, body, intValue(response["status"], http.StatusOK), conn.userID)
+		s.observePushRegistration(r.Method, path, body, intValue(response["status"], http.StatusOK), conn.userID)
 	case <-timer.C:
 		writeError(w, http.StatusGatewayTimeout, "Daemon did not respond in time")
 	case <-r.Context().Done():
@@ -889,6 +890,60 @@ func (p *pushWork) answer(ctx context.Context, msg map[string]any, invalid, unbo
 		result["error"] = errText
 	}
 	_ = p.daemon.write(ctx, result)
+}
+
+// observePushRegistration follows the app's device registry through the
+// tunnel. An accepted registration opens a possession challenge (it never
+// binds by itself); a delete unbinds the token if this user holds it.
+func (s *Server) observePushRegistration(method, path string, body []byte, status int, user string) {
+	token, environment, removed := registration(method, path, body, status)
+	if token == "" || user == "" {
+		return
+	}
+	if removed {
+		s.pushOwners.unbind(token, user)
+		return
+	}
+	if s.apns == nil || !s.apns.allow(user, time.Now()) {
+		return // push is off, or this user is over its push rate
+	}
+	nonce, ok := s.pushOwners.open(token, user, time.Now())
+	if !ok {
+		log.Printf("relay APNs: challenge table full, not verifying a token for %s", user)
+		return
+	}
+	// Off the request, so the app's registration answers without waiting on
+	// APNs; the rate check above bounds how many of these run.
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		if err := s.apns.sendChallenge(ctx, token, environment, nonce); err != nil {
+			log.Printf("relay APNs: challenge push failed: %v", err)
+		}
+	}()
+}
+
+// verifyPushDevice completes a possession challenge: the app echoes the nonce
+// its device received, under the relay key that registered it.
+func (s *Server) verifyPushDevice(w http.ResponseWriter, r *http.Request) {
+	key, ok := s.clientKey(r)
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "Invalid API key")
+		return
+	}
+	var req struct {
+		Token string `json:"token"`
+		Nonce string `json:"nonce"`
+	}
+	if err := decodeJSON(r, &req); err != nil || req.Nonce == "" {
+		writeError(w, http.StatusBadRequest, "token and nonce are required")
+		return
+	}
+	if !s.pushOwners.verify(normalToken(req.Token), req.Nonce, key.UserID, time.Now()) {
+		writeError(w, http.StatusForbidden, "no matching challenge for this device")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "bound": true})
 }
 
 func writeTunnelResponse(w http.ResponseWriter, msg map[string]any) {

@@ -44,7 +44,7 @@ All traffic goes through the relay tunnel with `Authorization: Bearer <relay key
 | Send | `POST /ask` or `POST /notify` with `from_peer: "dashboard"` |
 | Answer a question | `POST /answer` with `option_id`, `outcome`, or `text` |
 | Inbox | `GET /inbox`, `POST /inbox/{id}/read` and `POST /inbox/{id}/reply` with `surface: "ios"`; reloaded on `inbox_item` and `inbox_updated` events |
-| Push registration | `POST /push/devices` |
+| Push registration | `POST /push/devices` (tunneled to the daemon), then `POST /push/devices/verify` (answered by the relay) with the nonce from the relay's background push |
 
 Open questions are derived from the event log with the same rule the web dashboard uses: an `ask` carrying a `question` opens one, an `ack` with the same correlation id closes it. The **Messages** list is the inbox minus those questions.
 

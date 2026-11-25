@@ -194,54 +194,174 @@ func TestRelayPushRateLimitIsCheckedInline(t *testing.T) {
 	}
 }
 
-// The relay binds a token when the daemon accepts a tunneled registration,
-// and unbinds it on a tunneled delete; a refused registration binds nothing.
-func TestTunnelRegistrationBindsTheToken(t *testing.T) {
-	relay := New("")
-	server := httptest.NewServer(relay.Handler())
-	t.Cleanup(server.Close)
-	key := "rw_test-push-register"
-	conn := connectDaemon(t, server.URL, key)
-	apiKey, _ := relay.tokens.validate(key)
-	status := make(chan int, 1)
+// phone is one relay user: a daemon that accepts every tunneled request, and
+// the app calls that user makes through the relay.
+type phone struct {
+	t      *testing.T
+	server string
+	key    string
+	status chan int
+}
+
+func newPhone(t *testing.T, s *Server, serverURL, key, daemonID string) *phone {
+	t.Helper()
+	conn := connectDaemonAs(t, serverURL, key, daemonID)
+	p := &phone{t: t, server: serverURL, key: key, status: make(chan int, 4)}
 	go func() {
 		for {
 			var request map[string]any
 			if wsjson.Read(context.Background(), conn, &request) != nil {
 				return
 			}
+			if request["type"] != "http_request" {
+				continue
+			}
 			_ = wsjson.Write(context.Background(), conn, map[string]any{
-				"type": "http_response", "request_id": request["request_id"], "status": <-status,
+				"type": "http_response", "request_id": request["request_id"], "status": <-p.status,
 				"headers": map[string]string{"Content-Type": "application/json"}, "body": base64.StdEncoding.EncodeToString([]byte(`{"ok":true}`)),
 			})
 		}
 	}()
-	do := func(method, path, body string, daemonStatus int) {
-		t.Helper()
-		status <- daemonStatus
-		req, _ := http.NewRequest(method, server.URL+path, strings.NewReader(body))
-		req.Header.Set("Authorization", "bearer "+key)
-		resp, err := http.DefaultClient.Do(req)
-		if err != nil {
-			t.Fatal(err)
-		}
-		_ = resp.Body.Close()
-		if resp.StatusCode != daemonStatus {
-			t.Fatalf("%s %s = %d", method, path, resp.StatusCode)
-		}
-	}
+	return p
+}
 
-	do(http.MethodPost, "/push/devices", `{"token":"`+deadToken+`","environment":"production"}`, http.StatusBadRequest)
-	if relay.pushOwners.owner(deadToken) != "" {
-		t.Fatal("a registration the daemon refused must not bind")
+// call makes an app request through the relay; daemonStatus is what the
+// daemon answers when the request is tunneled (0 for relay-owned routes).
+func (p *phone) call(method, path, body string, daemonStatus int) int {
+	p.t.Helper()
+	if daemonStatus != 0 {
+		p.status <- daemonStatus
 	}
-	do(http.MethodPost, "/push/devices", `{"token":"`+strings.ToUpper(liveToken)+`","environment":"production"}`, http.StatusOK)
+	req, _ := http.NewRequest(method, p.server+path, strings.NewReader(body))
+	req.Header.Set("Authorization", "bearer "+p.key)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		p.t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	return resp.StatusCode
+}
+
+// nonceFrom reads the challenge a background push delivered to the device.
+func nonceFrom(t *testing.T, seen chan *http.Request, token string) string {
+	t.Helper()
+	select {
+	case req := <-seen:
+		if req.Header.Get("apns-push-type") != "background" || req.Header.Get("apns-priority") != "5" || !strings.HasSuffix(req.URL.Path, token) {
+			t.Fatalf("challenge push = %s %v", req.URL.Path, req.Header)
+		}
+		var payload struct {
+			APS      map[string]any    `json:"aps"`
+			Repowire map[string]string `json:"repowire"`
+		}
+		_ = json.NewDecoder(req.Body).Decode(&payload)
+		if payload.APS["alert"] != nil || payload.Repowire["verify"] == "" {
+			t.Fatalf("challenge payload = %+v", payload)
+		}
+		return payload.Repowire["verify"]
+	case <-time.After(5 * time.Second):
+		t.Fatal("no challenge push reached the device")
+	}
+	return ""
+}
+
+// A registration alone never binds: the relay sends a background challenge to
+// the token, and only the echo of its nonce, under the registering key, binds.
+// A tunneled delete unbinds; a registration the daemon refused does nothing.
+func TestTokenBindsOnlyAfterTheDeviceProvesPossession(t *testing.T) {
+	relay := New("")
+	sender, seen := testAPNs(t)
+	relay.apns = sender
+	server := httptest.NewServer(relay.Handler())
+	t.Cleanup(server.Close)
+	key := "rw_test-push-register"
+	p := newPhone(t, relay, server.URL, key, "laptop")
+	apiKey, _ := relay.tokens.validate(key)
+
+	if p.call(http.MethodPost, "/push/devices", `{"token":"`+deadToken+`"}`, http.StatusBadRequest) != http.StatusBadRequest {
+		t.Fatal("refused registration status")
+	}
+	p.call(http.MethodPost, "/push/devices", `{"token":"`+strings.ToUpper(liveToken)+`","environment":"sandbox"}`, http.StatusOK)
+	nonce := nonceFrom(t, seen, liveToken)
+	if relay.pushOwners.owner(liveToken) != "" {
+		t.Fatal("a registration must not bind before the device answers its challenge")
+	}
+	if p.call(http.MethodPost, "/push/devices/verify", `{"token":"`+liveToken+`","nonce":"pv_wrong"}`, 0) != http.StatusForbidden {
+		t.Fatal("a wrong nonce must be refused")
+	}
+	if p.call(http.MethodPost, "/push/devices/verify", `{"token":"`+liveToken+`","nonce":"`+nonce+`"}`, 0) != http.StatusOK {
+		t.Fatal("the device's nonce should verify")
+	}
 	if relay.pushOwners.owner(liveToken) != apiKey.UserID {
 		t.Fatalf("owner = %q, want %q", relay.pushOwners.owner(liveToken), apiKey.UserID)
 	}
-	do(http.MethodDelete, "/push/devices/"+liveToken, "", http.StatusOK)
+	if p.call(http.MethodPost, "/push/devices/verify", `{"token":"`+liveToken+`","nonce":"`+nonce+`"}`, 0) != http.StatusForbidden {
+		t.Fatal("a nonce is single-use")
+	}
+	p.call(http.MethodDelete, "/push/devices/"+liveToken, "", http.StatusOK)
 	if relay.pushOwners.owner(liveToken) != "" {
 		t.Fatal("a tunneled delete should unbind")
+	}
+	if relay.pushOwners.owner(deadToken) != "" {
+		t.Fatal("a refused registration must not bind")
+	}
+}
+
+// Review of #607: tenant B registers tenant A's token through B's own daemon.
+// The challenge goes to A's phone, which B cannot read, and A's app echoing it
+// under A's key does not bind it to B. A keeps the binding, A's push still
+// reaches the phone, and B's push is refused.
+func TestAnotherTenantCannotStealAVerifiedToken(t *testing.T) {
+	relay := New("")
+	sender, seen := testAPNs(t)
+	relay.apns = sender
+	server := httptest.NewServer(relay.Handler())
+	t.Cleanup(server.Close)
+	victim := newPhone(t, relay, server.URL, "rw_victim-key-with-entropy", "victim-laptop")
+	attacker := newPhone(t, relay, server.URL, "rw_attacker-key-with-entropy", "attacker-laptop")
+	victimKey, _ := relay.tokens.validate(victim.key)
+
+	victim.call(http.MethodPost, "/push/devices", `{"token":"`+liveToken+`","environment":"sandbox"}`, http.StatusOK)
+	victim.call(http.MethodPost, "/push/devices/verify", `{"token":"`+liveToken+`","nonce":"`+nonceFrom(t, seen, liveToken)+`"}`, 0)
+
+	attacker.call(http.MethodPost, "/push/devices", `{"token":"`+liveToken+`","environment":"sandbox"}`, http.StatusOK)
+	stolen := nonceFrom(t, seen, liveToken) // lands on the victim's phone
+	if attacker.call(http.MethodPost, "/push/devices/verify", `{"token":"`+liveToken+`","nonce":"pv_guess"}`, 0) != http.StatusForbidden {
+		t.Fatal("the attacker cannot verify without the nonce")
+	}
+	if victim.call(http.MethodPost, "/push/devices/verify", `{"token":"`+liveToken+`","nonce":"`+stolen+`"}`, 0) != http.StatusForbidden {
+		t.Fatal("the victim's app echoing the attacker's challenge must not bind the token to the attacker")
+	}
+	if relay.pushOwners.owner(liveToken) != victimKey.UserID {
+		t.Fatalf("owner = %q, want the victim", relay.pushOwners.owner(liveToken))
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	for _, tc := range []struct {
+		key, daemon string
+		delivered   bool
+	}{{victim.key, "victim-push", true}, {attacker.key, "attacker-push", false}} {
+		conn := connectDaemonAs(t, server.URL, tc.key, tc.daemon)
+		_ = wsjson.Write(ctx, conn, map[string]any{"type": "push", "id": tc.daemon, "title": "@backend needs approval",
+			"devices": []map[string]any{{"token": liveToken, "environment": "sandbox"}}})
+		var result map[string]any
+		if err := wsjson.Read(ctx, conn, &result); err != nil {
+			t.Fatal(err)
+		}
+		if got := result["error"] == nil; got != tc.delivered {
+			t.Fatalf("%s: result = %v", tc.daemon, result)
+		}
+		if tc.delivered {
+			if req := <-seen; req.Header.Get("apns-push-type") != "alert" {
+				t.Fatalf("victim push type = %s", req.Header.Get("apns-push-type"))
+			}
+		}
+	}
+	select {
+	case req := <-seen:
+		t.Fatalf("APNs saw an extra request: %s %s", req.Header.Get("apns-push-type"), req.URL.Path)
+	default:
 	}
 }
 

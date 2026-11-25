@@ -255,6 +255,16 @@ final class AppModel {
         try await service?.transcript(peer: peer.name, limit: 50).turns ?? []
     }
 
+    /// Answers the relay's possession challenge for this device's token.
+    func verifyDevice(nonce: String) async {
+        guard let service, let pushToken else { return }
+        do {
+            try await service.verifyDevice(token: pushToken, nonce: nonce)
+        } catch {
+            log.error("push verification failed: \(error.localizedDescription, privacy: .public)")
+        }
+    }
+
     func register(token: String) async {
         pushToken = token
         guard let service else { return }

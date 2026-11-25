@@ -172,7 +172,7 @@ func (a *apnsSender) send(ctx context.Context, frame pushFrame) ([]string, error
 			invalid = append(invalid, device.Token)
 			continue
 		}
-		dead, err := a.post(ctx, host, device.Token, bearer, frame.PushID, payload)
+		dead, err := a.post(ctx, host, device.Token, bearer, frame.PushID, "alert", payload)
 		if dead {
 			invalid = append(invalid, device.Token)
 		}
@@ -183,14 +183,40 @@ func (a *apnsSender) send(ctx context.Context, frame pushFrame) ([]string, error
 	return invalid, errors.Join(errs...)
 }
 
-func (a *apnsSender) post(ctx context.Context, host, token, bearer, pushID string, payload []byte) (bool, error) {
+// sendChallenge sends a background push (no alert, no sound) carrying nonce.
+// Only the device that holds token receives it, which is what makes echoing
+// the nonce back a proof of possession.
+func (a *apnsSender) sendChallenge(ctx context.Context, token, environment, nonce string) error {
+	host, ok := a.hosts[environment]
+	if !ok {
+		return fmt.Errorf("unknown APNs environment %q", environment)
+	}
+	payload, err := json.Marshal(map[string]any{
+		"aps":      map[string]any{"content-available": 1},
+		"repowire": map[string]any{"verify": nonce},
+	})
+	if err != nil {
+		return err
+	}
+	bearer, err := a.bearer(time.Now())
+	if err != nil {
+		return err
+	}
+	_, err = a.post(ctx, host, token, bearer, "", "background", payload)
+	return err
+}
+
+func (a *apnsSender) post(ctx context.Context, host, token, bearer, pushID, pushType string, payload []byte) (bool, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, host+"/3/device/"+token, bytes.NewReader(payload))
 	if err != nil {
 		return false, err
 	}
 	req.Header.Set("authorization", "bearer "+bearer)
 	req.Header.Set("apns-topic", a.topic)
-	req.Header.Set("apns-push-type", "alert")
+	req.Header.Set("apns-push-type", pushType)
+	if pushType == "background" {
+		req.Header.Set("apns-priority", "5") // Apple requires 5 for background pushes
+	}
 	if collapse := strings.TrimSpace(pushID); collapse != "" && len(collapse) <= 64 {
 		req.Header.Set("apns-collapse-id", collapse)
 	}

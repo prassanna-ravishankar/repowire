@@ -129,6 +129,15 @@ private func json(_ text: String) -> Data { Data(text.utf8) }
         #expect(request.url?.path() == "/push/devices")
     }
 
+    @Test func `echoes the possession nonce to the relay`() async throws {
+        let api = StubProtocol.api("verify.test") { _ in (200, json(#"{"ok":true,"bound":true}"#)) }
+        try await api.verifyDevice(token: "abc", nonce: "pv_1")
+        let request = try #require(StubProtocol.requests("verify.test").first)
+        let body = try #require(try JSONSerialization.jsonObject(with: request.httpBody ?? Data()) as? [String: Any])
+        #expect(request.url?.path() == "/push/devices/verify")
+        #expect(body["nonce"] as? String == "pv_1")
+    }
+
     @Test func `reads the inbox and replies as the ios surface`() async throws {
         let api = StubProtocol.api("inbox.test") { request in
             if request.url?.path() == "/inbox" {

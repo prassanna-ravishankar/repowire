@@ -153,6 +153,11 @@ public struct RelayAPI: MeshService {
         _ = try await data(for: request("push/devices", method: "POST", body: ["token": token, "environment": environment, "name": name]))
     }
 
+    /// A relay-owned route: the relay, not the daemon, checks the nonce.
+    public func verifyDevice(token: String, nonce: String) async throws {
+        _ = try await data(for: request("push/devices/verify", method: "POST", body: ["token": token, "nonce": nonce]))
+    }
+
     private struct PeersEnvelope: Decodable {
         var peers: Lossy<Peer>
     }
