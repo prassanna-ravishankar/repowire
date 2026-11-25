@@ -30,7 +30,7 @@ import (
 type pushBindings struct {
 	mu         sync.Mutex
 	owners     map[string]binding
-	challenges map[string]challenge // keyed by token
+	challenges map[challengeKey]challenge
 	db         *sql.DB
 }
 
@@ -39,8 +39,12 @@ type binding struct {
 	at   time.Time
 }
 
+// challengeKey is per (token, user): one tenant registering a token never
+// replaces another tenant's open challenge for it, so it cannot keep the
+// device's real holder from verifying.
+type challengeKey struct{ token, user string }
+
 type challenge struct {
-	user    string
 	nonce   string
 	expires time.Time
 }
@@ -50,12 +54,14 @@ const (
 	maxTokensPerUser = 20
 	// challengeTTL is how long a device has to echo its nonce.
 	challengeTTL = 10 * time.Minute
-	// maxChallenges bounds open challenges relay-wide; a full table refuses.
-	maxChallenges = 4096
+	// maxChallenges bounds open challenges relay-wide, and
+	// maxChallengesPerUser bounds one user's share of them; full refuses.
+	maxChallenges        = 4096
+	maxChallengesPerUser = 20
 )
 
 func newPushBindings() *pushBindings {
-	return &pushBindings{owners: map[string]binding{}, challenges: map[string]challenge{}}
+	return &pushBindings{owners: map[string]binding{}, challenges: map[challengeKey]challenge{}}
 }
 
 func openPushBindings(path string) (*pushBindings, error) {
@@ -149,32 +155,38 @@ func (b *pushBindings) persist(query string, args ...any) {
 }
 
 // open starts a challenge for token on behalf of user and returns its nonce.
-// A newer challenge for the same token replaces an older one.
+// A newer challenge from the same user for the same token replaces its older
+// one; other users' challenges for the token are untouched.
 func (b *pushBindings) open(token, user string, now time.Time) (string, bool) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	for t, c := range b.challenges {
-		if now.After(c.expires) {
-			delete(b.challenges, t)
+	mine := 0
+	for k, c := range b.challenges {
+		switch {
+		case now.After(c.expires):
+			delete(b.challenges, k)
+		case k.user == user:
+			mine++
 		}
 	}
-	if _, exists := b.challenges[token]; !exists && len(b.challenges) >= maxChallenges {
+	key := challengeKey{token, user}
+	if _, exists := b.challenges[key]; !exists && (len(b.challenges) >= maxChallenges || mine >= maxChallengesPerUser) {
 		return "", false
 	}
 	nonce := randomID("pv_", 24)
-	b.challenges[token] = challenge{user: user, nonce: nonce, expires: now.Add(challengeTTL)}
+	b.challenges[key] = challenge{nonce: nonce, expires: now.Add(challengeTTL)}
 	return nonce, true
 }
 
-// verify binds token to user when user opened the token's live challenge and
-// nonce matches it. The challenge is spent either way it matches.
+// verify binds token to user when user has a live challenge for token and
+// nonce matches it. A matched challenge is spent; a mismatch leaves it open.
 func (b *pushBindings) verify(token, nonce, user string, now time.Time) bool {
 	b.mu.Lock()
-	c, ok := b.challenges[token]
-	matched := ok && now.Before(c.expires) && c.user == user &&
-		subtle.ConstantTimeCompare([]byte(c.nonce), []byte(nonce)) == 1
+	key := challengeKey{token, user}
+	c, ok := b.challenges[key]
+	matched := ok && now.Before(c.expires) && subtle.ConstantTimeCompare([]byte(c.nonce), []byte(nonce)) == 1
 	if matched {
-		delete(b.challenges, token)
+		delete(b.challenges, key)
 	}
 	b.mu.Unlock()
 	if matched {

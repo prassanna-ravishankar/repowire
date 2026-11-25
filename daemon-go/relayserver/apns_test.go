@@ -11,6 +11,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
+	"fmt"
 	"io"
 	"math/big"
 	"net/http"
@@ -362,6 +363,52 @@ func TestAnotherTenantCannotStealAVerifiedToken(t *testing.T) {
 	case req := <-seen:
 		t.Fatalf("APNs saw an extra request: %s %s", req.Header.Get("apns-push-type"), req.URL.Path)
 	default:
+	}
+}
+
+// Review of #607: before the victim's phone verifies, an attacker registering
+// the same token (again and again) must not replace the victim's challenge.
+// The victim's nonce still binds the token to the victim.
+func TestAnotherTenantCannotBlockAPendingVerification(t *testing.T) {
+	relay := New("")
+	sender, seen := testAPNs(t)
+	relay.apns = sender
+	server := httptest.NewServer(relay.Handler())
+	t.Cleanup(server.Close)
+	victim := newPhone(t, relay, server.URL, "rw_victim-key-with-entropy", "victim-laptop")
+	attacker := newPhone(t, relay, server.URL, "rw_attacker-key-with-entropy", "attacker-laptop")
+	victimKey, _ := relay.tokens.validate(victim.key)
+
+	victim.call(http.MethodPost, "/push/devices", `{"token":"`+liveToken+`","environment":"sandbox"}`, http.StatusOK)
+	victimNonce := nonceFrom(t, seen, liveToken)
+	for range 3 {
+		attacker.call(http.MethodPost, "/push/devices", `{"token":"`+liveToken+`","environment":"sandbox"}`, http.StatusOK)
+		_ = nonceFrom(t, seen, liveToken)
+	}
+	if victim.call(http.MethodPost, "/push/devices/verify", `{"token":"`+liveToken+`","nonce":"`+victimNonce+`"}`, 0) != http.StatusOK {
+		t.Fatal("the attacker's registrations replaced the victim's challenge")
+	}
+	if relay.pushOwners.owner(liveToken) != victimKey.UserID {
+		t.Fatalf("owner = %q, want the victim", relay.pushOwners.owner(liveToken))
+	}
+}
+
+func TestChallengesAreCappedPerUser(t *testing.T) {
+	b := newPushBindings()
+	now := time.Now()
+	for i := range maxChallengesPerUser {
+		if _, ok := b.open(fmt.Sprintf("%064x", i), "u1", now); !ok {
+			t.Fatalf("challenge %d refused under the cap", i)
+		}
+	}
+	if _, ok := b.open(fmt.Sprintf("%064x", 999), "u1", now); ok {
+		t.Fatal("a user past the cap must be refused")
+	}
+	if _, ok := b.open(fmt.Sprintf("%064x", 0), "u2", now); !ok {
+		t.Fatal("another user is not limited by u1's challenges")
+	}
+	if _, ok := b.open(fmt.Sprintf("%064x", 999), "u1", now.Add(challengeTTL+time.Second)); !ok {
+		t.Fatal("expired challenges free the user's share")
 	}
 }
 

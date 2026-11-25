@@ -60,7 +60,7 @@ The relay sends a push only to device tokens bound to the pushing daemon's relay
 3. The app echoes the nonce to `POST /push/devices/verify {token, nonce}`. The relay answers this route itself; it is not tunneled.
 4. The token binds to the registering user only if the nonce matches within 10 minutes and the echo arrives under the same relay key. Each nonce works once.
 
-Another tenant who registers your token triggers a challenge on your phone that they cannot read, so they cannot take the binding. A verified registration under a different key does move the token, since only the phone's holder can complete one. A tunneled `DELETE /push/devices/{token}` unbinds the token for its owner. Challenges count toward the push rate limit.
+Another tenant who registers your token triggers a challenge on your phone that they cannot read, so they cannot take the binding. Each key has its own challenge per token, so their registrations cannot replace yours and block your phone from verifying. One key may have at most 20 open challenges. A verified registration under a different key does move the token, since only the phone's holder can complete one. A tunneled `DELETE /push/devices/{token}` unbinds the token for its owner. Challenges count toward the push rate limit.
 
 A token not bound to the pushing daemon's key is skipped and reported back as unbound. The daemon keeps it, and the app re-registers and re-verifies on its next launch. One key holds at most 20 bindings, and the oldest is dropped first.
 
