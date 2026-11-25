@@ -206,7 +206,7 @@ answer("ask-c1a1c7dd", text="Use the staging database")
 ### `notify_peer`
 
 ```text
-notify_peer(peer_name: str, message: str, circle: str | None = None, attachments: list[dict] | None = None) -> str
+notify_peer(peer_name: str, message: str, circle: str | None = None, attachments: list[dict] | None = None, correlation_id: str | None = None) -> str
 ```
 
 Fire-and-forget. No lifecycle, no expected response. Returns the `notif-delivery-XXXXXXXX` delivery ID, which is also its trace ID (`repowire trace <id>`), not a thread you can close. Use for FYIs, self-wakes, reminders, human phone updates, and nudges where no closure is expected.
@@ -234,7 +234,16 @@ notify_peer("telegram", "deploy finished, green across CI")
 # notif-delivery-1a2b3c4d inbox_item=inb-5e6f7a8b surfaces=telegram
 ```
 
-`surfaces=none` means the item is stored but no surface is live; the user sees it on their next `repowire inbox` or surface connect. Per-surface outcomes are trace stages (`surface_pushed`, `surface_failed` with an error class). A notify to the human never opens an ask; use `ask` when you need the user's reply. The `dashboard` already sees agent turns; you do not need to notify it.
+`surfaces=none` means the item is stored but no surface is live; the user sees it on their next `repowire inbox` or surface connect. Per-surface outcomes are trace stages (`surface_pushed`, `surface_failed` with an error class). A notify to the human never opens an ask; use `ask` when you need the user's reply.
+
+To post progress on an ask between you and the user, pass its `correlation_id`. The message lands in that ask's thread (on Telegram, as a reply under the ask) and the result ends with `thread=<correlation_id>`:
+
+```text
+notify_peer("telegram", "CI is running, 3 of 5 green", correlation_id="ask-1a2b3c4d")
+# notif-delivery-5e6f7a8b inbox_item=inb-9c0d1e2f surfaces=telegram thread=ask-1a2b3c4d
+```
+
+It stays a notify: it never answers, acks or closes the ask (use `ack` for that). It threads only when the daemon still tracks the ask, the user is a party to it, and you asked it or hold it now. Otherwise it is delivered unthreaded and the result ends with `thread=none`. A `correlation_id` on a notify to anyone but the user is refused, and so is one on a `name@machine` address. The `dashboard` already sees agent turns; you do not need to notify it.
 
 `ask`, reply `ack`, and `notify_peer` accept optional attachment metadata
 objects (`id`, `path`, `filename`, `size`, `content_type`). Text-only calls are

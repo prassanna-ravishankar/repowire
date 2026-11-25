@@ -225,6 +225,10 @@ type AskResult struct {
 	MessageID    string
 }
 
+// ErrThreadNotHuman refuses a thread on a notify to anyone but the human: only
+// the inbox threads a notify under an ask.
+var ErrThreadNotHuman = errors.New("correlation_id threads a notify only to the human")
+
 // NotifyParams are the inputs to Notify. FromPeer/ToPeer are peer_id or
 // display_name as supplied by the caller (CheckAccess resolves them).
 type NotifyParams struct {
@@ -246,6 +250,12 @@ type NotifyParams struct {
 	// ThreadText is the reply body without the "[ack #cid from @x]" frame, for
 	// a recipient that threads natively. Empty means use Text.
 	ThreadText string
+	// ThreadID is an ask of the human's that this notify reports progress on
+	// (#477): the inbox files it under that ask's thread when the ask is
+	// threadable and the sender asked or holds it, and unthreaded otherwise.
+	// It stays a notify: it never answers, acks or closes the ask. Only a
+	// notify to the human may carry one (ErrThreadNotHuman).
+	ThreadID string
 	// NoFallbackQueue makes a failed send an error instead of a queued
 	// retry, for callers that promise at most one dispatch (cross-machine
 	// notifies). A busy recipient is still queued, and reported Queued.
@@ -302,6 +312,9 @@ func (d *PeerDelivery) Notify(ctx context.Context, params NotifyParams) (_ Notif
 	}
 	if d.inbox.Owns(target) {
 		return d.notifyInbox(ctx, params, fromID, fromName, target)
+	}
+	if params.ThreadID != "" {
+		return NotifyResult{}, ErrThreadNotHuman
 	}
 
 	if !params.SkipSeedGate {
@@ -408,7 +421,7 @@ func (d *PeerDelivery) notifyInbox(ctx context.Context, params NotifyParams, fro
 	receipt, err := d.inbox.Store(ctx, InboxStoreParams{
 		Kind: kind, TraceID: traceID, TraceKind: traceKind,
 		FromPeerID: peerIDString(fromID), FromName: string(fromName),
-		CorrelationID: params.CorrelationID, Text: text, Attachments: params.Attachments,
+		CorrelationID: params.CorrelationID, ProgressOn: params.ThreadID, Text: text, Attachments: params.Attachments,
 	})
 	if err != nil {
 		return NotifyResult{}, err

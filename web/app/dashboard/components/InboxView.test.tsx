@@ -80,6 +80,15 @@ describe("InboxView", () => {
     expect(screen.getByText("2")).toBeInTheDocument();
   });
 
+  it("marks a progress message with the ask it was threaded under", async () => {
+    stubFetch([{ ...NOTIFY, id: "inb-9", correlation_id: "ask-2", text: "CI is running", created_at: "2026-10-13T10:20:00Z" }, NOTIFY]);
+    render(<Harness />);
+    const list = await screen.findByRole("list", { name: "Inbox" });
+    const rows = within(list).getAllByRole("button");
+    expect(rows[0]).toHaveTextContent("re #ask-2");
+    expect(rows[1]).not.toHaveTextContent("re #");
+  });
+
   it("opening an item marks it read as the dashboard surface", async () => {
     const calls = stubFetch([NOTIFY]);
     render(<Harness />);
