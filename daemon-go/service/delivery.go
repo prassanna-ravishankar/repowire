@@ -872,7 +872,7 @@ func (d *PeerDelivery) Broadcast(ctx context.Context, fromPeer, text string, exc
 		s := string(fromObj.PeerID)
 		fromIDPtr = &s
 	}
-	d.reg.AddEvent(ctx, "broadcast", map[string]any{
+	broadcastID := d.reg.AddEvent(ctx, "broadcast", map[string]any{
 		"from":         fromPeer,
 		"text":         text,
 		"exclude":      exclude,
@@ -893,6 +893,7 @@ func (d *PeerDelivery) Broadcast(ctx context.Context, fromPeer, text string, exc
 		return d.messages.Record(ctx, state.PeerMessage{
 			Kind: state.MessageBroadcast, PeerID: string(id), PeerName: string(p.DisplayName),
 			FromPeerID: stringValuePeer(fromObj), FromName: string(sender.Name), Text: text,
+			TraceID: broadcastID, // ties every copy to the one broadcast and its journal row
 		})
 	}
 

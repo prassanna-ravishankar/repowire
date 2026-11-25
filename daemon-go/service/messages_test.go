@@ -377,6 +377,10 @@ func TestBroadcastRecordsEachRecipientsCopy(t *testing.T) {
 	if pushMsg.ID == pullMsg.ID {
 		t.Fatal("recipients share one record")
 	}
+	// Every copy names the one broadcast (its journal event).
+	if pushMsg.TraceID != "evt-broadcast" || pullMsg.TraceID != pushMsg.TraceID {
+		t.Fatalf("trace ids %q / %q, want the broadcast event's", pushMsg.TraceID, pullMsg.TraceID)
+	}
 }
 
 // A copy whose send failed is not left behind for the recipient to list.
