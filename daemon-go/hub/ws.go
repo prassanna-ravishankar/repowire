@@ -246,6 +246,8 @@ func (h *Hub) HandleWS(w http.ResponseWriter, r *http.Request) {
 		params.Metadata = md
 	}
 
+	params.ClaimedPeerID = paneConfirmedClaim(cf.PaneID, cf.AgentPID, cf.PeerID)
+
 	peerID, assignedName, err := h.reg.AllocateAndRegister(ctx, params)
 	if err != nil {
 		if errors.Is(err, peer.ErrPeerRetired) || errors.Is(err, peer.ErrPeerClosed) {
@@ -556,4 +558,25 @@ func decodeMap(raw []byte) map[string]any {
 		return map[string]any{}
 	}
 	return m
+}
+
+// paneConfirmedClaim is the peer_id a pane-backed connect claims: the identity
+// the pane's hook last confirmed for this very agent process when its metadata
+// names one, else the frame's claim. A ws-hook started under an older identity
+// resends that one on every reconnect; after a daemon restart nothing live
+// contradicts it, and the registry's name reclaim then picks whichever mapping
+// holds the folder name, so the session came back under an identity it once
+// held. The registry's claim checks still apply to the result.
+func paneConfirmedClaim(paneID *string, agentPID *int, claim *proto.PeerID) *proto.PeerID {
+	if paneID == nil || agentPID == nil {
+		return claim
+	}
+	confirmed, ok := service.PaneConfirmedPeer(*paneID, *agentPID)
+	if !ok || (claim != nil && *claim == confirmed) {
+		return claim
+	}
+	if claim != nil {
+		log.Printf("ws: pane %s last confirmed %s for agent pid %d; claiming it instead of %s", *paneID, confirmed, *agentPID, *claim)
+	}
+	return &confirmed
 }

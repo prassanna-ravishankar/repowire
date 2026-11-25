@@ -565,3 +565,22 @@ func NormPath(path string) string {
 	}
 	return abs
 }
+
+// PaneConfirmedPeer returns the peer_id the pane's ws-hook last confirmed for
+// the agent process pid: the pane metadata names that identity and records the
+// same pid, and the same start time when it recorded one (sameProcess). A
+// long-lived ws-hook can outlive several identities of its session; the
+// metadata it rewrites on every confirmed connect is the latest, while the
+// claim in its connect frame may be the one it was started with.
+func PaneConfirmedPeer(paneID string, pid int) (proto.PeerID, bool) {
+	if paneID == "" || pid <= 0 {
+		return "", false
+	}
+	meta := hooks.ReadPaneRuntimeMetadata(paneID)
+	id, _ := meta["peer_id"].(string)
+	metaPID, _ := meta["agent_pid"].(float64)
+	if id == "" || int(metaPID) != pid || !sameProcess(pid, meta) {
+		return "", false
+	}
+	return proto.PeerID(id), true
+}
