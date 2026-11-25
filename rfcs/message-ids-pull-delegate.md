@@ -56,8 +56,9 @@ cid), body, attachments, question, created_at, read_at.
   `decline` send to an asker (kind `reply` when the notify carries a cid);
 - `DeliverAsk` to an agent peer, including a delegated delivery.
 
-The human keeps its own inbox; its rows are not duplicated. Broadcasts are
-not recorded in this version (one frame, many recipients, no thread). When
+The human keeps its own inbox; its rows are not duplicated. A broadcast is
+recorded once per recipient (kind `broadcast`, #527): each recipient gets its
+own frame with its own id, and a pull recipient a nudge. When
 the daemon has no state store, nothing is recorded and frames carry no id.
 A send that fails outright (no connection, injection refused) deletes its
 record, so a recipient never lists a message it was not sent; a queued or
@@ -188,8 +189,11 @@ refuses to delegate a job's dispatch ask.
 
 ## Not in this version
 
-Broadcast records; delegation across machines; delegating jobs; a global
-default delivery mode in config; a dashboard message browser (the dashboard
+Broadcast records and the `daemon.message_delivery` default shipped later
+(#527).
+
+
+Delegation across machines; delegating jobs; a dashboard message browser (the dashboard
 shows delegation through the event stream and ask traces).
 
 ## Tests

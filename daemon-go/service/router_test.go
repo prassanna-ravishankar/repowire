@@ -33,6 +33,7 @@ type fakeTransport struct {
 	lastTarget  proto.PeerID
 	lastFrame   any
 	sentTargets []proto.PeerID
+	framesTo    map[proto.PeerID]any // the last frame Send gave each target
 }
 
 func (f *fakeTransport) Send(ctx context.Context, id proto.PeerID, v any) error {
@@ -40,6 +41,10 @@ func (f *fakeTransport) Send(ctx context.Context, id proto.PeerID, v any) error 
 	f.lastTarget = id
 	f.lastFrame = v
 	f.sentTargets = append(f.sentTargets, id)
+	if f.framesTo == nil {
+		f.framesTo = map[proto.PeerID]any{}
+	}
+	f.framesTo[id] = v
 	f.mu.Unlock()
 	return f.sendErr
 }
@@ -243,6 +248,11 @@ func TestSendNotificationHonorsSuppliedDeliveryID(t *testing.T) {
 	}
 }
 
+// plainBroadcast sends every recipient text, unrecorded.
+func plainBroadcast(text string) func(proto.PeerID) BroadcastBody {
+	return func(proto.PeerID) BroadcastBody { return BroadcastBody{Text: text} }
+}
+
 // TestBroadcastExcludesAndCollectsFailures: fan-out hits every connected peer
 // minus the excludes; one recipient failure is reported, not fatal to the rest.
 func TestBroadcastExcludesAndCollectsFailures(t *testing.T) {
@@ -253,8 +263,8 @@ func TestBroadcastExcludesAndCollectsFailures(t *testing.T) {
 	m := newRouterWithFake(f)
 
 	// Exclude the sender (a). b and c receive. (No sendErr → both succeed.)
-	sent, failed := m.Broadcast(context.Background(), Sender{Name: "alpha"}, "hello mesh",
-		map[proto.PeerID]struct{}{a: {}})
+	sent, failed := m.Broadcast(context.Background(), Sender{Name: "alpha"},
+		map[proto.PeerID]struct{}{a: {}}, plainBroadcast("hello mesh"))
 	if len(failed) != 0 {
 		t.Fatalf("expected no failures, got %+v", failed)
 	}
@@ -274,7 +284,7 @@ func TestBroadcastOneFailureDoesNotAbortFanout(t *testing.T) {
 	a := proto.PeerID("repow-default-aaaa1111")
 	f := &fakeTransport{sessions: []proto.PeerID{a}, sendErr: errors.New("boom")}
 	m := newRouterWithFake(f)
-	sent, failed := m.Broadcast(context.Background(), Sender{Name: "alpha"}, "x", nil)
+	sent, failed := m.Broadcast(context.Background(), Sender{Name: "alpha"}, nil, plainBroadcast("x"))
 	if len(sent) != 0 {
 		t.Fatalf("a failed send must not be counted as sent")
 	}

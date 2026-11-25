@@ -48,7 +48,7 @@ The whole hand-off runs under the ask's claim, the same one replies take, so no 
 
 ## Message ids and pull delivery
 
-Every notify, ask, and ask reply an agent peer receives is recorded with a `message_id`, shown as `message-id="msg-…"` on its `<peer-message>` tag. A peer can list its messages, peek at one, or fetch one (`list_messages`, `read_message`). A peer that sets `set_message_delivery("pull")` receives a one-line nudge naming the message instead of its body, and fetches the body when it chooses. Push is the default; `daemon.message_delivery: pull` makes pull the default for agent and orchestrator peers that have not chosen. Service peers, ACP sessions (which have no `read_message`), and a spawned peer's opening message are always pushed. See [Messages](../reference/mcp-tools.md#messages).
+Every notify, ask, ask reply, and broadcast an agent peer receives is recorded with a `message_id`, shown as `message-id="msg-…"` on its `<peer-message>` tag. A peer can list its messages, peek at one, or fetch one (`list_messages`, `read_message`). A peer that sets `set_message_delivery("pull")` receives a one-line nudge naming the message instead of its body, and fetches the body when it chooses. Push is the default; `daemon.message_delivery: pull` makes pull the default for agent and orchestrator peers that have not chosen. Service peers, ACP sessions (which have no `read_message`), and a spawned peer's opening message are always pushed. See [Messages](../reference/mcp-tools.md#messages).
 
 Bare ack events and reply notifications carry the same nullable session metadata when a binding is known. Detached or offline peers keep those fields `null`.
 

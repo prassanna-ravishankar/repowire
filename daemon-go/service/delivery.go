@@ -131,6 +131,9 @@ func (d *PeerDelivery) WithMessages(messages *Messages) *PeerDelivery {
 // whose transport gives it no read_message is always pushed. An ACP session
 // is started without MCP tools, so it could not fetch a nudged body.
 func (d *PeerDelivery) MessageMode(ctx context.Context, p *proto.Peer) string {
+	if p == nil {
+		return MessageDeliveryPush
+	}
 	if decision, ok := d.transport.ACPRoute(p); ok && decision != nil {
 		return MessageDeliveryPush
 	}
@@ -869,12 +872,30 @@ func (d *PeerDelivery) Broadcast(ctx context.Context, fromPeer, text string, exc
 		s := string(fromObj.PeerID)
 		fromIDPtr = &s
 	}
-	d.reg.AddEvent(ctx, "broadcast", map[string]any{
+	broadcastID := d.reg.AddEvent(ctx, "broadcast", map[string]any{
 		"from":         fromPeer,
 		"text":         text,
 		"exclude":      exclude,
 		"from_peer_id": fromIDPtr,
 	})
+
+	// Each agent recipient gets its own record, so a broadcast has a
+	// message_id like any other message and a pull recipient is nudged.
+	byID := map[proto.PeerID]*proto.Peer{}
+	for _, p := range peers {
+		byID[p.PeerID] = p
+	}
+	record := func(id proto.PeerID) *state.PeerMessage {
+		p := byID[id]
+		if p == nil {
+			return nil
+		}
+		return d.messages.Record(ctx, state.PeerMessage{
+			Kind: state.MessageBroadcast, PeerID: string(id), PeerName: string(p.DisplayName),
+			FromPeerID: stringValuePeer(fromObj), FromName: string(sender.Name), Text: text,
+			TraceID: broadcastID, // ties every copy to the one broadcast and its journal row
+		})
+	}
 
 	// ACP-routed recipients have no WS session, so route them separately before
 	// the WebSocket fanout. Broadcast replies are intentionally discarded.
@@ -887,13 +908,16 @@ func (d *PeerDelivery) Broadcast(ctx context.Context, fromPeer, text string, exc
 		}
 		if decision, ok := d.transport.ACPRoute(p); ok && decision != nil {
 			excludeIDs[p.PeerID] = struct{}{}
+			msg := record(p.PeerID)
 			if err := decision.Prompt(text, func(_ ACPPromptResult, err error) {
 				if err != nil {
 					log.Printf("delivery: ACP broadcast to %s failed: %v", p.PeerID, err)
 				}
 			}); err != nil {
+				d.messages.Discard(ctx, msg)
 				failed = append(failed, BroadcastFailure{PeerID: p.PeerID, Error: err.Error()})
 			} else {
+				d.messages.MarkRead(ctx, msg) // an ACP session is always pushed
 				sent = append(sent, p.DisplayName)
 			}
 		}
@@ -915,15 +939,31 @@ func (d *PeerDelivery) Broadcast(ctx context.Context, fromPeer, text string, exc
 			continue
 		}
 		excludeIDs[p.PeerID] = struct{}{}
-		d.deferBroadcastUntilSeedSettled(sender, text, p.PeerID)
+		d.deferBroadcastUntilSeedSettled(ctx, sender, text, p, record(p.PeerID))
 		deferredNames = append(deferredNames, p.DisplayName)
 	}
 
-	sentIDs, failures := d.router.Broadcast(ctx, sender, text, excludeIDs)
+	var (
+		recordsMu sync.Mutex
+		records   = map[proto.PeerID]*state.PeerMessage{}
+		pulled    = map[proto.PeerID]bool{}
+	)
+	sentIDs, failures := d.router.Broadcast(ctx, sender, excludeIDs, func(id proto.PeerID) BroadcastBody {
+		msg := record(id)
+		body, pull := wireText(msg, text, d.MessageMode(ctx, byID[id]) == MessageDeliveryPull)
+		recordsMu.Lock()
+		records[id], pulled[id] = msg, pull
+		recordsMu.Unlock()
+		return BroadcastBody{Text: body, MessageID: messageID(msg)}
+	})
 	for _, id := range sentIDs {
+		d.markPushed(ctx, records[id], pulled[id])
 		if name, ok := idToName[id]; ok {
 			sent = append(sent, name)
 		}
+	}
+	for _, f := range failures {
+		d.messages.Discard(ctx, records[f.PeerID])
 	}
 	sent = append(sent, deferredNames...)
 	return sent, failures
@@ -1005,10 +1045,11 @@ func (d *PeerDelivery) awaitSeedSettled(ctx context.Context, id proto.PeerID) {
 // connect) would strand the message — instead we wait out the seed gate and
 // send directly. One pending peer must never block the rest of the broadcast
 // fanout. No-op after Close (mirrors peer.Registry.spawnTracked's gate).
-func (d *PeerDelivery) deferBroadcastUntilSeedSettled(from Sender, text string, id proto.PeerID) {
+func (d *PeerDelivery) deferBroadcastUntilSeedSettled(ctx context.Context, from Sender, text string, target *proto.Peer, msg *state.PeerMessage) {
 	d.closeMu.Lock()
 	if d.closed {
 		d.closeMu.Unlock()
+		d.messages.Discard(ctx, msg)
 		return
 	}
 	d.wg.Add(1)
@@ -1016,10 +1057,14 @@ func (d *PeerDelivery) deferBroadcastUntilSeedSettled(from Sender, text string, 
 	go func() {
 		defer d.wg.Done()
 		ctx := context.Background()
-		d.awaitSeedSettled(ctx, id)
-		if err := d.router.BroadcastToSession(ctx, from, text, id); err != nil {
-			log.Printf("delivery: deferred broadcast to %s failed after seed gate: %v", id, err)
+		d.awaitSeedSettled(ctx, target.PeerID)
+		body, pull := wireText(msg, text, d.MessageMode(ctx, target) == MessageDeliveryPull)
+		if err := d.router.BroadcastToSession(ctx, from, BroadcastBody{Text: body, MessageID: messageID(msg)}, target.PeerID); err != nil {
+			d.messages.Discard(ctx, msg)
+			log.Printf("delivery: deferred broadcast to %s failed after seed gate: %v", target.PeerID, err)
+			return
 		}
+		d.markPushed(ctx, msg, pull)
 	}()
 }
 

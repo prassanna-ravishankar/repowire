@@ -247,7 +247,7 @@ older transport that may ignore the structured field.
 broadcast(message: str) -> str
 ```
 
-Fan out to every online peer in your circle. No correlation, no reply. Use sparingly — treat it as a soft interrupt for everyone in scope.
+Fan out to every online peer in your circle. No correlation, no reply. Use sparingly — treat it as a soft interrupt for everyone in scope. Each recipient's copy is recorded with its own `message_id` (kind `broadcast`), so a peer on pull delivery gets a nudge instead of the body.
 
 The human peer and its surfaces are left out unless the user opted in with `human.broadcast: true`. Then the broadcast is stored in the inbox, and it is pushed only to surfaces whose own `broadcast` flag is on.
 

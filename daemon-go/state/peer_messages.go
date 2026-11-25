@@ -16,6 +16,8 @@ const (
 	MessageNotify = "notify"
 	MessageAsk    = "ask"
 	MessageReply  = "reply"
+	// MessageBroadcast is one recipient's copy of a broadcast.
+	MessageBroadcast = "broadcast"
 )
 
 // PeerMessage is one message delivered to one agent peer: the durable record
