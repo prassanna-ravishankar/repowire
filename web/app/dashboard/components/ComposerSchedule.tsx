@@ -142,7 +142,13 @@ export function PeerSchedules({ peer, apiBase, refresh }: { peer: Peer; apiBase:
       .then(async (res) => {
         if (!res.ok) throw new Error(`Error ${res.status}`);
         const data = (await res.json()) as { schedules: Schedule[] };
-        const mine = (data.schedules ?? []).filter((s) => s.to_peer === peer.peer_id || s.to_peer === peer.name);
+        // A one-shot whose time has passed has fired (the daemon drops it
+        // then): read as of this fetch, so the list never shows a send that
+        // already happened.
+        const now = Date.now();
+        const mine = (data.schedules ?? []).filter(
+          (s) => (s.to_peer === peer.peer_id || s.to_peer === peer.name) && (s.cron || new Date(s.fire_at).getTime() > now),
+        );
         if (live) {
           setSchedules(mine);
           setError(null);
@@ -164,14 +170,10 @@ export function PeerSchedules({ peer, apiBase, refresh }: { peer: Peer; apiBase:
   );
 
   if (error) return <div className="mt-2 font-mono text-[10px] text-error">schedules: {error}</div>;
-  // A one-shot whose time has passed has fired (the daemon drops it then);
-  // the list is only refreshed by this composer, so hide it rather than
-  // show a send that already happened.
-  const pending = schedules.filter((s) => s.cron || new Date(s.fire_at).getTime() > Date.now());
-  if (pending.length === 0) return null;
+  if (schedules.length === 0) return null;
   return (
     <ul className="mt-2 flex flex-col gap-1" aria-label="scheduled sends">
-      {pending.map((s) => (
+      {schedules.map((s) => (
         <li
           key={s.schedule_id}
           className="flex items-center gap-2 border border-border-faint bg-surface-container-lowest px-2 py-1 font-mono text-[11px] text-on-surface-variant"

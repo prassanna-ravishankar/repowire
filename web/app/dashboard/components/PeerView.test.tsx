@@ -1354,6 +1354,31 @@ describe("PeerView composer modes (ask | notify)", () => {
     expect(screen.getByTestId("when-now").getAttribute("aria-pressed")).toBe("true");
   });
 
+  // A schedule reply that lands after a switch to another peer must not turn
+  // that peer's "later" back into "now" (it would then send immediately).
+  it("a late schedule reply never resets another peer's timing", async () => {
+    let release: (r: Response) => void = () => {};
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+        if (String(input) === "/schedules" && init?.method === "POST") {
+          return new Promise<Response>((resolve) => (release = resolve));
+        }
+        return new Promise<Response>(() => {});
+      }),
+    );
+    const { rerender } = render(<PeerView peer={PEER} events={[]} apiBase="" onClose={() => {}} onSent={() => {}} />);
+    fireEvent.click(screen.getByTestId("when-repeat"));
+    fireEvent.change(textarea(), { target: { value: "for A" } });
+    fireEvent.click(screen.getByLabelText("Schedule ask"));
+    rerender(<PeerView peer={OTHER} events={[]} apiBase="" onClose={() => {}} onSent={() => {}} />);
+    fireEvent.click(screen.getByTestId("when-at"));
+    await act(async () => {
+      release(new Response(JSON.stringify({ schedule_id: "s", fire_at: "2026-11-26T09:00:00Z" }), { status: 200 }));
+    });
+    expect(screen.getByTestId("when-at").getAttribute("aria-pressed")).toBe("true");
+  });
+
   it("an attachment cannot be scheduled", async () => {
     const calls = mockEndpoints();
     const { container } = render(<PeerView peer={PEER} events={[]} apiBase="" onClose={() => {}} onSent={() => {}} />);

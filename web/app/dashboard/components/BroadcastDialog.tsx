@@ -22,6 +22,12 @@ export function broadcastAudience(peers: Peer[]): Peer[] {
 interface BroadcastResult {
   sent_to: string[];
   failed: { peer_id?: string; peer?: string; error?: string }[];
+  // Agents on your other machines in a shared cross-machine circle, which
+  // the daemon also reaches (name@machine).
+  remote_sent?: string[];
+  remote_queued?: string[];
+  remote_failed?: string[];
+  remote_uncertain?: string[];
 }
 
 export function BroadcastDialog({ apiBase, peers, onClose }: { apiBase: string; peers: Peer[]; onClose: () => void }) {
@@ -48,7 +54,7 @@ export function BroadcastDialog({ apiBase, peers, onClose }: { apiBase: string; 
         setError(data.error || data.detail || `Error ${res.status}`);
         return;
       }
-      setResult({ sent_to: data.sent_to ?? [], failed: data.failed ?? [] });
+      setResult(data as BroadcastResult);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Request failed");
     } finally {
@@ -60,15 +66,15 @@ export function BroadcastDialog({ apiBase, peers, onClose }: { apiBase: string; 
     return (
       <Modal title="Broadcast sent" onClose={onClose} footer={<Button variant="primary" onClick={onClose}>Done</Button>}>
         <p className="font-mono text-xs text-on-surface-variant">
-          Reached {result.sent_to.length} peer{result.sent_to.length === 1 ? "" : "s"}
-          {result.failed.length > 0 ? `; ${result.failed.length} failed` : ""}.
+          Reached {(result.sent_to ?? []).length} peer{(result.sent_to ?? []).length === 1 ? "" : "s"} on this machine
+          {(result.failed ?? []).length > 0 ? `; ${result.failed.length} failed` : ""}.
         </p>
-        {result.sent_to.length > 0 && (
+        {(result.sent_to ?? []).length > 0 && (
           <p className="mt-2 font-mono text-[11px] text-outline" data-testid="broadcast-sent-to">
             {result.sent_to.map((n) => "@" + n).join(", ")}
           </p>
         )}
-        {result.failed.length > 0 && (
+        {(result.failed ?? []).length > 0 && (
           <ul className="mt-2 font-mono text-[11px] text-error">
             {result.failed.map((f, i) => (
               <li key={i}>
@@ -76,6 +82,20 @@ export function BroadcastDialog({ apiBase, peers, onClose }: { apiBase: string; 
               </li>
             ))}
           </ul>
+        )}
+        {(
+          [
+            ["on other machines", result.remote_sent, "text-outline"],
+            ["queued on other machines", result.remote_queued, "text-outline"],
+            ["failed on other machines", result.remote_failed, "text-error"],
+            ["unconfirmed on other machines", result.remote_uncertain, "text-error"],
+          ] as const
+        ).map(([label, names, tone]) =>
+          names && names.length > 0 ? (
+            <p key={label} data-testid={`broadcast-remote-${label.split(" ")[0]}`} className={`mt-2 font-mono text-[11px] ${tone}`}>
+              {label}: {names.join(", ")}
+            </p>
+          ) : null,
         )}
       </Modal>
     );
@@ -88,12 +108,12 @@ export function BroadcastDialog({ apiBase, peers, onClose }: { apiBase: string; 
       footer={
         <Button variant="primary" onClick={() => void send()} disabled={!text.trim() || sending || audience.length === 0}>
           {sending ? <RefreshCw aria-hidden className="h-3.5 w-3.5 animate-spin" /> : <Megaphone aria-hidden className="h-3.5 w-3.5" />}
-          {audience.length === 0 ? "No one to reach" : `Broadcast to ${audience.length} peer${audience.length === 1 ? "" : "s"}`}
+          {audience.length === 0 ? "No one to reach here" : `Broadcast to ${audience.length} peer${audience.length === 1 ? "" : "s"} here`}
         </Button>
       }
     >
       <p className="font-mono text-[11px] text-outline">
-        Every online agent in every circle gets this as a broadcast from you, with no reply thread.
+        Every online agent in every circle gets this as a broadcast from you, with no reply thread, and so do the agents on your other machines in a shared cross-machine circle (not listed here; the result names them).
         {audience.length > 0 ? ` That is ${audience.length} peer${audience.length === 1 ? "" : "s"} in ${circles} circle${circles === 1 ? "" : "s"} now:` : " No agent is online now."}
       </p>
       {audience.length > 0 && (

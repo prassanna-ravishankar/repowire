@@ -22,16 +22,19 @@ describe("BroadcastDialog", () => {
 
   it("names the audience, asks for its count, and posts one broadcast from the dashboard", async () => {
     const fetchMock = vi.fn((_url: string, _init?: RequestInit) =>
-      Promise.resolve(new Response(JSON.stringify({ ok: true, sent_to: ["alpha", "beta"], failed: [] }), { status: 200 })),
+      Promise.resolve(new Response(JSON.stringify({ ok: true, sent_to: ["alpha", "beta"], failed: [], remote_sent: ["gamma@laptop"], remote_failed: ["delta@box"] }), { status: 200 })),
     );
     vi.stubGlobal("fetch", fetchMock);
     render(<BroadcastDialog apiBase="/api" peers={PEERS} onClose={() => {}} />);
     expect(screen.getByText(/2 peers in 2 circles/)).toBeTruthy();
-    const button = screen.getByRole("button", { name: /Broadcast to 2 peers/ });
+    const button = screen.getByRole("button", { name: /Broadcast to 2 peers here/ });
     expect((button as HTMLButtonElement).disabled).toBe(true); // nothing typed yet
     fireEvent.change(screen.getByLabelText("broadcast message"), { target: { value: "freeze merges" } });
     fireEvent.click(button);
     expect(await screen.findByTestId("broadcast-sent-to")).toBeTruthy();
+    // Peers on other machines are named in the result, failures in red.
+    expect(screen.getByTestId("broadcast-remote-on").textContent).toContain("gamma@laptop");
+    expect(screen.getByTestId("broadcast-remote-failed").textContent).toContain("delta@box");
     expect(fetchMock).toHaveBeenCalledTimes(1);
     const [url, init] = fetchMock.mock.calls[0];
     expect(url).toBe("/api/broadcast");
@@ -40,6 +43,6 @@ describe("BroadcastDialog", () => {
 
   it("cannot send when no agent is online", () => {
     render(<BroadcastDialog apiBase="/api" peers={[PEERS[2]]} onClose={() => {}} />);
-    expect((screen.getByRole("button", { name: "No one to reach" }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole("button", { name: "No one to reach here" }) as HTMLButtonElement).disabled).toBe(true);
   });
 });

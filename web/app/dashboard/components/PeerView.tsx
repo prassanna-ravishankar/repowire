@@ -1228,7 +1228,9 @@ function ComposeBar({
   // silently schedule what the user meant to send now.
   const [schedule, setSchedule] = useState<ScheduleChoice>({ when: "now", at: "", cron: CRON_PRESETS[0].cron });
   const [scheduleRefresh, setScheduleRefresh] = useState(0);
+  const composerPeer = useRef(peer.peer_id); // the peer this composer shows now
   useEffect(() => {
+    composerPeer.current = peer.peer_id;
     setMode("ask");
     setNotifyStatus(null);
     setSchedule((c) => ({ ...c, when: "now" }));
@@ -1327,6 +1329,7 @@ function ComposeBar({
       const hint = "\n(from @dashboard - reply naturally, dashboard sees your response automatically)";
 
       if (schedule.when !== "now") {
+        const sentTo = peer.peer_id;
         // A scheduled send goes through /schedules, which carries text only.
         if (file) {
           setError("Attachments can't be scheduled: send now, or remove the file");
@@ -1348,13 +1351,18 @@ function ComposeBar({
           setError(data.error || data.detail || `Error ${res.status}`);
           return;
         }
-        setNotifyStatus({ ok: true, text: `scheduled · ${formatFire(data.fire_at)}` });
-        pushHistory(peer.peer_id, text);
-        historyIdx.current = null;
-        setHistoryTick((t) => t + 1);
-        clearDraft(peer.peer_id);
-        setScheduleRefresh((n) => n + 1);
-        setSchedule((c) => ({ ...c, when: "now" }));
+        pushHistory(sentTo, text);
+        clearDraft(sentTo);
+        // The reply can land after a switch to another peer: only the
+        // composer that sent it is reset, so a "later" chosen for the new
+        // peer is never turned back into "now".
+        if (composerPeer.current === sentTo) {
+          setNotifyStatus({ ok: true, text: `scheduled · ${formatFire(data.fire_at)}` });
+          historyIdx.current = null;
+          setHistoryTick((t) => t + 1);
+          setScheduleRefresh((n) => n + 1);
+          setSchedule((c) => ({ ...c, when: "now" }));
+        }
         onSent?.();
         return;
       }
@@ -1658,7 +1666,7 @@ function ComposeBar({
         </div>
       )}
 
-      <PeerSchedules peer={peer} apiBase={apiBase} refresh={scheduleRefresh} />
+      <PeerSchedules key={peer.peer_id} peer={peer} apiBase={apiBase} refresh={scheduleRefresh} />
 
       {visibleAsks.length > 0 && (
         <div className="mt-2 flex flex-col gap-1.5">
