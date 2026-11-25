@@ -33,11 +33,12 @@ type WireVisibilityStore interface {
 
 // WireProvenance is one party as it was when a stage recorded it.
 type WireProvenance struct {
-	PeerID  proto.PeerID   `json:"peer_id"`
-	Circle  string         `json:"circle"`
-	Role    proto.PeerRole `json:"role"`
-	Private bool           `json:"private,omitempty"`
-	Unknown bool           `json:"unknown,omitempty"` // the registry did not know the peer
+	PeerID  proto.PeerID      `json:"peer_id"`
+	Name    proto.DisplayName `json:"display_name,omitempty"`
+	Circle  string            `json:"circle"`
+	Role    proto.PeerRole    `json:"role"`
+	Private bool              `json:"private,omitempty"`
+	Unknown bool              `json:"unknown,omitempty"` // the registry did not know the peer
 }
 
 // wireProvenanceKey is the trace detail key the parties are recorded under.
@@ -68,7 +69,7 @@ func (w *Wire) Provenance(ctx context.Context, ids ...proto.PeerID) []WireProven
 		}
 		rec := WireProvenance{PeerID: id, Private: w.Private(ctx, id), Unknown: true}
 		if p, ok := w.peers.GetPeer(id); ok && p != nil {
-			rec.Circle, rec.Role, rec.Unknown = p.Circle, p.Role, false
+			rec.Name, rec.Circle, rec.Role, rec.Unknown = p.DisplayName, p.Circle, p.Role, false
 		}
 		out = append(out, rec)
 	}
@@ -162,6 +163,40 @@ func threadProvenance(kind string, rows []state.TraceRow) ([]WireProvenance, boo
 		out = append(out, recs...)
 	}
 	return out, named
+}
+
+// recordedNames maps each party a thread's stages named to the last display
+// name they recorded for it: provenance records, and a delegation's from and
+// to, which predate provenance. The view names a party the registry no
+// longer knows by it rather than by its peer id.
+func recordedNames(rows []state.TraceRow) map[proto.PeerID]proto.DisplayName {
+	out := map[proto.PeerID]proto.DisplayName{}
+	for _, r := range rows {
+		if recs, ok := decodeProvenance(r.Detail[wireProvenanceKey]); ok {
+			for _, p := range recs {
+				if p.Name != "" {
+					out[p.PeerID] = p.Name
+				}
+			}
+		}
+		if r.Stage == "delegated" {
+			for _, side := range []string{"from", "to"} {
+				id, _ := r.Detail[side+"_peer_id"].(string)
+				name, _ := r.Detail[side].(string)
+				if id != "" && name != "" {
+					out[proto.PeerID(id)] = proto.DisplayName(name)
+				}
+			}
+		}
+	}
+	return out
+}
+
+// nameGone names a party the registry no longer knows by its recorded name.
+func nameGone(p *WireParty, names map[proto.PeerID]proto.DisplayName) {
+	if name, ok := names[p.PeerID]; ok && !p.Known && p.PeerID != "" {
+		p.Name = name
+	}
 }
 
 func decodeProvenance(v any) ([]WireProvenance, bool) {
