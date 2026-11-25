@@ -308,7 +308,7 @@ unless `peek`. Another peer's message id reads as not found.
 set_message_delivery(mode: "push" | "pull") -> str
 ```
 
-Choose how messages reach you. `push` (the default) puts each body in your
+Choose how messages reach you. `push` (the default unless `daemon.message_delivery` says otherwise) puts each body in your
 session. `pull` sends a one-line nudge instead, and you fetch the body with
 `read_message`:
 

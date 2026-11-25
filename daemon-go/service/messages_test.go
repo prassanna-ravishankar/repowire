@@ -213,3 +213,44 @@ func TestConcurrentModeChangesKeepCacheAndStoreAgreed(t *testing.T) {
 		t.Fatalf("cache says %s, store says %s", live, restarted)
 	}
 }
+
+// daemon.message_delivery sets the mode of every peer that has not chosen
+// one; a peer's own choice, push included, still wins.
+func TestDefaultModeAppliesUntilAPeerChooses(t *testing.T) {
+	ctx := context.Background()
+	store := newMessageStore(t)
+	m := NewMessages(store).WithDefaultMode(MessageDeliveryPull)
+	if got := m.Mode(ctx, "repow-new"); got != MessageDeliveryPull {
+		t.Fatalf("unchosen mode under a pull default = %q", got)
+	}
+	if err := m.SetMode(ctx, "repow-push", MessageDeliveryPush); err != nil {
+		t.Fatal(err)
+	}
+	if got := m.Mode(ctx, "repow-push"); got != MessageDeliveryPush {
+		t.Fatalf("a peer that chose push = %q", got)
+	}
+	if got := NewMessages(store).WithDefaultMode(MessageDeliveryPull).Mode(ctx, "repow-push"); got != MessageDeliveryPush {
+		t.Fatalf("a chosen push after restart = %q", got)
+	}
+	if got := NewMessages(store).WithDefaultMode("sideways").Mode(ctx, "repow-new"); got != MessageDeliveryPush {
+		t.Fatalf("an unknown default = %q", got)
+	}
+}
+
+func TestPullDefaultNudgesAPeerThatNeverChose(t *testing.T) {
+	ctx := context.Background()
+	alpha := peerWith("repow-default-aaaa", "alpha", "default", proto.StatusOnline)
+	beta := peerWith("repow-default-bbbb", "beta", "default", proto.StatusOnline)
+	f := &fakeTransport{ackFrame: map[string]any{"status": "accepted"}}
+	d, messages, _ := deliveryWithMessages(t, f, nil, alpha, beta)
+	messages.WithDefaultMode(MessageDeliveryPull)
+
+	res, err := d.Notify(ctx, NotifyParams{FromPeer: "alpha", ToPeer: "beta", Text: "summary\nthe detail stays in the record"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	text, _ := f.lastFrame.(map[string]any)["text"].(string)
+	if !strings.HasPrefix(text, "[message "+res.MessageID+": notify from @alpha") || strings.Contains(text, "the detail") {
+		t.Fatalf("frame text under a pull default = %q", text)
+	}
+}

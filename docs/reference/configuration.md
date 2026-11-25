@@ -10,6 +10,7 @@ daemon:
   port: 8377
   auth_token: "rw_local_..."
   circle_boundary: session
+  message_delivery: push
   delivery_queue_ttl_seconds: 86400
   delivery_queue_max_per_peer: 100
   orchestrator_recall:
@@ -146,6 +147,15 @@ Changing this setting does not rewrite durable peer identities already recorded
 in the daemon. Stop and recreate peers that should adopt the new boundary.
 Restart and backend-switch refuse to replace the last pane in a window, because
 killing it would destroy the window before tmux could place its replacement.
+
+## `daemon.message_delivery`
+
+The delivery mode of every agent peer that has not chosen one with
+`set_message_delivery`: `push` (the default) puts each message body in the
+peer's session, `pull` sends a one-line nudge naming the message instead. A
+peer's own choice, `push` included, always wins over this default, and changing
+the default applies to every peer that never chose. An unknown value keeps
+`push` and logs a warning. Environment: `REPOWIRE_DAEMON__MESSAGE_DELIVERY`.
 
 ## `daemon.mcp_http`
 

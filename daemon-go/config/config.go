@@ -79,19 +79,22 @@ func (c RetentionConfig) Durations() (content, records time.Duration) {
 }
 
 type DaemonConfig struct {
-	Host                    string                   `yaml:"host"`
-	Port                    int                      `yaml:"port"`
-	AuthToken               string                   `yaml:"auth_token"`
-	HeartbeatInterval       int                      `yaml:"heartbeat_interval"`
-	PruneMaxAgeHours        float64                  `yaml:"prune_max_age_hours"`
-	PeerReapTTLSeconds      float64                  `yaml:"peer_reap_ttl_seconds"`
-	StaleBusyTimeoutSeconds float64                  `yaml:"stale_busy_timeout_seconds"`
-	DeliveryQueueTTLSeconds float64                  `yaml:"delivery_queue_ttl_seconds"`
-	DeliveryQueueMaxPerPeer int                      `yaml:"delivery_queue_max_per_peer"`
-	CircleBoundary          proto.CircleBoundary     `yaml:"circle_boundary"`
-	OrchestratorRecall      OrchestratorRecallConfig `yaml:"orchestrator_recall"`
-	Spawn                   SpawnConfig              `yaml:"spawn"`
-	MCPHTTP                 MCPHTTPConfig            `yaml:"mcp_http"`
+	Host                    string               `yaml:"host"`
+	Port                    int                  `yaml:"port"`
+	AuthToken               string               `yaml:"auth_token"`
+	HeartbeatInterval       int                  `yaml:"heartbeat_interval"`
+	PruneMaxAgeHours        float64              `yaml:"prune_max_age_hours"`
+	PeerReapTTLSeconds      float64              `yaml:"peer_reap_ttl_seconds"`
+	StaleBusyTimeoutSeconds float64              `yaml:"stale_busy_timeout_seconds"`
+	DeliveryQueueTTLSeconds float64              `yaml:"delivery_queue_ttl_seconds"`
+	DeliveryQueueMaxPerPeer int                  `yaml:"delivery_queue_max_per_peer"`
+	CircleBoundary          proto.CircleBoundary `yaml:"circle_boundary"`
+	// MessageDelivery is the delivery mode (push or pull) of every agent peer
+	// that has not chosen one with set_message_delivery.
+	MessageDelivery    string                   `yaml:"message_delivery"`
+	OrchestratorRecall OrchestratorRecallConfig `yaml:"orchestrator_recall"`
+	Spawn              SpawnConfig              `yaml:"spawn"`
+	MCPHTTP            MCPHTTPConfig            `yaml:"mcp_http"`
 }
 
 type SpawnConfig struct {
@@ -184,6 +187,7 @@ func Defaults() Config {
 		Daemon: DaemonConfig{
 			Host: defaultHost, Port: defaultPort, HeartbeatInterval: 30,
 			CircleBoundary:     proto.CircleBoundarySession,
+			MessageDelivery:    "push",
 			PruneMaxAgeHours:   24,
 			PeerReapTTLSeconds: 600, StaleBusyTimeoutSeconds: 1800,
 			DeliveryQueueTTLSeconds: 86400, DeliveryQueueMaxPerPeer: 100,
@@ -255,6 +259,11 @@ func LoadFile(path string) (Config, error) {
 	normalize(&cfg)
 	if !cfg.Daemon.CircleBoundary.Valid() {
 		return cfg, fmt.Errorf("daemon.circle_boundary must be session or window, got %q", cfg.Daemon.CircleBoundary)
+	}
+	if cfg.Daemon.MessageDelivery != "push" && cfg.Daemon.MessageDelivery != "pull" {
+		// Not a core key: an unknown mode keeps push and warns.
+		cfg.Warnings = append(cfg.Warnings, "config: daemon.message_delivery is ignored: it must be push or pull")
+		cfg.Daemon.MessageDelivery = "push"
 	}
 	if err := cfg.settleRouting(); err != nil {
 		return cfg, err
@@ -565,6 +574,9 @@ func applyEnv(cfg *Config) {
 	if value := os.Getenv("REPOWIRE_DAEMON__CIRCLE_BOUNDARY"); value != "" {
 		cfg.Daemon.CircleBoundary = proto.CircleBoundary(value)
 	}
+	if value := os.Getenv("REPOWIRE_DAEMON__MESSAGE_DELIVERY"); value != "" {
+		cfg.Daemon.MessageDelivery = value
+	}
 	setBoolEnv(&cfg.Daemon.MCPHTTP.Enabled, "REPOWIRE_DAEMON__MCP_HTTP__ENABLED")
 	if v := os.Getenv("REPOWIRE_DAEMON__MCP_HTTP__BIND"); v != "" {
 		cfg.Daemon.MCPHTTP.Bind = v
@@ -635,6 +647,9 @@ func normalize(cfg *Config) {
 	}
 	if cfg.Daemon.CircleBoundary == "" {
 		cfg.Daemon.CircleBoundary = proto.CircleBoundarySession
+	}
+	if cfg.Daemon.MessageDelivery == "" {
+		cfg.Daemon.MessageDelivery = "push"
 	}
 	if cfg.Daemon.Spawn.Commands == nil {
 		cfg.Daemon.Spawn.Commands = map[string]string{}
