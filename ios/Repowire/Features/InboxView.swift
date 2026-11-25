@@ -37,9 +37,9 @@ struct InboxView: View {
                         Eyebrow(text: "Messages")
                             .padding(.top, Theme.Space.s)
                         VStack(spacing: 0) {
-                            ForEach(Array(model.inbox.prefix(50).enumerated()), id: \.element.id) { index, event in
+                            ForEach(Array(model.inbox.prefix(50).enumerated()), id: \.element.id) { index, item in
                                 if index > 0 { Divider().overlay(Theme.Palette.border) }
-                                MessageRow(event: event)
+                                MessageRow(item: item)
                             }
                         }
                         .background(RoundedRectangle(cornerRadius: Theme.Radius.card, style: .continuous).fill(Theme.Palette.surface))
@@ -59,20 +59,30 @@ struct InboxView: View {
     }
 }
 
+/// One inbox item. Unread items carry an accent dot; opening the sender's
+/// conversation marks the item read on every surface.
 struct MessageRow: View {
     @Environment(AppModel.self) private var model
-    let event: MeshEvent
+    let item: InboxItem
 
     var body: some View {
         let content = VStack(alignment: .leading, spacing: Theme.Space.xs) {
             HeaderRow {
-                Text("@\(event.from ?? "mesh")")
-                    .font(Theme.Typeface.mono(.subheadline, weight: .semibold))
-                    .foregroundStyle(Theme.Palette.foreground)
+                HStack(alignment: .firstTextBaseline, spacing: Theme.Space.s) {
+                    if !item.read {
+                        Circle()
+                            .fill(Theme.Palette.accent)
+                            .frame(width: Theme.Size.statusDot, height: Theme.Size.statusDot)
+                            .accessibilityLabel("Unread")
+                    }
+                    Text("@\(item.from)")
+                        .font(Theme.Typeface.mono(.subheadline, weight: .semibold))
+                        .foregroundStyle(Theme.Palette.foreground)
+                }
             } trailing: {
-                Timestamp(date: event.date)
+                Timestamp(date: item.date)
             }
-            Text(markdown: event.text ?? "")
+            Text(markdown: item.text)
                 .font(.subheadline)
                 .foregroundStyle(Theme.Palette.muted)
                 .lineLimit(4)
@@ -80,12 +90,15 @@ struct MessageRow: View {
         .padding(Theme.Space.l)
         .frame(maxWidth: .infinity, alignment: .leading)
         .contentShape(Rectangle())
+        .accessibilityIdentifier("inbox.item.\(item.id)")
 
-        if let peer = event.from.flatMap(model.peer(named:)) {
+        if let peer = model.peer(named: item.from) {
             NavigationLink(value: peer) { content }
                 .buttonStyle(.plain)
+                .simultaneousGesture(TapGesture().onEnded { Task { await model.markRead(item) } })
         } else {
             content
+                .onTapGesture { Task { await model.markRead(item) } }
         }
     }
 }

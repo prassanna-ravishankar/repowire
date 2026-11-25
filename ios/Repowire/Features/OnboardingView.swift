@@ -103,7 +103,7 @@ struct OnboardingView: View {
                         .multilineTextAlignment(.center)
                     HStack(spacing: Theme.Space.xs) {
                         footerLink("Docs", Links.docs)
-                        Text("·").foregroundStyle(Theme.Palette.faint).accessibilityHidden(true)
+                        Text("·").foregroundStyle(Theme.Palette.subtle).accessibilityHidden(true)
                         footerLink("GitHub", Links.github)
                     }
                     .font(.footnote)

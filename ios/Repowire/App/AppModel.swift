@@ -3,8 +3,8 @@ import OSLog
 import Observation
 import RepowireKit
 
-/// App state. Owns the mesh service, mirrors the daemon's event log, and derives
-/// everything the screens show from it, the same way the web dashboard does.
+/// App state. Owns the mesh service, mirrors the daemon's event log and the
+/// human's inbox, and derives what the screens show the way the web dashboard does.
 @Observable
 final class AppModel {
     enum Phase: Equatable {
@@ -24,6 +24,7 @@ final class AppModel {
     private(set) var peers: [Peer] = []
     private(set) var events: [MeshEvent] = []
     private(set) var jobs: [Job] = []
+    private(set) var inboxItems: [InboxItem] = []
     private(set) var answering: Set<String> = []
     var lastError: String?
 
@@ -62,14 +63,13 @@ final class AppModel {
         PendingQuestion.derive(from: events).reversed()
     }
 
-    /// Messages addressed to the human that are not open questions.
-    var inbox: [MeshEvent] {
+    /// Inbox items that are not open questions (those render as question cards).
+    var inbox: [InboxItem] {
         let open = Set(pendingQuestions.map(\.correlationId))
-        return events.reversed().filter { event in
-            guard ["notification", "query", "ask"].contains(event.type), Self.isHuman(event.to) else { return false }
-            return event.correlationId.map { !open.contains($0) } ?? true
-        }
+        return inboxItems.filter { item in item.correlationId.map { !open.contains($0) } ?? true }
     }
+
+    var unreadCount: Int { inbox.filter { !$0.read }.count }
 
     var listedPeers: [Peer] {
         peers.filter(\.isListed).sorted { ($0.status.rank, $0.label) < ($1.status.rank, $1.label) }
@@ -77,11 +77,6 @@ final class AppModel {
 
     func peer(named name: String) -> Peer? {
         peers.first { $0.name == name || $0.label == name }
-    }
-
-    static func isHuman(_ address: String?) -> Bool {
-        guard let address else { return false }
-        return ["human", "dashboard"].contains(address.lowercased().trimmingCharacters(in: CharacterSet(charactersIn: "@")))
     }
 
     // MARK: Connection
@@ -108,6 +103,7 @@ final class AppModel {
         peers = []
         events = []
         jobs = []
+        inboxItems = []
         phase = .onboarding
     }
 
@@ -157,9 +153,12 @@ final class AppModel {
             async let peers = service.peers()
             async let events = service.events(since: nil)
             async let jobs = service.jobs()
+            async let inbox = service.inbox()
             self.peers = try await peers
             self.events = Array(try await events.suffix(Self.eventWindow))
             self.jobs = (try? await jobs) ?? []
+            // A daemon without a human peer answers 503; the app still works.
+            self.inboxItems = (try? await inbox) ?? []
             lastError = nil
         } catch {
             lastError = error.localizedDescription
@@ -175,6 +174,12 @@ final class AppModel {
         if events.count > Self.eventWindow { events.removeFirst(events.count - Self.eventWindow) }
         if fresh.contains(where: \.isLifecycle) { Task { await reloadPeers() } }
         if fresh.contains(where: { $0.type == "job_state_changed" }) { Task { await reloadJobs() } }
+        // Inbox events carry no text; the items are read from /inbox.
+        if fresh.contains(where: { $0.type.hasPrefix("inbox_") }) { Task { await reloadInbox() } }
+    }
+
+    func reloadInbox() async {
+        if let items = try? await service?.inbox() { inboxItems = items }
     }
 
     private func reloadPeers() async {
@@ -211,6 +216,34 @@ final class AppModel {
             pendingQuestions.first { $0.correlationId == correlationId }
             ?? PendingQuestion(correlationId: correlationId, from: "", text: "", question: AskQuestion(kind: "choice"))
         await answer(question, optionId: optionId, outcome: outcome, text: text)
+    }
+
+    func markRead(_ item: InboxItem) async {
+        guard let service, !item.read else { return }
+        if let index = inboxItems.firstIndex(where: { $0.id == item.id }) { inboxItems[index].read = true }
+        do {
+            try await service.markRead(itemId: item.id)
+        } catch {
+            log.error("mark read failed: \(error.localizedDescription, privacy: .public)")
+        }
+    }
+
+    /// Replies through the inbox, for notification actions: the daemon acks or
+    /// answers the ask behind the item and marks it replied on every surface.
+    func reply(itemId: String, text: String, optionId: String? = nil) async {
+        guard let service else { return }
+        do {
+            try await service.reply(itemId: itemId, text: text, optionId: optionId)
+            await reloadInbox()
+        } catch {
+            lastError = error.localizedDescription
+        }
+    }
+
+    func markRead(itemId: String) async {
+        guard let service else { return }
+        try? await service.markRead(itemId: itemId)
+        await reloadInbox()
     }
 
     func send(_ text: String, to peer: Peer, mode: SendMode) async throws {

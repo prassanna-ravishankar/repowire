@@ -2,6 +2,7 @@ import XCTest
 
 /// Apple's accessibility audit (contrast, Dynamic Type, hit regions, labels,
 /// clipped text) on every screen, in light and dark.
+@MainActor
 final class AccessibilityAuditTests: XCTestCase {
     override func setUp() {
         continueAfterFailure = true

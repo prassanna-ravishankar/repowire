@@ -85,7 +85,7 @@ struct PeerDetailView: View {
             if let path = live.path {
                 Text([live.machine, path].compactMap(\.self).joined(separator: ":"))
                     .font(Theme.Typeface.mono(.caption))
-                    .foregroundStyle(Theme.Palette.faint)
+                    .foregroundStyle(Theme.Palette.subtle)
                     .lineLimit(1)
                     .truncationMode(.middle)
             }
@@ -120,7 +120,7 @@ struct TurnBubble: View {
                 }
                 Timestamp(
                     date: MeshEvent(id: "", type: "", timestamp: turn.timestamp).date,
-                    tint: mine ? Theme.Palette.onAccentMuted : Theme.Palette.faint)
+                    tint: mine ? Theme.Palette.onAccentMuted : Theme.Palette.subtle)
             }
             .padding(Theme.Space.m)
             .background(
@@ -206,7 +206,7 @@ struct Composer: View {
                         .font(.body.weight(.bold))
                         .foregroundStyle(Theme.Palette.onAccent)
                         .frame(width: Theme.Size.tapTarget, height: Theme.Size.tapTarget)
-                        .background(Circle().fill(canSend ? Theme.Palette.accentFill : Theme.Palette.faint))
+                        .background(Circle().fill(canSend ? Theme.Palette.accentFill : Theme.Palette.subtle))
                 }
                 .disabled(!canSend)
                 .accessibilityLabel("Send")

@@ -1,6 +1,7 @@
 import XCTest
 
 /// Functional coverage of the human's core jobs, run against FixtureMesh.
+@MainActor
 final class FlowTests: XCTestCase {
     override func setUp() {
         continueAfterFailure = false

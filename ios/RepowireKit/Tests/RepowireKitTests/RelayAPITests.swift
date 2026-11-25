@@ -129,6 +129,30 @@ private func json(_ text: String) -> Data { Data(text.utf8) }
         #expect(request.url?.path() == "/push/devices")
     }
 
+    @Test func `reads the inbox and replies as the ios surface`() async throws {
+        let api = StubProtocol.api("inbox.test") { request in
+            if request.url?.path() == "/inbox" {
+                return (
+                    200,
+                    json(
+                        #"{"human":"human","items":[{"id":"inb-1","kind":"ask","from":"ci","text":"ship?","created_at":"2026-11-25T10:00:00.000Z","read":false,"replied":false,"correlation_id":"ask-1","pushes":[]},{"broken":true}]}"#
+                    )
+                )
+            }
+            return (200, json(#"{"ok":true,"action":"acked"}"#))
+        }
+        let items = try await api.inbox()
+        #expect(items.map(\.id) == ["inb-1"])
+        #expect(items.first?.correlationId == "ask-1")
+        try await api.markRead(itemId: "inb-1")
+        try await api.reply(itemId: "inb-1", text: "yes", optionId: nil)
+        let requests = StubProtocol.requests("inbox.test")
+        #expect(requests.map { $0.url?.path() } == ["/inbox", "/inbox/inb-1/read", "/inbox/inb-1/reply"])
+        let reply = try #require(try JSONSerialization.jsonObject(with: requests[2].httpBody ?? Data()) as? [String: Any])
+        #expect(reply["surface"] as? String == "ios")
+        #expect(reply["text"] as? String == "yes")
+    }
+
     @Test(arguments: [("data: {\"id\":\"1\"}", "{\"id\":\"1\"}"), (": keepalive", nil), ("data:", nil)] as [(String, String?)])
     func `extracts sse data payloads`(line: String, expected: String?) {
         #expect(ServerSentEvents.payload(line) == expected)
@@ -179,5 +203,20 @@ private func json(_ text: String) -> Data { Data(text.utf8) }
         #expect(streamed?.type == "ack")
         let after = PendingQuestion.derive(from: try await mesh.events(since: nil))
         #expect(after.map(\.correlationId) == ["ask-docs-1"])
+    }
+}
+
+@Suite struct FixtureInboxTests {
+    @Test func `answering a question marks its inbox item replied`() async throws {
+        let mesh = FixtureMesh()
+        try await mesh.answer(correlationId: "ask-backend-1", optionId: "allow", outcome: nil, text: nil)
+        let item = try #require(try await mesh.inbox().first { $0.correlationId == "ask-backend-1" })
+        #expect(item.replied && item.read)
+    }
+
+    @Test func `reading an item is shared state`() async throws {
+        let mesh = FixtureMesh()
+        try await mesh.markRead(itemId: "inb-1")
+        #expect(try await mesh.inbox().first { $0.id == "inb-1" }?.read == true)
     }
 }

@@ -58,7 +58,7 @@ struct MainView: View {
             SwiftUI.Tab("Inbox", systemImage: "tray", value: .inbox) {
                 InboxView()
             }
-            .badge(model.pendingQuestions.count)
+            .badge(model.pendingQuestions.count + model.unreadCount)
 
             SwiftUI.Tab("Peers", systemImage: "point.3.connected.trianglepath.dotted", value: .peers) {
                 PeersView()

@@ -1,6 +1,6 @@
 # iOS app
 
-The native client lives in `ios/`. It is a SwiftUI app that reaches a daemon through the relay as the `@dashboard` human surface, plus a Swift package with everything that does not need UIKit.
+The native client lives in `ios/`. It is a SwiftUI app that reaches a daemon through the relay, sends as `@dashboard`, and renders the human inbox as the `ios` surface, plus a Swift package with everything that does not need UIKit.
 
 | Path | Contents |
 | --- | --- |
@@ -43,9 +43,12 @@ All traffic goes through the relay tunnel with `Authorization: Bearer <relay key
 | Live updates | `GET /events/stream` (SSE), with `GET /events?since=<id>` to recover gaps after a reconnect |
 | Send | `POST /ask` or `POST /notify` with `from_peer: "dashboard"` |
 | Answer a question | `POST /answer` with `option_id`, `outcome`, or `text` |
+| Inbox | `GET /inbox`, `POST /inbox/{id}/read` and `POST /inbox/{id}/reply` with `surface: "ios"`; reloaded on `inbox_item` and `inbox_updated` events |
 | Push registration | `POST /push/devices` |
 
-Open questions are derived from the event log with the same rule the web dashboard uses: an `ask` carrying a `question` opens one, an `ack` with the same correlation id closes it.
+Open questions are derived from the event log with the same rule the web dashboard uses: an `ask` carrying a `question` opens one, an `ack` with the same correlation id closes it. The **Messages** list is the inbox minus those questions.
+
+Push is the daemon's `ios` inbox surface (`daemon-go/push`). When an item is stored, the inbox calls the surface, which sends one frame through the relay with the alert and the registered tokens. The relay signs the APNs request with its key and answers with the outcome, which becomes the push's trace stage. The alert's `repowire` payload carries `item_id`, `kind`, `from`, and, for an ask, `correlation_id` and the question's `options`; the notification actions use them.
 
 ## Quality gates
 

@@ -6,7 +6,7 @@ extension Peer.Status {
         switch self {
         case .online: Theme.Palette.success
         case .busy: Theme.Palette.warning
-        case .offline: Theme.Palette.faint
+        case .offline: Theme.Palette.subtle
         }
     }
 
@@ -147,7 +147,7 @@ extension ButtonStyle where Self == RWButtonStyle {
 /// "2m ago" in mono, relative to now, refreshed by the system.
 struct Timestamp: View {
     let date: Date?
-    var tint: Color = Theme.Palette.faint
+    var tint: Color = Theme.Palette.subtle
 
     var body: some View {
         if let date {

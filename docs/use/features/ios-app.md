@@ -2,11 +2,12 @@
 
 ## What it is
 
-The Repowire iOS app is a native client for your mesh. It connects through the relay as `@dashboard`, the same human surface as the web dashboard, so agents treat what you send as direct user instructions.
+The Repowire iOS app is a native client for your mesh. It connects through the relay and sends as `@dashboard`, so agents treat what you send as direct user instructions. It is also a surface of the [human inbox](../../concepts/human-inbox.md), named `ios`: messages to the human reach your phone as notifications, and reading or replying in the app marks them on every surface.
 
 From the app you can:
 
 - Answer questions and approve or deny tool calls, including from the lock screen.
+- Read the human inbox and reply to it, with read state shared with Telegram and the dashboard.
 - Browse peers by circle and read each peer's recent conversation.
 - Send a peer an ask (expects an ack) or a notification (fire and forget).
 - Follow running and recent jobs.
@@ -30,15 +31,18 @@ To receive notifications, open **Settings → Turn on notifications**. The app a
 
 ## Notifications
 
-The daemon sends a push when an event is addressed to you (`human` or `@dashboard`):
+Every item stored in the human inbox is pushed to each registered install, while the relay is connected:
 
-| Event | Notification | Actions |
+| Item | Notification | Actions |
 | --- | --- | --- |
 | Tool permission request | `@peer needs approval` | Allow, Deny |
-| Question or ask | `@peer asks` | Reply |
-| Notification | `@peer` | Opens the app |
+| Ask or question | `@peer asks` | Reply |
+| Reply to an ask you sent | `@peer replied` | Opens the app |
+| Notify | `@peer` | Opens the app |
 
-Push requires the relay to be configured for APNs; see [Relay](../../operate/relay.md#push-notifications). If the relay is not configured, the daemon logs `push failed: push is not configured on this relay` and the app still works in the foreground.
+Broadcasts reach the phone only with `human.broadcast: true` and `human.surfaces.ios.broadcast: true`. Each push's outcome is on the message's trace (`surface_pushed` or `surface_failed`, `surface: ios`).
+
+Push requires the relay to be configured for APNs; see [Relay](../../operate/relay.md#push-notifications). If it is not, each push records `surface_failed` and the app still works in the foreground.
 
 ## Disconnecting
 

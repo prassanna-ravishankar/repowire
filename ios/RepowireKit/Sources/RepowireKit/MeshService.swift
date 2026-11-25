@@ -13,6 +13,12 @@ public protocol MeshService: Sendable {
     func transcript(peer: String, limit: Int) async throws -> TranscriptPage
     func send(_ text: String, to peerId: String, mode: SendMode) async throws -> String?
     func answer(correlationId: String, optionId: String?, outcome: String?, text: String?) async throws
+    /// The human's inbox, newest first.
+    func inbox() async throws -> [InboxItem]
+    /// Marks an item read on every surface.
+    func markRead(itemId: String) async throws
+    /// Replies to an item: acks or answers its open ask, or asks its sender back.
+    func reply(itemId: String, text: String, optionId: String?) async throws
     func jobs() async throws -> [Job]
     func registerDevice(token: String, environment: String, name: String) async throws
 }

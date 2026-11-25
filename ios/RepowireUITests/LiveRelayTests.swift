@@ -4,17 +4,17 @@ import XCTest
 /// reaches the app over the relay's SSE tunnel, and tapping Allow in the app
 /// resolves it on the daemon. Run by `scripts/live-relay-e2e.sh`, which starts
 /// an isolated relay and daemon; skipped otherwise.
+@MainActor
 final class LiveRelayTests: XCTestCase {
-    private var relay: URL!
-    private var key: String!
+    /// Set by scripts/live-relay-e2e.sh; the test skips without them.
+    private nonisolated static let target: (relay: URL, key: String)? = {
+        let env = ProcessInfo.processInfo.environment
+        guard let raw = env["REPOWIRE_RELAY_URL"], let url = URL(string: raw), let key = env["REPOWIRE_RELAY_KEY"] else { return nil }
+        return (url, key)
+    }()
 
     override func setUpWithError() throws {
-        let env = ProcessInfo.processInfo.environment
-        guard let raw = env["REPOWIRE_RELAY_URL"], let url = URL(string: raw), let key = env["REPOWIRE_RELAY_KEY"] else {
-            throw XCTSkip("Set by scripts/live-relay-e2e.sh")
-        }
-        relay = url
-        self.key = key
+        guard Self.target != nil else { throw XCTSkip("Set by scripts/live-relay-e2e.sh") }
         continueAfterFailure = false
     }
 
@@ -29,7 +29,7 @@ final class LiveRelayTests: XCTestCase {
         app.tab("Inbox")
 
         let cid = "ask-e2e-\(Int.random(in: 1000...9999))"
-        let (relay, key) = (relay!, key!)
+        let (relay, key) = try XCTUnwrap(Self.target)
         let outcome = Task.detached { try await Self.askBlocking(cid, relay: relay, key: key) }
         let card = app.element("question.\(cid)")
         XCTAssertTrue(card.waitForExistence(timeout: 15), "The question should stream to the app over SSE")
@@ -44,6 +44,7 @@ final class LiveRelayTests: XCTestCase {
     @MainActor
     private func launchLive() -> XCUIApplication {
         let app = XCUIApplication()
+        guard let (relay, key) = Self.target else { return app }
         app.launchArguments = ["-relayURL", relay.absoluteString, "-relayKey", key, "-appearance", "light"]
         app.launch()
         return app

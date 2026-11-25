@@ -89,7 +89,7 @@ struct CircleHeader: View {
                 Spacer(minLength: 0)
                 Image(systemName: "chevron.down")
                     .font(.caption.weight(.semibold))
-                    .foregroundStyle(Theme.Palette.faint)
+                    .foregroundStyle(Theme.Palette.subtle)
                     .rotationEffect(.degrees(collapsed ? -90 : 0))
             }
             .frame(minHeight: Theme.Size.tapTarget)

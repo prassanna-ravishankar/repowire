@@ -66,7 +66,7 @@ struct JobRow: View {
                 if let owner = job.assignedPeerId.flatMap({ id in model.peers.first { $0.peerId == id } }) {
                     Text("@\(owner.label)")
                         .font(Theme.Typeface.mono(.caption))
-                        .foregroundStyle(Theme.Palette.faint)
+                        .foregroundStyle(Theme.Palette.subtle)
                 }
                 Timestamp(date: job.updatedAt.flatMap { MeshEvent(id: "", type: "", timestamp: $0).date })
             }

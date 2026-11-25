@@ -3,6 +3,7 @@ import XCTest
 /// Captures every screen in each design variant for the design review sheet
 /// (`scripts/ios-check.sh` exports these attachments). Names sort by variant,
 /// then by screen, so the sheet lines variants up side by side.
+@MainActor
 final class ScreenshotTour: XCTestCase {
     private static let variants: [(name: String, appearance: String, textSize: String?)] = [
         ("light", "light", nil),

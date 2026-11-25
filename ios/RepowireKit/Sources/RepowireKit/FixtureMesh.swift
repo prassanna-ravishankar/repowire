@@ -7,6 +7,7 @@ public actor FixtureMesh: MeshService {
     private var log: [MeshEvent]
     private var transcripts: [String: [TranscriptTurn]]
     private var jobList: [Job]
+    private var inboxItems: [InboxItem]
     private var continuations: [UUID: AsyncThrowingStream<MeshEvent, Error>.Continuation] = [:]
     private var sequence = 0
     public private(set) var registeredDevices: [String] = []
@@ -47,6 +48,17 @@ public actor FixtureMesh: MeshService {
                         QuestionOption(id: "allow", title: "Allow"),
                         QuestionOption(id: "allow_always", title: "Always allow"),
                     ], blocking: true, scope: "tool_permission")),
+        ]
+        inboxItems = [
+            InboxItem(
+                id: "inb-1", kind: "notify", from: "infra", text: "Relay staging is up. Health check passes on all three regions.",
+                createdAt: stamp(42)),
+            InboxItem(
+                id: "inb-2", kind: "ask", from: "docs", text: "Which relay host should the push guide use in examples?",
+                createdAt: stamp(9), correlationId: "ask-docs-1"),
+            InboxItem(
+                id: "inb-3", kind: "ask", from: "backend", text: "Run `go test -race ./...` and delete the stale state.db fixtures?",
+                createdAt: stamp(2), correlationId: "ask-backend-1"),
         ]
         transcripts = [
             "backend": [
@@ -114,16 +126,50 @@ public actor FixtureMesh: MeshService {
         transcripts[peer.name] = turns
         append(
             MeshEvent(
-                id: nextID(), type: mode == .ask ? "query" : "notification", timestamp: FixtureMesh.iso(.now), from: RelayAPI.surfaceName,
+                id: nextID(), type: mode == .ask ? "query" : "notification", timestamp: FixtureMesh.iso(.now), from: RelayAPI.senderName,
                 to: peer.name, text: text, correlationId: cid))
         return cid
     }
 
     public func answer(correlationId: String, optionId: String?, outcome: String?, text: String?) async throws {
+        settle(correlationId: correlationId, text: text ?? optionId ?? outcome)
+    }
+
+    public func inbox() async throws -> [InboxItem] { inboxItems.reversed() }
+
+    public func markRead(itemId: String) async throws {
+        guard let index = inboxItems.firstIndex(where: { $0.id == itemId }) else { return }
+        inboxItems[index].read = true
+        append(MeshEvent(id: nextID(), type: "inbox_updated", timestamp: FixtureMesh.iso(.now)))
+    }
+
+    public func reply(itemId: String, text: String, optionId: String?) async throws {
+        guard let item = inboxItems.first(where: { $0.id == itemId }) else {
+            throw MeshError.server(status: 404, message: "no inbox item \(itemId)")
+        }
+        if let cid = item.correlationId {
+            settle(correlationId: cid, text: optionId ?? text)
+        } else {
+            _ = try await send(text, to: item.fromPeerId ?? "p-\(item.from)", mode: .ask)
+        }
+        markReplied(itemId)
+    }
+
+    /// Closes an ask the way the daemon does: an ack event, and its inbox item
+    /// marked read and replied on every surface.
+    private func settle(correlationId: String, text: String?) {
         append(
             MeshEvent(
-                id: nextID(), type: "ack", timestamp: FixtureMesh.iso(.now), from: RelayAPI.surfaceName, text: text ?? optionId ?? outcome,
+                id: nextID(), type: "ack", timestamp: FixtureMesh.iso(.now), from: RelayAPI.senderName, text: text,
                 correlationId: correlationId))
+        for item in inboxItems where item.correlationId == correlationId { markReplied(item.id) }
+    }
+
+    private func markReplied(_ itemId: String) {
+        guard let index = inboxItems.firstIndex(where: { $0.id == itemId }) else { return }
+        inboxItems[index].read = true
+        inboxItems[index].replied = true
+        append(MeshEvent(id: nextID(), type: "inbox_updated", timestamp: FixtureMesh.iso(.now)))
     }
 
     public func jobs() async throws -> [Job] { jobList }

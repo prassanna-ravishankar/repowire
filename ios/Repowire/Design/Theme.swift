@@ -3,29 +3,32 @@ import UIKit
 
 /// The Repowire Design System on iOS: warm-paper neutrals, one cobalt accent,
 /// system type for prose and monospaced type for technical chrome. Views take
-/// every color, space, radius, and font from here; `scripts/ios-design-lint.sh`
+/// every color, space, radius, and font from here; `scripts/design-lint.py`
 /// fails the build on raw values.
 nonisolated enum Theme {
     enum Palette {
+        // Values mirror the semantic tokens in web/app/globals.css (#602);
+        // docs/contributing/design-system.md lists them with their contrast floor.
         static let page = dynamic(light: 0xFCFBFA, dark: 0x0E0E0D)
         static let surface = dynamic(light: 0xFFFFFF, dark: 0x161614)
         static let sunken = dynamic(light: 0xF7F6F3, dark: 0x0A0A09)
         static let foreground = dynamic(light: 0x141413, dark: 0xF3F1EC)
         static let muted = dynamic(light: 0x4E4B46, dark: 0xB5B1A8)
-        static let faint = dynamic(light: 0x6E6A63, dark: 0x8E8A81)
-        /// Accent for text, icons, and tint. Dark is lifted past cobalt-400 so
-        /// small text clears 4.5:1, including on `accentSoft` and badge tints.
-        static let accent = dynamic(light: 0x2C54DD, dark: 0x7593EC)
+        /// Tertiary text and placeholders (`--fg-subtle`), the lightest neutral that is still text.
+        static let subtle = dynamic(light: 0x67635C, dark: 0x9A968E)
+        /// Accent for text, icons, and tint.
+        static let accent = dynamic(light: 0x2C54DD, dark: 0x7590EC)
         /// Solid accent behind `onAccent` text (primary buttons, your bubbles).
-        static let accentFill = dynamic(light: 0x2C54DD, dark: 0x3A5BD8)
-        static let accentSoft = dynamic(light: 0xEEF2FF, dark: 0x1F2540)
+        /// Dark mode keeps the bright accent and puts dark text on it.
+        static let accentFill = dynamic(light: 0x2C54DD, dark: 0x7590EC)
+        static let accentSoft = dynamic(light: 0xEEF2FF, dark: 0x202636)
         static let border = dynamic(light: 0xE8E5DF, dark: 0x2A2926)
-        static let success = dynamic(light: 0x17703D, dark: 0x3DBE74)
-        static let warning = dynamic(light: 0x945800, dark: 0xE9A23B)
-        static let danger = dynamic(light: 0xC2362B, dark: 0xF06A5E)
-        /// Text and icons on a solid accent fill.
-        static let onAccent = Color.white
-        static let onAccentMuted = Color.white.opacity(0.9)
+        static let success = dynamic(light: 0x1A7349, dark: 0x4EB37E)
+        static let warning = dynamic(light: 0x925810, dark: 0xE0B14A)
+        static let danger = dynamic(light: 0xB83528, dark: 0xE57368)
+        /// Text and icons on a solid accent fill (`--on-accent`).
+        static let onAccent = dynamic(light: 0xFFFFFF, dark: 0x0E0E0D)
+        static let onAccentMuted = onAccent.opacity(0.9)
 
         private static func dynamic(light: UInt32, dark: UInt32) -> Color {
             Color(UIColor { $0.userInterfaceStyle == .dark ? UIColor(hex: dark) : UIColor(hex: light) })

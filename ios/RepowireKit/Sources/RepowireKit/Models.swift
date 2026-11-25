@@ -122,6 +122,38 @@ public struct MeshEvent: Codable, Identifiable, Hashable, Sendable {
     }
 }
 
+/// One item in the human peer's durable inbox (`GET /inbox`). Read and replied
+/// state is shared by every surface: Telegram, the dashboard, and this app.
+public struct InboxItem: Codable, Identifiable, Hashable, Sendable {
+    public var id: String
+    public var kind: String
+    public var from: String
+    public var fromPeerId: String?
+    public var correlationId: String?
+    public var text: String
+    public var createdAt: String
+    public var read: Bool
+    public var replied: Bool
+    public var question: AskQuestion?
+
+    public init(
+        id: String, kind: String, from: String, text: String, createdAt: String = "", correlationId: String? = nil,
+        question: AskQuestion? = nil, read: Bool = false, replied: Bool = false
+    ) {
+        self.id = id
+        self.kind = kind
+        self.from = from
+        self.text = text
+        self.createdAt = createdAt
+        self.correlationId = correlationId
+        self.question = question
+        self.read = read
+        self.replied = replied
+    }
+
+    public var date: Date? { MeshEvent.parseDate(createdAt) }
+}
+
 /// An open question for the human, derived from the event log.
 public struct PendingQuestion: Identifiable, Hashable, Sendable {
     public var correlationId: String

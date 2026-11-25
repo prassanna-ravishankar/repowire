@@ -2,8 +2,10 @@ import Foundation
 
 /// Talks to a daemon through the relay tunnel, authenticated with the relay key.
 public struct RelayAPI: MeshService {
-    /// The human surface the daemon already frames as direct user instructions.
-    public static let surfaceName = "dashboard"
+    /// The sender name the daemon frames as the human's direct instructions.
+    public static let senderName = "dashboard"
+    /// This app's name as a human-inbox surface (reads, replies, APNs pushes).
+    public static let inboxSurface = "ios"
 
     public let baseURL: URL
     let key: String
@@ -113,7 +115,7 @@ public struct RelayAPI: MeshService {
     }
 
     public func send(_ text: String, to peerId: String, mode: SendMode) async throws -> String? {
-        let body: [String: Any] = ["from_peer": Self.surfaceName, "to_peer": peerId, "text": text, "bypass_circle": true]
+        let body: [String: Any] = ["from_peer": Self.senderName, "to_peer": peerId, "text": text, "bypass_circle": true]
         let data = try await data(for: request(mode.rawValue, method: "POST", body: body))
         let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
         if let error = object?["error"] as? String { throw MeshError.server(status: 200, message: error) }
@@ -128,6 +130,21 @@ public struct RelayAPI: MeshService {
         _ = try await data(for: request("answer", method: "POST", body: body))
     }
 
+    public func inbox() async throws -> [InboxItem] {
+        let data = try await data(for: request("inbox", query: [URLQueryItem(name: "limit", value: "100")]))
+        return try Self.decoder.decode(InboxPage.self, from: data).items.elements
+    }
+
+    public func markRead(itemId: String) async throws {
+        _ = try await data(for: request("inbox/\(itemId)/read", method: "POST", body: ["surface": Self.inboxSurface]))
+    }
+
+    public func reply(itemId: String, text: String, optionId: String?) async throws {
+        var body: [String: Any] = ["surface": Self.inboxSurface, "text": text]
+        if let optionId { body["option_id"] = optionId }
+        _ = try await data(for: request("inbox/\(itemId)/reply", method: "POST", body: body))
+    }
+
     public func jobs() async throws -> [Job] {
         try Self.decoder.decode(JobsPage.self, from: await data(for: request("jobs"))).work
     }
@@ -138,6 +155,10 @@ public struct RelayAPI: MeshService {
 
     private struct PeersEnvelope: Decodable {
         var peers: Lossy<Peer>
+    }
+
+    private struct InboxPage: Decodable {
+        var items: Lossy<InboxItem>
     }
 }
 

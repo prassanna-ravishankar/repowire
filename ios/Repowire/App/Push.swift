@@ -6,8 +6,8 @@ enum DeviceName {
     static var current: String { UIDevice.current.name }
 }
 
-/// Notification categories mirror the daemon's push categories
-/// (`daemon-go/push`): APPROVAL and QUESTION carry actions that answer in place.
+/// Notification categories mirror the daemon's inbox surface (`daemon-go/push`):
+/// APPROVAL and QUESTION carry actions that answer in place.
 enum PushCategory {
     static let approval = "APPROVAL"
     static let question = "QUESTION"
@@ -69,20 +69,25 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
 
     nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse) async {
         let info = response.notification.request.content.userInfo["repowire"] as? [String: Any] ?? [:]
-        guard let cid = info["correlation_id"] as? String else { return }
+        let itemId = info["item_id"] as? String
+        let cid = info["correlation_id"] as? String
         let options = (info["options"] as? [[String: Any]] ?? []).compactMap { $0["id"] as? String }
-        let reply = (response as? UNTextInputNotificationResponse)?.userText
+        let reply = (response as? UNTextInputNotificationResponse)?.userText ?? ""
         let action = response.actionIdentifier
         await MainActor.run {
             guard let model = self.model else { return }
             Task {
-                switch action {
-                case PushCategory.Action.allow:
+                switch (action, cid, itemId) {
+                case (PushCategory.Action.allow, let cid?, _):
                     await model.answer(correlationId: cid, optionId: options.first, outcome: nil, text: nil)
-                case PushCategory.Action.deny:
+                case (PushCategory.Action.deny, let cid?, _):
                     await model.answer(correlationId: cid, optionId: nil, outcome: "denied", text: nil)
-                case PushCategory.Action.reply:
-                    await model.answer(correlationId: cid, optionId: nil, outcome: nil, text: reply)
+                case (PushCategory.Action.reply, _, let itemId?) where !reply.isEmpty:
+                    // The inbox reply acks a plain ask, answers a free-text
+                    // question, and marks the item replied everywhere.
+                    await model.reply(itemId: itemId, text: reply)
+                case (UNNotificationDefaultActionIdentifier, _, let itemId?):
+                    await model.markRead(itemId: itemId)
                 default:
                     break
                 }
