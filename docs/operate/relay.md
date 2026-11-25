@@ -6,7 +6,7 @@ The relay is the optional hosted or self-hosted bridge for remote dashboard and 
 
 ### Tunneled request deadlines
 
-A tunneled request waits 30 seconds for the daemon by default, then gets **504**. A caller that long-polls through the relay (`POST /asks/{cid}/wait`, `POST /questions/ask-blocking`, which wait up to 50 and 55 seconds) states its own deadline in seconds with the `X-Repowire-Timeout` header. The relay caps it at 90 seconds and sends it to the daemon as `timeout_ms` in the `http_request` frame, and the daemon's relay client bounds the local request by the same value (also capped at 90). Both ends give up together, and the route's own cap still applies. The relay's MCP `get_reply` sends its wait plus 10 seconds. A relay or daemon from before this change keeps 30 seconds on its side, so both must be updated for longer polls to pass.
+A tunneled request waits 30 seconds for the daemon by default, then gets **504**. A caller that long-polls through the relay (`POST /asks/{cid}/wait`, `POST /questions/ask-blocking`, which wait up to 50 and 55 seconds) states its own deadline in seconds with the `X-Repowire-Timeout` header. The relay caps it at 90 seconds and sends it to the daemon as `timeout_ms` in the `http_request` frame, and the daemon's relay client bounds the local request by the same value (also capped at 90), counted from when the frame arrives. A request still queued for a free worker when its deadline passes is dropped unrun, since the relay has already answered 504. The route's own cap still applies. The relay's MCP `get_reply` sends its wait plus 10 seconds. A relay or daemon from before this change keeps 30 seconds on its side, so both must be updated for longer polls to pass.
 
 ## Hosted relay
 

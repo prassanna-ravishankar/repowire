@@ -70,3 +70,18 @@ func TestTunneledRequestUsesTheRelaysDeadline(t *testing.T) {
 		}
 	}
 }
+
+// Work that waited in the queue past its deadline is dropped unrun: the relay
+// has already answered 504, so a mutation would run for nobody.
+func TestExpiredQueuedRequestIsNotRun(t *testing.T) {
+	hits := 0
+	local := fakeLocal(t, func(w http.ResponseWriter, r *http.Request) { hits++ })
+	c := NewClient("ws://unused", "rw_test", "d1", local.URL)
+	c.handleHTTPRequest(context.Background(), nil, map[string]any{
+		"type": "http_request", "request_id": "late", "method": "POST", "path": "/ask",
+		deadlineKey: time.Now().Add(-time.Second),
+	})
+	if hits != 0 {
+		t.Fatalf("an expired queued request reached the daemon %d time(s)", hits)
+	}
+}

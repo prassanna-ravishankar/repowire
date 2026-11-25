@@ -405,6 +405,9 @@ func (c *Client) handleMessage(ctx context.Context, session *relaySession, msg m
 	case "http_request":
 		// Off the reader, so a tunneled request that itself waits on the
 		// relay (a cross-machine ask) can still receive its answer.
+		// The deadline runs from now, not from when a worker is free: the
+		// relay's clock started when it sent the frame.
+		msg[deadlineKey] = time.Now().Add(tunnelDeadline(msg))
 		c.admit(ctx, session, session.httpWork, msg)
 	case "http_stream_request":
 		c.startHTTPStream(ctx, session, msg)
@@ -435,7 +438,17 @@ func (c *Client) handleHTTPRequest(ctx context.Context, session *relaySession, m
 	if b, ok := msg["body"].(string); ok && b != "" {
 		body, _ = base64.StdEncoding.DecodeString(b)
 	}
-	reqCtx, cancel := context.WithTimeout(ctx, tunnelDeadline(msg))
+	// Work still queued past its deadline is discarded unrun, as
+	// serveRemote does: the relay has already answered 504, and running a
+	// mutation nobody waits for would be worse than not running it.
+	deadline, ok := msg[deadlineKey].(time.Time)
+	if !ok {
+		deadline = time.Now().Add(tunnelDeadline(msg))
+	}
+	if !time.Now().Before(deadline) {
+		return
+	}
+	reqCtx, cancel := context.WithDeadline(ctx, deadline)
 	defer cancel()
 	req, err := c.localRequest(reqCtx, msg, bytes.NewReader(body))
 	if err != nil {
@@ -453,6 +466,10 @@ func (c *Client) handleHTTPRequest(ctx context.Context, session *relaySession, m
 	respBody, _ := io.ReadAll(resp.Body)
 	c.sendHTTPResponse(ctx, session, reqID, resp.StatusCode, responseHeaders(resp.Header), respBody)
 }
+
+// deadlineKey holds a queued http_request's absolute deadline, stamped
+// when its frame is read. Not a wire field.
+const deadlineKey = "\x00deadline"
 
 // tunnelDeadline is how long the local request may take: the relay's
 // timeout_ms (the caller's deadline, #437), capped at maxTunnelTimeout, or
