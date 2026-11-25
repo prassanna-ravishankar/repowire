@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/repowire/repowire/daemon-go/internal/tmuxtest"
 )
@@ -31,14 +32,24 @@ func TestTmuxDescribeReadsTheSandboxLayout(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	got, err := tmuxContainer{}.Describe()
-	if err != nil {
-		t.Fatal(err)
+	real := func(p string) string { r, _ := filepath.EvalSymlinks(p); return r }
+	// pane_current_path is read from the pane's process, which may not have
+	// entered its -c directory yet right after the pane is created (seen on
+	// Linux CI): wait, bounded, until every pane reports where it started.
+	var got []PaneGeometry
+	settled := func() bool {
+		var err error
+		if got, err = (tmuxContainer{}).Describe(); err != nil {
+			t.Fatal(err)
+		}
+		return len(got) == 3 && real(got[0].CWD) == real(a) && real(got[1].CWD) == real(b) && real(got[2].CWD) == real(b)
+	}
+	for deadline := time.Now().Add(5 * time.Second); !settled() && time.Now().Before(deadline); {
+		time.Sleep(50 * time.Millisecond)
 	}
 	if len(got) != 3 {
 		t.Fatalf("panes = %+v", got)
 	}
-	real := func(p string) string { r, _ := filepath.EvalSymlinks(p); return r }
 	want := []PaneGeometry{
 		{Session: "work", WindowName: "agents", WindowLayout: layout, PaneIndex: 0, CWD: real(a)},
 		{Session: "work", WindowName: "agents", WindowLayout: layout, PaneIndex: 1, CWD: real(b)},
