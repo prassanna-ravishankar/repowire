@@ -3,43 +3,29 @@ package hooks
 import (
 	"net"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/repowire/repowire/daemon-go/internal/tmuxtest"
 )
 
 // A ws-hook whose pane disappears while the daemon cannot be reached exits,
 // even when it knows no agent pid (#553). Before, the gone-pane probe ran only
 // for a known agent pid that had died, so this hook retried forever.
 func TestWSHookExitsWhenItsPaneGoesWhileTheDaemonIsUnreachable(t *testing.T) {
-	if _, err := exec.LookPath("tmux"); err != nil {
-		t.Skip("tmux not installed")
-	}
-	dir := shortTempDir(t)
-	sock := filepath.Join(dir, "sock")
 	// A private tmux server, always named by its socket: never the live one.
-	tm := func(args ...string) (string, error) {
-		out, err := exec.Command("tmux", append([]string{"-S", sock}, args...)...).CombinedOutput()
-		return strings.TrimSpace(string(out)), err
-	}
-	if out, err := tm("new-session", "-d", "-s", "gone", "sleep 60"); err != nil {
-		t.Skipf("cannot start a tmux server: %v %s", err, out)
-	}
-	t.Cleanup(func() { _, _ = tm("kill-server") })
+	srv := tmuxtest.New(t, tmuxtest.FollowEnv())
+	srv.Start("-s", "gone", "sleep 60")
+	tm := srv.Run
 	pane, err := tm("new-window", "-d", "-P", "-F", "#{pane_id}", "-t", "gone:", "sh")
 	if err != nil {
 		t.Fatal(err, pane)
 	}
-	server, err := tm("display-message", "-p", "-t", "gone:", "#{socket_path},#{pid},0")
-	if err != nil {
-		t.Fatal(err)
-	}
 	// The hook's bare tmux calls reach the private server through TMUX.
-	t.Setenv("TMUX", server)
-	t.Setenv("TMUX_TMPDIR", dir)
+	t.Setenv("TMUX", srv.TMUX())
 	t.Setenv("TMUX_PANE", pane)
 	t.Setenv("REPOWIRE_AGENT_PID", "")
 	t.Setenv("REPOWIRE_PEER_ID", "")
@@ -87,29 +73,14 @@ func TestWSHookExitsWhenItsPaneGoesWhileTheDaemonIsUnreachable(t *testing.T) {
 // reached (no server, a socket path too long) exits 1 too, and must not make
 // a hook retire a live peer.
 func TestPaneGoneNeedsTmuxToAnswer(t *testing.T) {
-	if _, err := exec.LookPath("tmux"); err != nil {
-		t.Skip("tmux not installed")
-	}
-	dir := shortTempDir(t)
-	sock := filepath.Join(dir, "sock")
-	tm := func(args ...string) (string, error) {
-		out, err := exec.Command("tmux", append([]string{"-S", sock}, args...)...).CombinedOutput()
-		return strings.TrimSpace(string(out)), err
-	}
-	if out, err := tm("new-session", "-d", "-s", "probe", "sleep 60"); err != nil {
-		t.Skipf("cannot start a tmux server: %v %s", err, out)
-	}
-	t.Cleanup(func() { _, _ = tm("kill-server") })
-	live, err := tm("display-message", "-p", "-t", "probe:", "#{pane_id}")
+	srv := tmuxtest.New(t, tmuxtest.FollowEnv())
+	srv.Start("-s", "probe", "sleep 60")
+	dir := srv.Dir
+	live, err := srv.Run("display-message", "-p", "-t", "probe:", "#{pane_id}")
 	if err != nil {
 		t.Fatal(err)
 	}
-	server, err := tm("display-message", "-p", "-t", "probe:", "#{socket_path},#{pid},0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("TMUX_TMPDIR", dir)
-	t.Setenv("TMUX", server)
+	t.Setenv("TMUX", srv.TMUX())
 	if paneGone(live) {
 		t.Fatal("a live pane reads as gone")
 	}

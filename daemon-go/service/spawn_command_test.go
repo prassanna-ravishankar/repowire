@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/repowire/repowire/daemon-go/internal/tmuxtest"
 	"github.com/repowire/repowire/daemon-go/proto"
 )
 
@@ -37,31 +38,21 @@ func TestWindowSplitArgs(t *testing.T) {
 	}
 }
 
-// privateTmux points `tmux` at a private server with an empty config, so a
-// test never touches live peers or hooks. It returns a scratch dir.
-func privateTmux(t *testing.T) string {
+// privateTmux points every `tmux` call at a private server reachable only by
+// its socket path (internal/tmuxtest), so a test never touches live peers or
+// hooks. It returns the server and a scratch dir.
+func privateTmux(t *testing.T) (*tmuxtest.Server, string) {
 	t.Helper()
-	tmux, err := exec.LookPath("tmux")
-	if err != nil {
-		t.Skip("tmux is not installed")
-	}
+	srv := tmuxtest.New(t)
 	dir := t.TempDir()
-	socket := "repowire-spawn-test-" + sha256Hex16(dir)
-	script := "#!/bin/sh\nexec " + ShellQuote(tmux) + " -L " + socket + " -f /dev/null \"$@\"\n"
-	if err := os.WriteFile(filepath.Join(dir, "tmux"), []byte(script), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("PATH", dir+":"+os.Getenv("PATH"))
-	t.Setenv("TMUX", "")
-	t.Setenv("TMUX_PANE", "")
 	t.Setenv("REPOWIRE_CACHE_DIR", dir)
-	t.Cleanup(func() { _ = exec.Command(tmux, "-L", socket, "kill-server").Run() })
-	return dir
+	return srv, dir
 }
 
 func TestTmuxReserveThenLaunchSplitsTheOldWindow(t *testing.T) {
-	dir := privateTmux(t)
-	old, err := tmuxQuery("new-session", "-d", "-P", "-F", "#{pane_id}", "-s", "mesh", "-n", "work", "sleep 60")
+	srv, dir := privateTmux(t)
+	srv.Start("-s", "mesh", "-n", "work", "sleep 60")
+	old, err := tmuxQuery("display-message", "-p", "-t", "=mesh:work", "#{pane_id}")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -85,14 +76,14 @@ func TestTmuxReserveThenLaunchSplitsTheOldWindow(t *testing.T) {
 }
 
 func TestTmuxSpawnUsesExactCircle(t *testing.T) {
-	dir := privateTmux(t)
+	srv, dir := privateTmux(t)
 	project := filepath.Join(dir, "1") // Numeric window names must not resolve as indexes.
 	if err := os.Mkdir(project, 0o700); err != nil {
 		t.Fatal(err)
 	}
 
+	srv.Start("-s", "0", "-n", "baseline", "sleep 60")
 	for _, args := range [][]string{
-		{"new-session", "-d", "-s", "0", "-n", "baseline", "sleep 60"},
 		{"set-option", "-g", "base-index", "1"},
 		{"set-option", "-g", "default-shell", "/bin/sh"},
 		{"set-option", "-g", "default-command", "sleep 60"},
@@ -107,6 +98,11 @@ func TestTmuxSpawnUsesExactCircle(t *testing.T) {
 		result, err := (tmuxContainer{}).Launch(SpawnConfig{
 			Circle: circle, Path: project, Backend: proto.AgentCodex, Command: "sleep 60",
 		})
+		if tmuxtest.NoPTY(err) {
+			// The host ran out of pseudo-terminals for panes (#446), which
+			// says nothing about placement.
+			t.Skipf("spawn into circle %q: host cannot give tmux a pane: %v", circle, err)
+		}
 		if err != nil {
 			t.Fatalf("spawn into circle %q: %v", circle, err)
 		}
