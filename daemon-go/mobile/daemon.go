@@ -36,6 +36,12 @@ type DaemonPeer struct {
 	// worker never interleave with the read loop's pongs.
 	connMu sync.Mutex
 	conn   *websocket.Conn
+
+	// holdTimer sends surface_release when the daemon's quiet window for
+	// this surface ends (#476). Armed only while the daemon holds items for
+	// it: the bridge keeps the timer, so the daemon needs none.
+	holdMu    sync.Mutex
+	holdTimer *time.Timer
 }
 
 // ErrNotConnected is returned by Write while the daemon socket is down.
@@ -152,10 +158,39 @@ func (p *DaemonPeer) runOnce(ctx context.Context, onMessage func(context.Context
 			}
 			continue
 		}
+		if message["type"] == "surface_hold" {
+			p.armRelease(ctx, textField(message, "release_at"))
+			continue
+		}
 		if err := onMessage(ctx, message); err != nil {
 			fmt.Printf("mobile: delivery failed: %v\n", err)
 		}
 	}
+}
+
+// armRelease (re)arms the one release timer for releaseAt, an RFC 3339
+// instant; one already past fires at once. The daemon re-checks its own
+// window on surface_release, so an early or duplicate one is harmless, and a
+// lost one is covered by the next item or reconnect.
+func (p *DaemonPeer) armRelease(ctx context.Context, releaseAt string) {
+	at, err := time.Parse(time.RFC3339, releaseAt)
+	if err != nil {
+		fmt.Printf("mobile: surface_hold with an unreadable release_at; waiting for the next item or reconnect\n")
+		return
+	}
+	p.holdMu.Lock()
+	defer p.holdMu.Unlock()
+	if p.holdTimer != nil {
+		p.holdTimer.Stop()
+	}
+	p.holdTimer = time.AfterFunc(max(time.Until(at), 0), func() {
+		if ctx.Err() != nil {
+			return
+		}
+		if err := p.Write(ctx, map[string]string{"type": "surface_release"}); err != nil {
+			fmt.Printf("mobile: surface_release: %v; the next reconnect releases instead\n", err)
+		}
+	})
 }
 
 func (p *DaemonPeer) setConn(conn *websocket.Conn) {

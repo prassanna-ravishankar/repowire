@@ -56,7 +56,7 @@ type telegramPending struct {
 }
 
 func NewTelegram(token, chatID string, daemon *DaemonPeer) *Telegram {
-	daemon.capabilities = append(daemon.capabilities, inboxSurfaceCapability)
+	daemon.capabilities = append(daemon.capabilities, inboxSurfaceCapability, inboxHoldCapability)
 	return &Telegram{
 		token: token, chatID: chatID, apiBase: "https://api.telegram.org", daemon: daemon,
 		http: &http.Client{Timeout: 40 * time.Second}, options: map[string][]string{},

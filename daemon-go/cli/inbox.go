@@ -4,7 +4,9 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"sort"
 	"strings"
+	"time"
 )
 
 // runInbox reads and answers the human inbox from the terminal. Read and
@@ -32,6 +34,9 @@ func runInbox(argv []string) int {
 		if a.bool("json") {
 			printJSON(result)
 			return 0
+		}
+		for _, line := range quietLines(result["surfaces"]) {
+			fmt.Println(line)
 		}
 		items := anySlice(result["items"])
 		if len(items) == 0 {
@@ -84,6 +89,29 @@ func runInbox(argv []string) int {
 		return 0
 	}
 	return usage("inbox [list|show|read|reply]")
+}
+
+// quietLines says which surfaces are in quiet hours and how many items wait
+// for each (#476), one line per surface, sorted.
+func quietLines(raw any) []string {
+	surfaces, _ := raw.(map[string]any)
+	var lines []string
+	for name, v := range surfaces {
+		s, _ := v.(map[string]any)
+		if quiet, _ := s["quiet"].(bool); !quiet {
+			continue
+		}
+		line := name + ": quiet hours"
+		if until, err := time.Parse(time.RFC3339, stringValue(s, "quiet_until")); err == nil {
+			line += " until " + until.Local().Format("15:04")
+		}
+		if held, ok := s["held"].(float64); ok {
+			line += fmt.Sprintf(" (%d held)", int(held))
+		}
+		lines = append(lines, line)
+	}
+	sort.Strings(lines)
+	return lines
 }
 
 func inboxLine(item map[string]any) string {

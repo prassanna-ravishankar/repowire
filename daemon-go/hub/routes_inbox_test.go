@@ -38,6 +38,11 @@ type inboxStack struct {
 
 func newInboxStack(t *testing.T) *inboxStack {
 	t.Helper()
+	return newInboxStackWith(t, config.HumanConfig{})
+}
+
+func newInboxStackWith(t *testing.T, human config.HumanConfig) *inboxStack {
+	t.Helper()
 	store, err := state.NewStore(filepath.Join(t.TempDir(), "state.db"))
 	if err != nil {
 		t.Fatal(err)
@@ -50,7 +55,7 @@ func newInboxStack(t *testing.T) *inboxStack {
 	h := NewHubWithTransport(reg, transport, "")
 	asks := service.NewAskTracker(0)
 	delivery := service.NewPeerDelivery(reg, h.Router(), transport, asks, store)
-	inbox := service.NewInbox(store, reg, transport, asks, config.HumanConfig{})
+	inbox := service.NewInbox(store, reg, transport, asks, human)
 	humanID, humanName, err := service.RegisterHumanPeer(context.Background(), reg, "prass", "m")
 	if err != nil {
 		t.Fatal(err)

@@ -154,7 +154,27 @@ type HumanConfig struct {
 type HumanSurfaceConfig struct {
 	// Broadcast pushes stored broadcasts to this surface (default off).
 	Broadcast bool `yaml:"broadcast"`
+	// QuietHours holds pushes in a daily window (#476); nil pushes every
+	// item at once, as before. Only a bridge declaring inbox_hold is held.
+	QuietHours *QuietHours `yaml:"quiet_hours"`
+	// Digest delivers the items a quiet window held, other than asks, as one
+	// message when it ends (default off: one push per item).
+	Digest bool `yaml:"digest"`
 }
+
+// QuietWindow is surface's parsed quiet hours; ok is false when it has none
+// (an invalid block was dropped at load with a warning).
+func (h HumanConfig) QuietWindow(surface string) (QuietWindow, bool) {
+	q := h.Surfaces[surface].QuietHours
+	if q == nil {
+		return QuietWindow{}, false
+	}
+	w, err := q.Parse()
+	return w, err == nil
+}
+
+// Digests reports whether surface takes a release as one digest message.
+func (h HumanConfig) Digests(surface string) bool { return h.Surfaces[surface].Digest }
 
 // PushesBroadcast reports whether surface opted in to broadcast pushes.
 func (h HumanConfig) PushesBroadcast(surface string) bool {
@@ -264,6 +284,18 @@ func LoadFile(path string) (Config, error) {
 		// Not a core key: an unknown mode keeps push and warns.
 		cfg.Warnings = append(cfg.Warnings, "config: daemon.message_delivery is ignored: it must be push or pull")
 		cfg.Daemon.MessageDelivery = "push"
+	}
+	for name, surface := range cfg.Human.Surfaces {
+		if surface.QuietHours == nil {
+			continue
+		}
+		// An optional feature never stops the daemon: a window that cannot
+		// be read is dropped, and the surface is pushed at once as before.
+		if _, err := surface.QuietHours.Parse(); err != nil {
+			cfg.Warnings = append(cfg.Warnings, fmt.Sprintf("config: human.surfaces.%s.quiet_hours is ignored: %v", name, err))
+			surface.QuietHours = nil
+			cfg.Human.Surfaces[name] = surface
+		}
 	}
 	if err := cfg.settleRouting(); err != nil {
 		return cfg, err

@@ -530,6 +530,15 @@ func (h *Hub) dispatch(ctx context.Context, id proto.PeerID, raw []byte) {
 		}
 		h.transport.ResolveDeliveryAck(id, deliveryID, data)
 
+	case proto.FrameSurfaceRelease:
+		// An inbox surface's quiet window ended by its clock; the inbox
+		// checks its own before releasing anything (#476).
+		if h.inbox != nil {
+			if p, ok := h.reg.GetPeer(id); ok {
+				h.inbox.SurfaceRelease(p)
+			}
+		}
+
 	case proto.FrameError:
 		var f proto.ErrorFrame
 		_ = json.Unmarshal(raw, &f)

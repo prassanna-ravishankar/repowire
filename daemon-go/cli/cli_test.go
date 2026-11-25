@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/repowire/repowire/daemon-go/proto"
 	"gopkg.in/yaml.v3"
@@ -1056,4 +1057,19 @@ func must(s string, err error) string {
 		panic(err)
 	}
 	return s
+}
+
+// repowire inbox names the surfaces in quiet hours and what waits for them
+// (#476); a live surface outside its window prints nothing.
+func TestInboxQuietLines(t *testing.T) {
+	until := time.Date(2026, 11, 26, 7, 0, 0, 0, time.UTC)
+	lines := quietLines(map[string]any{
+		"telegram": map[string]any{"live": true, "quiet": true, "quiet_until": until.Format(time.RFC3339), "held": float64(4)},
+		"slack":    map[string]any{"live": true},
+		"dash":     map[string]any{"live": true, "quiet": false, "held": float64(0)},
+	})
+	want := "telegram: quiet hours until " + until.Local().Format("15:04") + " (4 held)"
+	if len(lines) != 1 || lines[0] != want {
+		t.Fatalf("lines = %q, want [%q]", lines, want)
+	}
 }
