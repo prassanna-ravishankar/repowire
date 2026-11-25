@@ -280,6 +280,7 @@ func RunWS() int {
 		}
 		failures = 0
 		lastPeerID = stringValue(response, "session_id")
+		peerID, displayName = confirmedIdentity(peerID, displayName, response)
 		meta := ReadPaneRuntimeMetadata(paneID)
 		meta["backend"], meta["cwd"], meta["display_name"], meta["peer_id"] = backend, cwd, firstNonempty(stringValue(response, "display_name"), displayName), lastPeerID
 		if agentPID > 0 {
@@ -529,4 +530,20 @@ func backoff(failures int) time.Duration {
 		seconds = 30
 	}
 	return time.Duration(seconds) * time.Second
+}
+
+// confirmedIdentity is what the next reconnect claims after a connected frame:
+// the identity the daemon confirmed, not the one the hook was started with. A
+// long-lived hook outlives daemon restarts and identity changes, and resending
+// its start-time claim left the daemon to guess after each restart. A wrong
+// confirmation is therefore sticky too: the daemon is the authority, and
+// recovery is set_name or an agent restart.
+func confirmedIdentity(peerID, displayName string, connected map[string]any) (string, string) {
+	if id := stringValue(connected, "session_id"); id != "" {
+		peerID = id
+	}
+	if name := stringValue(connected, "display_name"); name != "" {
+		displayName = name
+	}
+	return peerID, displayName
 }

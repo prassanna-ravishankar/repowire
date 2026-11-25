@@ -508,6 +508,17 @@ func ProcessStartTime(pid int) (string, bool) {
 	return started, err == nil && started != ""
 }
 
+// ProcessStartedAt is ProcessStartTime as a time. ps lstart has one-second
+// resolution, so the result is at most a second earlier than the real start.
+func ProcessStartedAt(pid int) (time.Time, bool) {
+	started, ok := ProcessStartTime(pid)
+	if !ok {
+		return time.Time{}, false
+	}
+	at, err := time.ParseInLocation("Mon Jan 2 15:04:05 2006", strings.Join(strings.Fields(started), " "), time.UTC)
+	return at, err == nil
+}
+
 func findAgentPID(paneID string) int {
 	_, pid := capturePaneBaseline(paneID)
 	return pid
