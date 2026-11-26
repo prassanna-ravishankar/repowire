@@ -33,6 +33,20 @@ Claude Code plugin marketplace installs can also bundle the same skills:
 /plugin install repowire@repowire
 ```
 
+### The Claude Code plugin
+
+The `repowire` plugin is the skill pack only. It does not install the daemon, the hooks, the MCP entry or the services; `repowire setup` owns all of those, so the plugin is useful only on a machine where Repowire is already set up. Removing the plugin removes the skills and nothing else, and `repowire uninstall` does not remove the plugin.
+
+The plugin's version is the release's version (`.claude-plugin/plugin.json` matches `repowire --version`; a test fails if they drift). Claude Code installs a new copy only when that version changes, so each release is one plugin update:
+
+```bash
+claude plugin marketplace update repowire   # refresh the listing
+claude plugin update repowire@repowire       # loads in the next session, or after /reload-plugins
+claude plugin uninstall repowire@repowire    # skills only; the daemon and hooks stay
+```
+
+Inside a session, `/plugin marketplace update repowire` refreshes the listing, and the `/plugin` Installed tab offers **Update now**.
+
 ## Common workflows
 
 The initial pack includes:
