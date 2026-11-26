@@ -189,6 +189,23 @@ func (i *Inbox) localSurfaces() []LocalSurface {
 	return append([]LocalSurface(nil), i.local...)
 }
 
+// OwnerOf is who acts for name: the human for one of its local surfaces
+// (the dashboard, which is not a registered peer), else name itself. A
+// scheduler tells the owner when a schedule made there fails.
+func (i *Inbox) OwnerOf(name string) string {
+	if i == nil {
+		return name
+	}
+	for _, s := range i.localSurfaces() {
+		if s.Name() == name {
+			if _, humanName := i.Human(); humanName != "" {
+				return string(humanName)
+			}
+		}
+	}
+	return name
+}
+
 // Human returns the human peer's id and name ("" before registration).
 func (i *Inbox) Human() (proto.PeerID, proto.DisplayName) {
 	if i == nil {

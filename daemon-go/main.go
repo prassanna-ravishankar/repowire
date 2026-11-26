@@ -494,7 +494,7 @@ func runDaemon() {
 	jobCompletion := service.NewJobCompletion(store, asks, sessionControl, reg, delivery)
 	jobRunner.OnDeadline(jobCompletion.ExpireOverdue)
 	reg.OnTerminalOffline = jobCompletion.OnPeerTerminalOffline
-	scheduler := service.NewScheduler(store, delivery)
+	scheduler := service.NewScheduler(store, delivery).WithEvents(reg.AddEvent).WithOwner(inbox.OwnerOf)
 
 	// (10) Relay/shares config. A nil-or-keyless RelayConfig leaves /shares as
 	// the documented degrade (503 POST/DELETE, empty-list GET) — i.e. the 503

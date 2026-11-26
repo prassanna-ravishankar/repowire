@@ -16,9 +16,12 @@ package hub
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
+	"github.com/repowire/repowire/daemon-go/proto"
 	"github.com/repowire/repowire/daemon-go/service"
 	"github.com/repowire/repowire/daemon-go/state"
 )
@@ -119,6 +122,10 @@ func (h *Hub) createSchedule(ctx context.Context, req scheduleCreateRequest) (*s
 		fireAt = parsed
 	}
 
+	if err := h.checkScheduleTarget(ctx, req); err != nil {
+		return nil, err
+	}
+
 	sched, err := h.scheduleStore.CreateSchedule(
 		ctx, req.FromPeer, req.ToPeer, req.Text, fireAt, kind, req.Circle, cron,
 	)
@@ -210,4 +217,61 @@ func parseFireAt(raw string) (time.Time, error) {
 		}
 	}
 	return time.Time{}, errors.New("fire_at must be ISO-8601")
+}
+
+// checkScheduleTarget refuses, at create, a schedule whose send could never
+// go out (#641), instead of failing when it fires, possibly days later. A
+// live target is checked as a send would be (unknown, circle, addressable).
+// A target this daemon knows only by its durable mapping (offline since a
+// restart) is accepted: it may be back when the schedule fires, and if not
+// that failure is reported to the sender. A name nobody has ever had is 404.
+func (h *Hub) checkScheduleTarget(ctx context.Context, req scheduleCreateRequest) error {
+	if h.reg == nil {
+		return nil
+	}
+	_, _, err := h.reg.CheckAccess(ctx, req.FromPeer, req.ToPeer, false, req.Circle)
+	if err == nil {
+		return nil
+	}
+	var notAddressable *proto.NotAddressableError
+	switch msg := err.Error(); {
+	case strings.HasPrefix(msg, "Unknown peer"):
+		return h.checkMappedTarget(req)
+	case strings.HasPrefix(msg, "Circle boundary"):
+		return routeErr(http.StatusForbidden, msg)
+	case errors.As(err, &notAddressable):
+		return routeErr(http.StatusConflict, msg)
+	default:
+		return routeErr(http.StatusConflict, msg) // an ambiguous name
+	}
+}
+
+// checkMappedTarget is the create-time check for a target no live peer
+// answers to: only a peer this daemon knows by its durable mapping, offline
+// since a restart, is accepted, and only under the same rules a live one
+// would meet: unambiguous within the requested circle, and inside the
+// sender's circle unless either side crosses circles.
+func (h *Hub) checkMappedTarget(req scheduleCreateRequest) error {
+	if live := h.reg.ResolvePeerStrict(req.ToPeer, nil); len(live) > 0 {
+		// A live peer has that name, just not in reach of this schedule.
+		return routeErr(http.StatusForbidden, "Circle boundary: "+req.ToPeer+" is not in this schedule's circle")
+	}
+	m, ambiguous := h.reg.MappingFor(req.ToPeer, req.Circle)
+	switch {
+	case ambiguous:
+		return routeErr(http.StatusConflict, "ambiguous target "+req.ToPeer+": name it by peer_id")
+	case m == nil:
+		return routeErr(http.StatusNotFound, "Unknown peer: "+req.ToPeer+" (a schedule's target must be a peer this daemon knows)")
+	}
+	// The sender is resolved as CheckAccess resolves it: in the target's
+	// circle first, then anywhere, with the same tiebreaks; an unresolved
+	// sender proceeds, as it does for a send.
+	from, err := h.reg.ResolvePeer(req.FromPeer, &m.Circle)
+	if err != nil || from == nil {
+		from, _ = h.reg.ResolvePeer(req.FromPeer, nil)
+	}
+	if from != nil && from.Circle != m.Circle && !from.Role.BypassesCircles() && !m.Role.BypassesCircles() {
+		return routeErr(http.StatusForbidden, fmt.Sprintf("Circle boundary: %s (%s) cannot schedule to %s (%s)", from.DisplayName, from.Circle, m.DisplayName, m.Circle))
+	}
+	return nil
 }

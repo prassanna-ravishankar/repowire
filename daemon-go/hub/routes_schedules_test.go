@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"github.com/repowire/repowire/daemon-go/peer"
+	"github.com/repowire/repowire/daemon-go/proto"
 	"net/http"
 	"net/http/httptest"
 	"sync"
@@ -268,5 +270,68 @@ func TestParseFireAtNaiveIsUTC(t *testing.T) {
 	}
 	if got.Location() != time.UTC {
 		t.Fatalf("location = %v, want UTC", got.Location())
+	}
+}
+
+// A schedule whose send could never go out is refused at create (#641): an
+// unknown target is 404 and a circle refusal 403. A live peer in reach, and a
+// peer known only by its durable mapping (offline since a restart), are
+// accepted.
+func TestCreateScheduleChecksTheTarget(t *testing.T) {
+	ctx := context.Background()
+	path := "/work/gone"
+	store := mappedStore{mappings: []*proto.SessionMapping{
+		{SessionID: "repow-dev-gone0001", DisplayName: "gone-claude-code", Circle: "dev", Backend: proto.AgentClaudeCode, Path: &path, Role: proto.RoleAgent},
+		{SessionID: "repow-ops-away0001", DisplayName: "away-claude-code", Circle: "ops", Backend: proto.AgentClaudeCode, Path: &path, Role: proto.RoleAgent},
+		{SessionID: "repow-dev-twin0001", DisplayName: "twin-claude-code", Circle: "dev", Backend: proto.AgentClaudeCode, Path: &path, Role: proto.RoleAgent},
+		{SessionID: "repow-dev-twin0002", DisplayName: "twin-claude-code", Circle: "dev", Backend: proto.AgentClaudeCode, Path: &path, Role: proto.RoleAgent},
+	}}
+	reg, err := peer.NewRegistry(ctx, store, deadLive{}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	register := func(name, circle string) proto.DisplayName {
+		p := "/work/" + name
+		_, display, err := reg.AllocateAndRegister(ctx, peer.AllocateParams{Circle: circle, Backend: proto.AgentClaudeCode, Path: &p, Role: proto.RoleAgent})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return display
+	}
+	alpha, beta, other := register("alpha", "dev"), register("beta", "dev"), register("other", "ops")
+
+	schedules := newFakeScheduleStore()
+	h := (&Hub{reg: reg}).WithSchedules(schedules, &fakeWaker{})
+	mux := http.NewServeMux()
+	h.registerScheduleRoutes(mux)
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	create := func(to string) int {
+		resp := postJSON(t, srv.URL+"/schedules", map[string]any{"from_peer": string(alpha), "to_peer": to, "text": "ping", "fire_at": "2030-01-02T15:04:05Z", "kind": "ask"})
+		defer resp.Body.Close()
+		return resp.StatusCode
+	}
+	for to, want := range map[string]int{
+		string(beta):         http.StatusOK,        // live, same circle
+		"gone-claude-code":   http.StatusOK,        // durable mapping only, by name
+		"repow-dev-gone0001": http.StatusOK,        // and by peer_id
+		"calpha-typo":        http.StatusNotFound,  // never known
+		string(other):        http.StatusForbidden, // another circle
+		"away-claude-code":   http.StatusForbidden, // known only by mapping, another circle
+		"twin-claude-code":   http.StatusConflict,  // two mappings answer to it
+	} {
+		if got := create(to); got != want {
+			t.Errorf("schedule to %q: status %d, want %d", to, got, want)
+		}
+	}
+	// A live peer's name scoped to the wrong circle is refused, not let
+	// through by its durable mapping.
+	scoped := postJSON(t, srv.URL+"/schedules", map[string]any{"from_peer": string(alpha), "to_peer": string(other), "circle": "dev", "text": "x", "fire_at": "2030-01-02T15:04:05Z"})
+	scoped.Body.Close()
+	if scoped.StatusCode != http.StatusForbidden {
+		t.Fatalf("a live peer out of the requested circle: status %d, want 403", scoped.StatusCode)
+	}
+	if n := schedules.count(); n != 3 {
+		t.Fatalf("stored %d schedules, want the 3 accepted ones", n)
 	}
 }

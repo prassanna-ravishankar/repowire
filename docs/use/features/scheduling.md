@@ -56,6 +56,12 @@ Use `kind=ask` only when each delivery should require an explicit `ack`. Open as
 
 Schedules deliver mesh messages to existing peers. They do not create durable executor jobs.
 
+## When a scheduled send cannot go out
+
+A schedule is checked when it is created: a target this daemon has never known is refused (**404**), and one in another circle is refused (**403**) unless the sender may cross circles. A peer known by its durable record but offline (for example since a daemon restart) is accepted, since it may be back when the schedule fires.
+
+When the schedule fires, a notify to an offline peer is queued like any notify and delivered when the peer reconnects. An **ask** is not: like a live ask, it fails when the target has no live connection, and it is not held for later, so a recurring ask to a peer that is down does not pile up stale asks for its return. Any scheduled send that fails is reported to whoever scheduled it, as a notify from `repowire:scheduler` (queued if the sender is offline, an inbox item when the sender is you). The notify names the schedule and the reason, and says whether a recurring schedule tries again at its next slot or a one-shot was removed. Each failure is also journaled as a `schedule_failed` event. An outage is reported once: while a recurring schedule keeps failing it stays quiet (a `*/15` heartbeat to a peer down overnight sends one notice, not thirty), and the slot that goes out again reports "delivered again after N failed slots" (journaled as `schedule_recovered`). The count is kept in memory, so a daemon restart during an outage costs at most one more report.
+
 ## Limits
 
 - Schedules are message deliveries, not work records.
@@ -66,7 +72,7 @@ Schedules deliver mesh messages to existing peers. They do not create durable ex
 
 ## Troubleshooting
 
-- A scheduled message did not arrive: run `repowire schedule list`, confirm the target peer exists, and check daemon logs.
+- A scheduled message did not arrive: look for a notify from `repowire:scheduler` (or a `schedule_failed` event) saying why; `repowire schedule list` shows what is still scheduled.
 - Recurring work only sent a message but did not spawn an executor: use [Jobs](jobs.md) for durable recurring work.
 - Ask reminders keep appearing: the recipient has not acked that scheduled ask yet.
 

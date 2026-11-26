@@ -413,3 +413,47 @@ func TestRacingReleasesKeepTheOrder(t *testing.T) {
 		t.Fatalf("pushed %s, want %s", got, strings.Join(want, ","))
 	}
 }
+
+// The dashboard is a local surface, not a peer: what is scheduled there is
+// the human's.
+func TestOwnerOfALocalSurfaceIsTheHuman(t *testing.T) {
+	f := newInboxFixture(t, config.HumanConfig{})
+	f.inbox.AddSurface(&fakeLocalSurface{})
+	if got := f.inbox.OwnerOf("dashboard"); got != string(f.human.DisplayName) {
+		t.Fatalf("OwnerOf(dashboard) = %q, want the human", got)
+	}
+	if got := f.inbox.OwnerOf("alpha"); got != "alpha" {
+		t.Fatalf("OwnerOf(alpha) = %q", got)
+	}
+	var none *Inbox
+	if none.OwnerOf("dashboard") != "dashboard" {
+		t.Fatal("a nil inbox must pass names through")
+	}
+}
+
+// On the real delivery path, a failed scheduled ask from the human reaches
+// the human's inbox from repowire:scheduler (an unresolved sender that
+// CheckAccess lets through, with the circle bypassed). The target has gone
+// since the schedule was made, so the ask fails as it fires.
+func TestScheduledAskFailureLandsInTheHumansInbox(t *testing.T) {
+	f := newInboxFixture(t, config.HumanConfig{})
+	store := newFakeScheduleStore()
+	_, _ = store.CreateSchedule(context.Background(), string(f.human.DisplayName), "gone-peer", "status?", time.Now().Add(-time.Minute), "ask", nil, nil)
+	s := NewScheduler(store, f.delivery).WithOwner(f.inbox.OwnerOf)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	s.Start(ctx)
+	defer s.Stop()
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		items, _ := f.inbox.List(context.Background(), state.InboxFilter{})
+		for _, it := range items {
+			if it.FromName == schedulerSender && strings.Contains(it.Text, "did not go out") {
+				return
+			}
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	items, _ := f.inbox.List(context.Background(), state.InboxFilter{})
+	t.Fatalf("no report in the inbox; items: %+v", items)
+}

@@ -590,6 +590,8 @@ At `fire_at`, the daemon delivers `text` to `to_peer` on your behalf. `kind="not
 
 Use for self-wake reminders, post-stand-up nudges, or future check-ins that don't need a live caller waiting. Returns a `sched-XXXXXXXX` ID; pass it to `schedule_delete` to cancel.
 
+An unknown `to_peer` is refused at once, and so is one the circle boundary would refuse. When a scheduled send fails as it fires (an ask to a peer with no live connection is not queued, unlike a notify), you get a notify from `repowire:scheduler` saying why. See [when a scheduled send cannot go out](../use/features/scheduling.md#when-a-scheduled-send-cannot-go-out).
+
 ### `schedule_self`
 
 ```text

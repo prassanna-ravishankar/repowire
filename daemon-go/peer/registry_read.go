@@ -218,3 +218,27 @@ func (r *Registry) Retirement(id proto.PeerID) string {
 	defer r.mu.Unlock()
 	return r.retirementLocked(id)
 }
+
+// MappingFor finds the durable identity identifier (a peer_id or
+// display_name) names, within circle when given, for a peer that is not
+// live (offline since a restart). ambiguous reports several matches.
+func (r *Registry) MappingFor(identifier string, circle *string) (m *proto.SessionMapping, ambiguous bool) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	if hit, ok := r.mappings[proto.PeerID(identifier)]; ok {
+		copy := *hit
+		return &copy, false
+	}
+	var found *proto.SessionMapping
+	for _, candidate := range r.mappings {
+		if string(candidate.DisplayName) != identifier || (circle != nil && candidate.Circle != *circle) {
+			continue
+		}
+		if found != nil {
+			return nil, true
+		}
+		copy := *candidate
+		found = &copy
+	}
+	return found, false
+}
