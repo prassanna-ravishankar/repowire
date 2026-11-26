@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"strconv"
 	"strings"
@@ -79,7 +81,7 @@ func (b *Slack) api(ctx context.Context, method, token string, input any, output
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := b.http.Do(req)
 	if err != nil {
-		return &slackError{class: "network", msg: b.redact(err.Error())}
+		return &slackError{class: "network", msg: b.redact(err.Error()), unsent: neverSent(err)}
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode == http.StatusTooManyRequests {
@@ -98,6 +100,14 @@ func (b *Slack) api(ctx context.Context, method, token string, input any, output
 		return json.Unmarshal(encoded, output)
 	}
 	return nil
+}
+
+// neverSent reports a failure to reach Slack at all (DNS or connect), so the
+// request cannot have been posted.
+func neverSent(err error) bool {
+	var dns *net.DNSError
+	var op *net.OpError
+	return errors.As(err, &dns) || errors.As(err, &op) && op.Op == "dial"
 }
 
 // botAPI calls method with the bot token.
@@ -208,10 +218,14 @@ func (b *Slack) onEvent(ctx context.Context, event map[string]any) error {
 		return nil
 	}
 	// A reply in an inbox item's thread answers that item.
-	if handled, err := b.onThreadReply(ctx, textField(event, "thread_ts"), textField(event, "ts"), text); handled || err != nil {
+	thread := textField(event, "thread_ts")
+	if handled, err := b.onThreadReply(ctx, thread, textField(event, "ts"), text); handled || err != nil {
 		return err
 	}
-	return b.onText(ctx, text)
+	// Anything else is an ordinary message. Its origin is the Slack thread
+	// root it belongs to (its own ts at top level), so the agent's answer is
+	// posted in that thread: thread_ts must name a root, never a reply.
+	return b.onText(ctx, text, firstText(thread, textField(event, "ts")))
 }
 
 func (b *Slack) onInteraction(ctx context.Context, payload map[string]any) error {
@@ -240,7 +254,9 @@ func (b *Slack) onInteraction(ctx context.Context, payload map[string]any) error
 	return nil
 }
 
-func (b *Slack) onText(ctx context.Context, text string) error {
+// onText handles a human message; root is the Slack thread it belongs to
+// ("" when unknown), sent as the ask's origin.
+func (b *Slack) onText(ctx context.Context, text, root string) error {
 	lower := strings.ToLower(text)
 	switch {
 	case lower == "peers" || lower == "list":
@@ -270,7 +286,11 @@ func (b *Slack) onText(ctx context.Context, text string) error {
 		return b.send(ctx, "Message text is required.", nil)
 	}
 	b.setTarget(target)
-	result, err := b.daemon.Send(ctx, target, message, mode, nil)
+	var origin map[string]any
+	if root != "" {
+		origin = map[string]any{"surface": "slack", "ref": root}
+	}
+	result, err := b.daemon.SendFrom(ctx, target, message, mode, nil, origin)
 	if err != nil {
 		return b.send(ctx, ":x: "+escapeSlack(err.Error()), nil)
 	}

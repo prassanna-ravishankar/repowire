@@ -3,6 +3,7 @@ package mobile
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -177,15 +178,50 @@ func TestSlackSurfaceRetriesRateLimitAndClassifiesRejection(t *testing.T) {
 	}
 }
 
+// A response lost after the request was sent is not retried (Slack may have
+// posted it); it fails as network.
+func TestSlackLostResponseIsNotRetried(t *testing.T) {
+	api := newFakeSlackAPI(t, func(n int, _ slackCall, w http.ResponseWriter) bool {
+		_, _ = w.Write([]byte(`not json`))
+		return true
+	})
+	bot, receipts := newSlackSurface(t, api.URL, "http://127.0.0.1:1")
+	bot.handleInboxItem(context.Background(), inboxFrame("inb-9", "notify", "x", "", nil))
+	if len(api.posts()) != 1 || (*receipts)[0]["status"] != "failed" || (*receipts)[0]["error_class"] != "network" {
+		t.Fatalf("posts %d, receipt %+v; want one attempt, failed, network", len(api.posts()), (*receipts)[0])
+	}
+}
+
+// A question's last chunk is one Block Kit section, which holds at most
+// 3000 characters, so chunks stay under it.
+func TestSlackLongQuestionFitsASection(t *testing.T) {
+	api := newFakeSlackAPI(t, nil)
+	bot, _ := newSlackSurface(t, api.URL, "http://127.0.0.1:1")
+	question := map[string]any{"kind": "acknowledge"}
+	bot.handleInboxItem(context.Background(), inboxFrame("inb-10", "ask", strings.Repeat("x", 3200), "", map[string]any{"question": question}))
+	for _, p := range api.posts() {
+		blocks, _ := p.payload["blocks"].([]any)
+		for _, raw := range blocks {
+			block, _ := raw.(map[string]any)
+			text, _ := block["text"].(map[string]any)
+			if s, _ := text["text"].(string); len([]rune(s)) > 3000 {
+				t.Fatalf("a section of %d characters", len([]rune(s)))
+			}
+		}
+	}
+}
+
 // A network failure is receipted as network, and no error text carries a
-// token (they travel in a header, and redact covers both).
+// token (they travel in a header, and redact covers both). A refused
+// connection never reached Slack, so it is the one network failure retried.
 func TestSlackNetworkErrorsNeverCarryATokenAndFullQueueIsOverloaded(t *testing.T) {
 	api := newFakeSlackAPI(t, nil)
 	api.Close()
 	bot, receipts := newSlackSurface(t, api.URL, "http://127.0.0.1:1")
 	err := bot.botAPI(context.Background(), "chat.postMessage", map[string]any{}, nil)
-	if err == nil || strings.Contains(err.Error(), "SECRET") || slackErrorClass(err) != "network" {
-		t.Fatalf("err = %v", err)
+	var se *slackError
+	if err == nil || strings.Contains(err.Error(), "SECRET") || slackErrorClass(err) != "network" || !errors.As(err, &se) || !se.unsent {
+		t.Fatalf("err = %v (want network, unsent)", err)
 	}
 	bot.inbox = make(chan map[string]any) // no worker: the queue is always full
 	if err := bot.onDaemon(context.Background(), inboxFrame("inb-5", "notify", "x", "", nil)); err != nil {
@@ -211,7 +247,7 @@ func TestSlackThreadReplyRepliesThroughTheInbox(t *testing.T) {
 	}
 	req := nextAction(requests)
 	if req.path != "/inbox/reply" || req.payload["surface"] != "slack" || req.payload["surface_ref"] != "1712345678.000101" ||
-		req.payload["ref"] != "1712345678.000900" || req.payload["text"] != "yes, merge" {
+		req.payload["ref"] != "1712345678.000101" || req.payload["text"] != "yes, merge" {
 		t.Fatalf("reply request = %+v", req)
 	}
 	for len(requests) > 0 {
@@ -242,8 +278,28 @@ func TestSlackThreadReplyElsewhereFallsBackToAnAsk(t *testing.T) {
 	if req := nextAction(requests); req.path != "/inbox/reply" {
 		t.Fatalf("first request = %+v", req)
 	}
-	if ask := nextAction(requests); ask.path != "/ask" || ask.payload["to_peer"] != "repow-1-orch" {
-		t.Fatalf("fallback = %+v", ask)
+	ask := nextAction(requests)
+	origin, _ := ask.payload["origin"].(map[string]any)
+	if ask.path != "/ask" || ask.payload["to_peer"] != "repow-1-orch" || origin["surface"] != "slack" || origin["ref"] != "1712345678.000009" {
+		t.Fatalf("fallback = %+v (origin must be the thread root)", ask)
+	}
+}
+
+// A top-level channel message is an ask whose origin is its own ts, so the
+// agent's answer threads under it.
+func TestSlackChannelAskCarriesItsOrigin(t *testing.T) {
+	api := newFakeSlackAPI(t, nil)
+	daemon, requests := fakeInboxDaemon(t, http.StatusOK)
+	bot, _ := newSlackSurface(t, api.URL, daemon.URL)
+	bot.setTarget("repow-1-orch")
+	msg := map[string]any{"type": "message", "channel": "C1", "user": "U1", "text": "status?", "ts": "1712345678.000700"}
+	if err := bot.onEvent(context.Background(), msg); err != nil {
+		t.Fatal(err)
+	}
+	ask := nextAction(requests)
+	origin, _ := ask.payload["origin"].(map[string]any)
+	if ask.path != "/ask" || origin["surface"] != "slack" || origin["ref"] != "1712345678.000700" {
+		t.Fatalf("ask = %+v", ask)
 	}
 }
 

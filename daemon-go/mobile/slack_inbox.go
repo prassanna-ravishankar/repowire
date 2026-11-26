@@ -25,9 +25,10 @@ import (
 // for a bot (ts values are not the integer refs the daemon's through_ref
 // filter reads), so there is no read sweep as on Telegram.
 
-// slackMessageLimit keeps one message under Slack's recommended text size,
-// leaving room for the sender header.
-const slackMessageLimit = 3900
+// slackMessageLimit keeps one chunk inside a Block Kit section's 3000
+// characters (the last chunk of a question is rendered as one), with room
+// for the sender header.
+const slackMessageLimit = 2900
 
 // slackError is a Slack Web API failure with its class, for receipts. Its
 // text never contains a token.
@@ -35,6 +36,11 @@ type slackError struct {
 	class      string // network | rate_limited | too_long | rejected | other
 	msg        string
 	retryAfter time.Duration
+	// unsent marks a network failure before the request reached Slack (it
+	// could not connect), the only network failure safe to retry: after a
+	// lost response Slack may already have posted, and a retry would post
+	// the message twice.
+	unsent bool
 }
 
 func (e *slackError) Error() string { return "slack: " + e.msg }
@@ -158,8 +164,10 @@ func (b *Slack) pushInboxItem(ctx context.Context, item map[string]any, replyToR
 	return refs, nil
 }
 
-// apiWithRetry retries network failures and rate limits a bounded number of
-// times; anything Slack rejects outright fails at once.
+// apiWithRetry retries rate limits and failures to connect a bounded number
+// of times. Anything Slack rejects, and a response lost after the request
+// was sent, fails at once: Slack may have posted it, and a retry would post
+// the message twice.
 func (b *Slack) apiWithRetry(ctx context.Context, method string, payload, output any) error {
 	var err error
 	for attempt := 1; attempt <= pushAttempts; attempt++ {
@@ -167,7 +175,7 @@ func (b *Slack) apiWithRetry(ctx context.Context, method string, payload, output
 			return nil
 		}
 		var se *slackError
-		if !errors.As(err, &se) || (se.class != "network" && se.class != "rate_limited") || attempt == pushAttempts {
+		if !errors.As(err, &se) || !(se.class == "rate_limited" || se.unsent) || attempt == pushAttempts {
 			return err
 		}
 		wait := b.retryDelay * time.Duration(attempt)
@@ -309,7 +317,9 @@ func (b *Slack) onThreadReply(ctx context.Context, threadTS, ts, text string) (h
 	}
 	var result map[string]any
 	resp, err := b.daemon.JSON(ctx, http.MethodPost, "/inbox/reply",
-		map[string]any{"surface": "slack", "surface_ref": threadTS, "ref": ts, "text": text}, &result)
+		// ref is the thread root, not this reply's ts: an agent's answer to
+		// it is posted with thread_ts = ref, and Slack threads only on a root.
+		map[string]any{"surface": "slack", "surface_ref": threadTS, "ref": threadTS, "text": text}, &result)
 	if err != nil {
 		return true, err
 	}
