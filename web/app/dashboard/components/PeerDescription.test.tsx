@@ -54,5 +54,9 @@ describe("PeerDescription", () => {
     expect(screen.queryByLabelText("Peer description")).not.toBeInTheDocument();
     rerender(<PeerDescription peer={{ ...PEER, description: undefined }} apiBase="" onSaved={() => {}} editSignal={1} />);
     expect(screen.getByLabelText("Peer description")).toHaveFocus();
+    // A second signal while editing keeps the draft in progress.
+    fireEvent.change(screen.getByLabelText("Peer description"), { target: { value: "half typed" } });
+    rerender(<PeerDescription peer={{ ...PEER, description: undefined }} apiBase="" onSaved={() => {}} editSignal={2} />);
+    expect(screen.getByLabelText("Peer description")).toHaveValue("half typed");
   });
 });

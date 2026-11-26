@@ -24,18 +24,32 @@ export function matches(text: string, query: string): boolean {
     .every((word) => hay.includes(word));
 }
 
-/** useCommandShortcut toggles open on Cmd-K / Ctrl-K, from anywhere. */
-export function useCommandShortcut(setOpen: (update: (open: boolean) => boolean) => void) {
+/** isMac reports an Apple platform, where the shortcut is Cmd-K and Ctrl-K
+ *  stays the text fields' kill-to-end-of-line. */
+export function isMac(): boolean {
+  if (typeof navigator === "undefined") return false;
+  const platform = (navigator as Navigator & { userAgentData?: { platform?: string } }).userAgentData?.platform || navigator.platform || navigator.userAgent;
+  return /mac|iphone|ipad|ios/i.test(platform);
+}
+
+/** useCommandShortcut toggles open on Cmd-K (macOS) or Ctrl-K (elsewhere),
+ *  from anywhere, inputs included, the usual convention. It ignores a held
+ *  key's repeats and IME composition, and does nothing while enabled is
+ *  false (another dialog is open). */
+export function useCommandShortcut(setOpen: (update: (open: boolean) => boolean) => void, enabled = true) {
   useEffect(() => {
+    if (!enabled) return;
+    const mac = isMac();
     const onKey = (e: KeyboardEvent) => {
-      if ((e.metaKey || e.ctrlKey) && !e.altKey && !e.shiftKey && e.key.toLowerCase() === "k") {
+      const chord = mac ? e.metaKey && !e.ctrlKey : e.ctrlKey && !e.metaKey;
+      if (chord && !e.altKey && !e.shiftKey && !e.repeat && !e.isComposing && e.key.toLowerCase() === "k") {
         e.preventDefault();
         setOpen((open) => !open);
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [setOpen]);
+  }, [setOpen, enabled]);
 }
 
 export function CommandPalette({ commands, onRun, onClose }: { commands: Command[]; onRun: (id: string) => void; onClose: () => void }) {
@@ -45,8 +59,11 @@ export function CommandPalette({ commands, onRun, onClose }: { commands: Command
   const shown = useMemo(() => commands.filter((c) => matches(`${c.label} ${c.hint ?? ""}`, query)), [commands, query]);
   const current = Math.min(active, Math.max(shown.length - 1, 0));
 
+  // Focus moves into the palette and returns to where it was when it closes.
   useEffect(() => {
+    const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     input.current?.focus();
+    return () => opener?.focus();
   }, []);
 
   const run = (c: Command | undefined) => {

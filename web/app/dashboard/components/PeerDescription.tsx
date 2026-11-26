@@ -28,12 +28,13 @@ export function PeerDescription({
     setError(null);
     setEditing(true);
   };
-  // A new signal (the palette's "Set description") opens the editor.
+  // A new signal (the palette's "Set description") opens the editor; while
+  // it is open, a draft in progress is kept.
   const seen = useRef(editSignal);
   useEffect(() => {
     if (editSignal !== seen.current) {
       seen.current = editSignal;
-      open();
+      if (!editing) open();
     }
     // open reads the current peer; the signal alone decides when.
     // eslint-disable-next-line react-hooks/exhaustive-deps

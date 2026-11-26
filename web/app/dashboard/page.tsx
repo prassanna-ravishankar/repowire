@@ -58,7 +58,8 @@ function DashboardInner() {
   const [showSettings, setShowSettings] = useState(false);
   const [showPalette, setShowPalette] = useState(false);
   const [descriptionSignal, setDescriptionSignal] = useState(0);
-  useCommandShortcut(setShowPalette);
+  // Not over another dialog: running "spawn" from there would stack two.
+  useCommandShortcut(setShowPalette, !showSpawn && !showBroadcast && !showSettings);
   const eventIdsRef = useRef<Set<string>>(new Set());
   const lastSeenIdRef = useRef<string | null>(null);
   const peersRef = useRef<Peer[]>([]);

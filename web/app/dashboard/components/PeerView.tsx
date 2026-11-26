@@ -496,7 +496,8 @@ export function PeerView({
         </div>
       )}
 
-      <PeerDescription peer={peer} apiBase={apiBase} onSaved={onSent} editSignal={editDescriptionSignal} />
+      {/* Keyed by peer: a draft never follows the view to another peer. */}
+      <PeerDescription key={peer.peer_id} peer={peer} apiBase={apiBase} onSaved={onSent} editSignal={editDescriptionSignal} />
 
       <div className="flex shrink-0 gap-0 border-b border-border-faint px-4 md:px-6" role="tablist">
         <TabButton label="chat" active={activeTab === "chat"} onClick={() => setActiveTab("chat")} />

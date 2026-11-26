@@ -57,18 +57,64 @@ describe("CommandPalette", () => {
     expect(onRun).not.toHaveBeenCalled();
   });
 
-  it("toggles on Cmd-K and Ctrl-K, and ignores other chords", () => {
-    const { result } = renderHook(() => {
-      const [open, setOpen] = useState(false);
-      useCommandShortcut(setOpen);
-      return open;
-    });
-    act(() => void window.dispatchEvent(new KeyboardEvent("keydown", { key: "k", metaKey: true })));
+  function shortcut(enabled = true) {
+    return renderHook(
+      ({ on }) => {
+        const [open, setOpen] = useState(false);
+        useCommandShortcut(setOpen, on);
+        return open;
+      },
+      { initialProps: { on: enabled } },
+    );
+  }
+  const press = (init: KeyboardEventInit) => act(() => void window.dispatchEvent(new KeyboardEvent("keydown", { key: "k", ...init })));
+
+  it("toggles on Ctrl-K off macOS, and ignores Cmd-K, other chords, repeats and IME composition", () => {
+    vi.spyOn(navigator, "platform", "get").mockReturnValue("Linux x86_64");
+    const { result } = shortcut();
+    press({ ctrlKey: true });
     expect(result.current).toBe(true);
-    act(() => void window.dispatchEvent(new KeyboardEvent("keydown", { key: "k", ctrlKey: true })));
+    press({ ctrlKey: true });
     expect(result.current).toBe(false);
-    act(() => void window.dispatchEvent(new KeyboardEvent("keydown", { key: "k" })));
-    act(() => void window.dispatchEvent(new KeyboardEvent("keydown", { key: "k", ctrlKey: true, shiftKey: true })));
+    press({ metaKey: true });
+    press({});
+    press({ ctrlKey: true, shiftKey: true });
+    press({ ctrlKey: true, repeat: true });
+    press({ ctrlKey: true, isComposing: true });
     expect(result.current).toBe(false);
+    vi.restoreAllMocks();
+  });
+
+  // On macOS Ctrl-K is the text fields' kill-to-end-of-line: only Cmd-K opens.
+  it("toggles on Cmd-K on macOS and leaves Ctrl-K to the text fields", () => {
+    vi.spyOn(navigator, "platform", "get").mockReturnValue("MacIntel");
+    const { result } = shortcut();
+    press({ ctrlKey: true });
+    expect(result.current).toBe(false);
+    press({ metaKey: true });
+    expect(result.current).toBe(true);
+    vi.restoreAllMocks();
+  });
+
+  it("does nothing while another dialog is open", () => {
+    vi.spyOn(navigator, "platform", "get").mockReturnValue("MacIntel");
+    const { result, rerender } = shortcut(false);
+    press({ metaKey: true });
+    expect(result.current).toBe(false);
+    rerender({ on: true });
+    press({ metaKey: true });
+    expect(result.current).toBe(true);
+    vi.restoreAllMocks();
+  });
+
+  it("returns focus to where it was when it closes", () => {
+    const before = document.createElement("button");
+    document.body.appendChild(before);
+    before.focus();
+    const { unmount } = render(<CommandPalette commands={COMMANDS} onRun={() => {}} onClose={() => {}} />);
+    expect(screen.getByLabelText("Search commands")).toHaveFocus();
+    unmount();
+    expect(before).toHaveFocus();
+    before.remove();
   });
 });
