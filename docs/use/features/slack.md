@@ -61,13 +61,28 @@ Run:
 repowire slack start
 ```
 
-The bot uses the daemon's normal peer registration, ask, notify, and event routes. Messages from `@slack` are framed as human input to the receiving agent, and human inbound Slack messages open tracked asks by default. `slack` resolves to the [human inbox](../../concepts/human-inbox.md): messages agents send to `slack` are stored there and pushed to Slack as plain notifications. Slack does not yet thread replies or send receipts ([#468](https://github.com/prassanna-ravishankar/repowire/issues/468)).
+The bot uses the daemon's normal peer registration, ask, notify, and event routes. Messages from `@slack` are framed as human input to the receiving agent, and human inbound Slack messages open tracked asks by default. `slack` resolves to the [human inbox](../../concepts/human-inbox.md), so a message to `slack` is stored there even when the bot is down, and Slack is one of its surfaces (see below).
+
+## Slack as an inbox surface
+
+The bot declares itself an inbox surface, so the daemon pushes each [inbox](../../concepts/human-inbox.md) item to the channel and the sender gets a receipt. `repowire trace <delivery id>` shows whether the push reached Slack (`surface_pushed`, with the message `ts`) or failed (`surface_failed` with `network`, `rate_limited`, `rejected`, `too_long`, `overloaded` or `no_receipt`).
+
+- **Threads.** Each new item starts its own thread. An item on the same ask as an earlier one (an agent's answer to your question, a follow-up) is posted in that item's thread.
+- **Replies.** Reply in a thread to answer it. A Slack thread reply targets the thread, not one message: it answers the thread's open question when there is one (even under a later progress note), and otherwise the newest item posted there. The reply goes through `POST /inbox/reply`: it acks the ask behind the item, marks the item read on every surface, and threads the agent's next answer under it. A reply in any other thread, or a new message in the channel, is an ordinary ask to the sticky target, and the agent's answer is posted in that message's thread.
+- **Buttons.** A choice question shows its options as buttons, an acknowledge question one Ack button, and a tool approval adds Deny. A tap answers through the inbox, and the outcome is posted in the item's thread.
+- **Quiet hours.** The bot declares `inbox_hold`, so `human.surfaces.slack.quiet_hours` holds its pushes in the configured window ([quiet hours](../../concepts/human-inbox.md#quiet-hours)).
+
+No extra scopes are needed beyond the setup above. Thread replies arrive as ordinary channel `message` events, and buttons use the interactivity the peer picker already needs.
+
+Unlike Telegram, Slack has no read sweep: a message you type in the channel does not mark earlier items read. Reply to an item or tap its button, or read it on the dashboard.
 
 ## Limits
 
 - The bot watches one configured channel. Messages in other channels are ignored.
 - Multi-user control is possible: anyone with access to the channel can drive the mesh.
 - Socket Mode uses an outbound WebSocket to Slack; the app-level token has broad authority and should be treated like the bot token.
+- The bot retries rate limits and failures to connect up to three times per message. A response lost after Slack received the request is not retried (Slack may have posted it), so the push fails as `network` rather than posting twice. Such a message can be visible in Slack while recorded as failed, so it may appear again if the item is pushed later (a catch-up or a quiet-hours release).
+- Long items are split into chunks of about 2900 characters (a Block Kit section holds 3000), all in the item's thread.
 - Slack file relay is not currently supported. Photos and documents posted in Slack are not downloaded and forwarded to agents.
 
 ## Troubleshooting

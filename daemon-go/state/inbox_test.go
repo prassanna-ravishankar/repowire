@@ -200,3 +200,33 @@ func TestListInboxBySurfaceIsInDeliveryOrder(t *testing.T) {
 		t.Fatalf("an unfiltered list stays newest created first: %v", all[0].ID)
 	}
 }
+
+// A ref names the newest item recorded with it. Slack relies on this: an
+// item posted into a thread names the thread root, so a reply in the thread
+// (looked up by its root) reaches the newest item there.
+func TestASurfaceRefNamesTheNewestItem(t *testing.T) {
+	ctx := context.Background()
+	store := newInboxStore(t)
+	first := &InboxItem{Kind: "ask", TraceID: "ask-10", TraceKind: "ask", CorrelationID: "ask-10", Text: "merge?"}
+	newest := &InboxItem{Kind: "answer", TraceID: "ask-10", TraceKind: "ask", CorrelationID: "ask-10", Text: "merged", CreatedAt: "2099-01-01T00:00:01.000Z"}
+	for _, item := range []*InboxItem{first, newest} {
+		if err := store.InsertInboxItem(ctx, item); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := store.RecordInboxPush(ctx, first.ID, InboxPush{Surface: "slack", Status: PushPushed, SurfaceRef: "1.1", Refs: []string{"1.1"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.RecordInboxPush(ctx, newest.ID, InboxPush{Surface: "slack", Status: PushPushed, SurfaceRef: "1.1", Refs: []string{"1.1", "1.5"}}); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := store.InboxItemBySurfaceRef(ctx, "slack", "1.1"); got == nil || got.ID != newest.ID {
+		t.Fatalf("the root names %+v; want the newest item recorded with it", got)
+	}
+	if got, _ := store.InboxItemBySurfaceRef(ctx, "slack", "1.5"); got == nil || got.ID != newest.ID {
+		t.Fatalf("an item's own message names it: %+v", got)
+	}
+	if ref, _ := store.InboxThreadRef(ctx, "ask-10", "slack"); ref != "1.1" {
+		t.Fatalf("thread ref = %q, want the root", ref)
+	}
+}

@@ -333,9 +333,28 @@ func (i *Inbox) List(ctx context.Context, filter state.InboxFilter) ([]state.Inb
 	return i.store.ListInbox(ctx, filter)
 }
 
-// BySurfaceRef finds the item a surface rendered as ref.
+// BySurfaceRef finds the item a reply to ref on surface acts on: the item
+// rendered as ref, unless that item cannot be answered and its thread holds
+// an ask the human can still answer. Then the reply answers that ask. A
+// progress notify filed under an open ask (#477) is such an item, and on
+// Slack, where a thread reply names only the thread, a reply in the thread
+// reaches the newest item there. Without this, an answer typed under "CI is
+// running" would open a new ask and leave the real question open.
 func (i *Inbox) BySurfaceRef(ctx context.Context, surface, ref string) (*state.InboxItem, error) {
-	return i.store.InboxItemBySurfaceRef(ctx, surface, ref)
+	item, err := i.store.InboxItemBySurfaceRef(ctx, surface, ref)
+	if err != nil || item == nil || item.CorrelationID == "" || i.Answerable(item) {
+		return item, err
+	}
+	open, err := i.store.UnrepliedInboxAsks(ctx, item.CorrelationID)
+	if err != nil {
+		return nil, err
+	}
+	for index := range open {
+		if i.Answerable(&open[index]) {
+			return &open[index], nil
+		}
+	}
+	return item, nil
 }
 
 // MarkRead marks the item read for every surface; repeat calls are no-ops.

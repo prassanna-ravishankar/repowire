@@ -681,3 +681,47 @@ func TestHumanInboxReplyToAMovedAskIsRefused(t *testing.T) {
 		t.Fatal("the human's reply closed an ask that had moved to beta")
 	}
 }
+
+// On Slack a thread reply names only the thread root, which names the newest
+// item posted there. When that is a progress notify filed under the human's
+// open ask, the reply still answers the ask rather than opening a new one.
+func TestHumanInboxThreadReplyUnderProgressAnswersTheOpenAsk(t *testing.T) {
+	s := newInboxStack(t)
+	s.connect(t, map[string]any{"display_name": "slack", "circle": "default", "backend": "claude-code",
+		"role": "service", "path": "/slack", "capabilities": []string{proto.CapInboxSurface}},
+		func(_ map[string]any, n int) map[string]any {
+			// The ask starts thread 1.1; the progress notify is posted in it
+			// and names the root first, as the Slack bridge does.
+			if n == 1 {
+				return map[string]any{"status": "pushed", "surface_ref": "1.1", "surface_refs": []string{"1.1"}}
+			}
+			return map[string]any{"status": "pushed", "surface_ref": "1.1", "surface_refs": []string{"1.1", "1.2"}}
+		})
+	agent := s.connect(t, map[string]any{"display_name": "alpha", "circle": "1", "backend": "claude-code", "role": "agent", "path": "/work/alpha"}, nil)
+	asked := decodeBody(t, postJSON(t, s.srv.URL+"/ask", map[string]any{"from_peer": string(agent.id), "to_peer": "prass", "text": "ship it?"}))
+	cid := asked["correlation_id"].(string)
+	s.waitStage(t, cid, "surface_pushed")
+	progress := decodeBody(t, postJSON(t, s.srv.URL+"/notify", map[string]any{"from_peer": string(agent.id), "to_peer": "prass", "text": "CI is running", "correlation_id": cid}))
+	if progress["thread_id"] != cid {
+		t.Fatalf("progress not threaded: %+v", progress)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		if found, _ := s.store.InboxItemBySurfaceRef(context.Background(), "slack", "1.1"); found != nil && found.Kind == "notify" {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the progress notify was never receipted on the thread root")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	replied := decodeBody(t, postJSON(t, s.srv.URL+"/inbox/reply", map[string]any{
+		"surface": "slack", "surface_ref": "1.1", "ref": "1.1", "text": "yes, ship it"}))
+	if replied["action"] != "acked" || replied["correlation_id"] != cid {
+		t.Fatalf("thread reply = %+v; want it to answer the open ask", replied)
+	}
+	if ask, _ := s.asks.Get(cid); !ask.Closed {
+		t.Fatalf("ask still open: %+v", ask)
+	}
+}
