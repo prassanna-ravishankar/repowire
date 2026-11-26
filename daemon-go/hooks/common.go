@@ -387,14 +387,10 @@ func getPaneID() string {
 			}
 		}
 	}
-	if os.Getenv("TMUX") == "" {
-		return ""
-	}
-	out, err = exec.Command("tmux", "display-message", "-p", "#{pane_id}").Output()
-	if err != nil {
-		return ""
-	}
-	return strings.TrimSpace(string(out))
+	// No pane is ours. Fail closed: an untargeted `tmux display-message`
+	// answers for the $TMUX session's active pane, which can be another
+	// peer's (#647).
+	return ""
 }
 
 func getTmuxInfo() tmuxInfo {
