@@ -116,7 +116,11 @@ func TestSlackSurfaceThreadsAskAndReceiptsTS(t *testing.T) {
 			t.Fatalf("blocks missing %s: %s", want, blocks)
 		}
 	}
-	if len(*receipts) != 1 || (*receipts)[0]["status"] != "pushed" || (*receipts)[0]["surface_ref"] != "1712345678.000101" || (*receipts)[0]["delivery_id"] != "inb-1" {
+	// The receipt names the thread root first (so a reply in the thread reaches
+	// this, the newest item in it), then the message posted.
+	refs, _ := (*receipts)[0]["surface_refs"].([]string)
+	if len(*receipts) != 1 || (*receipts)[0]["status"] != "pushed" || (*receipts)[0]["surface_ref"] != "1712345678.000050" ||
+		strings.Join(refs, ",") != "1712345678.000050,1712345678.000101" || (*receipts)[0]["delivery_id"] != "inb-1" {
 		t.Fatalf("receipts = %+v", *receipts)
 	}
 }

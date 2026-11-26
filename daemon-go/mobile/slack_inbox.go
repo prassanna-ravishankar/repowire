@@ -117,9 +117,8 @@ func (b *Slack) handleInboxItem(ctx context.Context, frame map[string]any) {
 	}
 }
 
-// writeReceipt acks a push: surface_ref is the first message (the thread
-// anchor), surface_refs every message rendered, so a reply in any of their
-// threads reaches the item.
+// writeReceipt acks a push: surface_ref is the item's thread root and
+// surface_refs every ref pushInboxItem returned.
 func (b *Slack) writeReceipt(ctx context.Context, deliveryID string, refs []string, err error, class string) error {
 	receipt := map[string]any{"type": "delivery_ack", "delivery_id": deliveryID, "message_type": "inbox_item", "status": "pushed"}
 	if err != nil {
@@ -131,10 +130,16 @@ func (b *Slack) writeReceipt(ctx context.Context, deliveryID string, refs []stri
 	return b.writeFrame(ctx, receipt)
 }
 
-// pushInboxItem posts the item (split when long) and returns the ts of every
-// message it rendered, in order. An item the daemon threads under an earlier
-// one is posted in that message's thread; a new item starts a thread of its
-// own, anchored at its first message.
+// pushInboxItem posts the item (split when long) and returns its refs: the
+// Slack thread root it lives in first, then the ts of every message it
+// rendered. An item the daemon threads under an earlier one is posted in that
+// thread; a new item starts a thread of its own, rooted at its first message.
+//
+// Naming the root first does two things. The daemon only ever gets a root
+// back as a later item's reply_to_ref (Slack threads only on a root). And the
+// daemon maps each ref to the newest item that named it, so a human reply in
+// a thread (looked up by its thread_ts, the root) answers the newest item
+// posted there, which is what a Slack thread reply means.
 func (b *Slack) pushInboxItem(ctx context.Context, item map[string]any, replyToRef string) ([]string, error) {
 	id := textField(item, "id")
 	chunks := splitMessage(slackInboxHeader(item)+"\n"+escapeSlack(textField(item, "text")), slackMessageLimit)
@@ -156,10 +161,13 @@ func (b *Slack) pushInboxItem(ctx context.Context, item map[string]any, replyToR
 		if err := b.apiWithRetry(ctx, "chat.postMessage", payload, &sent); err != nil {
 			return refs, err
 		}
-		refs = append(refs, sent.TS)
 		if thread == "" {
 			thread = sent.TS // the rest of a long item stays in its thread
 		}
+		if len(refs) == 0 && thread != sent.TS {
+			refs = append(refs, thread)
+		}
+		refs = append(refs, sent.TS)
 	}
 	return refs, nil
 }
