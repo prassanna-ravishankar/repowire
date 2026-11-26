@@ -18,6 +18,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"sync"
 	"time"
 
 	"github.com/repowire/repowire/daemon-go/state"
@@ -49,6 +50,12 @@ type Scheduler struct {
 	delivery schedulerDelivery
 	clock    wallClock
 	events   func(ctx context.Context, typ string, payload map[string]any) string
+	// failing counts, per schedule, the slots that have failed in a row
+	// since the first was reported: the rest of an outage stays quiet, and
+	// the next delivery reports the recovery. In memory: a restart costs at
+	// most one more report.
+	failMu  sync.Mutex
+	failing map[string]int
 	// owner maps a schedule's from_peer to the peer to tell when it fails:
 	// a local inbox surface ("dashboard") belongs to the human. nil: itself.
 	owner func(from string) string
@@ -67,8 +74,9 @@ func NewScheduler(store schedulerStore, delivery schedulerDelivery) *Scheduler {
 		clock:    systemWallClock(),
 		// Buffered so a Wake() that races the loop's select isn't lost: the loop
 		// always drains+rechecks next_due on each iteration.
-		wake: make(chan struct{}, 1),
-		stop: make(chan struct{}),
+		wake:    make(chan struct{}, 1),
+		failing: map[string]int{},
+		stop:    make(chan struct{}),
 	}
 }
 
@@ -189,9 +197,41 @@ func (s *Scheduler) fire(ctx context.Context, sched *state.Schedule) {
 	// Advance (cron) or drop (one-shot). Always runs regardless of delivery
 	// outcome, mirroring the Python finally block.
 	next := s.advance(ctx, sched)
-	if err != nil {
+	failedBefore := s.noteOutcome(sched.ScheduleID, err != nil)
+	switch {
+	case err != nil && failedBefore == 0:
 		s.reportFailure(ctx, sched, err, next)
+	case err != nil:
+		// Still failing: reported at the first slot, quiet until it recovers.
+	case failedBefore > 0:
+		s.reportRecovery(ctx, sched, failedBefore)
 	}
+}
+
+// noteOutcome records whether sched's slot failed and returns how many slots
+// had failed in a row before this one.
+func (s *Scheduler) noteOutcome(id string, failed bool) int {
+	s.failMu.Lock()
+	defer s.failMu.Unlock()
+	before := s.failing[id]
+	if failed {
+		s.failing[id] = before + 1
+	} else {
+		delete(s.failing, id)
+	}
+	return before
+}
+
+// reportRecovery tells the owner a schedule that had been failing went out
+// again, once.
+func (s *Scheduler) reportRecovery(ctx context.Context, sched *state.Schedule, failedSlots int) {
+	if s.events != nil {
+		s.events(ctx, "schedule_recovered", map[string]any{
+			"schedule_id": sched.ScheduleID, "kind": sched.Kind, "from": sched.FromPeer, "to": sched.ToPeer, "failed_slots": failedSlots,
+		})
+	}
+	s.tellOwner(ctx, sched, fmt.Sprintf("Your scheduled %s %s to %s was delivered again after %d failed slot(s).",
+		sched.Kind, sched.ScheduleID, sched.ToPeer, failedSlots))
 }
 
 // advance moves a cron schedule to its next slot, or drops a one-shot, and
@@ -251,6 +291,16 @@ func (s *Scheduler) reportFailure(ctx context.Context, sched *state.Schedule, ca
 		}
 		s.events(ctx, "schedule_failed", payload)
 	}
+	quiet := ""
+	if sched.Cron != nil && !next.IsZero() {
+		quiet = " Further failures of this schedule stay quiet until it goes out again."
+	}
+	s.tellOwner(ctx, sched, fmt.Sprintf("Your scheduled %s %s to %s did not go out: %v. Nothing was delivered, and %s.%s",
+		sched.Kind, sched.ScheduleID, sched.ToPeer, cause, retry, quiet))
+}
+
+// tellOwner notifies whoever owns sched, never the scheduler itself.
+func (s *Scheduler) tellOwner(ctx context.Context, sched *state.Schedule, text string) {
 	if sched.FromPeer == "" || sched.FromPeer == schedulerSender {
 		return
 	}
@@ -258,10 +308,8 @@ func (s *Scheduler) reportFailure(ctx context.Context, sched *state.Schedule, ca
 	if s.owner != nil {
 		to = s.owner(sched.FromPeer)
 	}
-	text := fmt.Sprintf("Your scheduled %s %s to %s did not go out: %v. Nothing was delivered, and %s.",
-		sched.Kind, sched.ScheduleID, sched.ToPeer, cause, retry)
 	if _, err := s.delivery.Notify(ctx, NotifyParams{FromPeer: schedulerSender, ToPeer: to, Text: text, BypassCircle: true}); err != nil {
-		log.Printf("scheduler: could not tell %s that schedule %s failed: %v", sched.FromPeer, sched.ScheduleID, err)
+		log.Printf("scheduler: could not tell %s about schedule %s: %v", sched.FromPeer, sched.ScheduleID, err)
 	}
 }
 

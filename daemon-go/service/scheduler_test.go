@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -380,5 +381,55 @@ func TestDashboardScheduleFailureGoesToTheHuman(t *testing.T) {
 	waitFor(t, "the human told", func() bool { return len(del.reportsTo("prass")) == 1 })
 	if got := del.reportsTo("dashboard"); len(got) != 0 {
 		t.Fatalf("reported to the surface, not its owner: %+v", got)
+	}
+}
+
+// flakyAskDelivery fails scheduled asks while down, and records notifies.
+type flakyAskDelivery struct {
+	failingSchedDelivery
+	down atomic.Bool
+}
+
+func (d *flakyAskDelivery) OpenScheduledAsk(_ context.Context, _, _, _ string, _ *string, _ string) (string, error) {
+	if d.down.Load() {
+		return "", errPeerDown
+	}
+	return "ask-1", nil
+}
+
+// An outage reports once, not once per slot: a */15 heartbeat to a peer down
+// overnight would otherwise send ~32 identical notices. The slot that goes
+// out again reports the recovery, once.
+func TestAnOutageReportsOnceAndItsRecoveryOnce(t *testing.T) {
+	store := newFakeScheduleStore()
+	del := &flakyAskDelivery{}
+	del.down.Store(true)
+	events := &eventLog{}
+	cron := "*/15 * * * *"
+	sched, _ := store.CreateSchedule(context.Background(), "orchestrator", "worker", "heartbeat?", time.Now().Add(-time.Minute), "ask", nil, &cron)
+	s := NewScheduler(store, del).WithEvents(events.add)
+	ctx := context.Background()
+	for slot := 0; slot < 3; slot++ {
+		current, _ := store.GetSchedule(ctx, sched.ScheduleID)
+		s.fire(ctx, current)
+	}
+	reports := del.reportsTo("orchestrator")
+	if len(reports) != 1 || !strings.Contains(reports[0].Text, "stay quiet until it goes out again") {
+		t.Fatalf("three failed slots gave %d reports: %+v", len(reports), reports)
+	}
+	del.down.Store(false)
+	current, _ := store.GetSchedule(ctx, sched.ScheduleID)
+	s.fire(ctx, current)
+	s.fire(ctx, current) // a second good slot reports nothing more
+	reports = del.reportsTo("orchestrator")
+	if len(reports) != 2 || !strings.Contains(reports[1].Text, "delivered again after 3 failed slot(s)") {
+		t.Fatalf("after recovery: %+v", reports)
+	}
+	var kinds []string
+	for _, ev := range events.all() {
+		kinds = append(kinds, ev["type"].(string))
+	}
+	if strings.Join(kinds, ",") != "schedule_failed,schedule_recovered" {
+		t.Fatalf("events = %v", kinds)
 	}
 }
