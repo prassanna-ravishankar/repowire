@@ -398,6 +398,24 @@ func TestFailedBroadcastSendDiscardsTheCopy(t *testing.T) {
 	}
 }
 
+// An ACP recipient whose prompt is refused is reported as failed, with the
+// fanout's own failures, and its copy is discarded.
+func TestFailedACPBroadcastIsReported(t *testing.T) {
+	ctx := context.Background()
+	alpha := peerWith("repow-default-aaaa", "alpha", "default", proto.StatusOnline)
+	beta := peerWith("repow-default-bbbb", "beta", "default", proto.StatusOnline)
+	messages := NewMessages(newMessageStore(t))
+	f := &fakeTransport{}
+	d := NewPeerDelivery(&fakeRegistry{peers: []*proto.Peer{alpha, beta}}, newRouterWithFake(f), acpTransport{f}, NewAskTracker(0), nil).WithMessages(messages)
+	sent, failed := d.Broadcast(ctx, "alpha", "deploy at noon", nil, false)
+	if len(sent) != 0 || len(failed) != 1 || failed[0].PeerID != beta.PeerID {
+		t.Fatalf("sent = %v, failed = %v", sent, failed)
+	}
+	if list, err := messages.List(ctx, state.PeerMessageFilter{PeerID: string(beta.PeerID)}); err != nil || len(list) != 0 {
+		t.Fatalf("beta's messages after a refused prompt = %+v (%v)", list, err)
+	}
+}
+
 // A recipient still seeding gets its copy after the seed gate, recorded and
 // nudged like the rest.
 func TestDeferredBroadcastCarriesItsRecord(t *testing.T) {

@@ -979,7 +979,7 @@ func (d *PeerDelivery) Broadcast(ctx context.Context, fromPeer, text string, exc
 		d.messages.Discard(ctx, records[f.PeerID])
 	}
 	sent = append(sent, deferredNames...)
-	return sent, failures
+	return sent, append(failed, failures...)
 }
 
 // broadcastToInbox stores a broadcast for the human when human.broadcast is on
