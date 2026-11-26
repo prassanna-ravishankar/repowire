@@ -263,9 +263,15 @@ func (h *Hub) checkMappedTarget(req scheduleCreateRequest) error {
 	case m == nil:
 		return routeErr(http.StatusNotFound, "Unknown peer: "+req.ToPeer+" (a schedule's target must be a peer this daemon knows)")
 	}
-	from := h.reg.ResolvePeerStrict(req.FromPeer, nil)
-	if len(from) == 1 && from[0].Circle != m.Circle && !from[0].Role.BypassesCircles() && !m.Role.BypassesCircles() {
-		return routeErr(http.StatusForbidden, fmt.Sprintf("Circle boundary: %s (%s) cannot schedule to %s (%s)", from[0].DisplayName, from[0].Circle, m.DisplayName, m.Circle))
+	// The sender is resolved as CheckAccess resolves it: in the target's
+	// circle first, then anywhere, with the same tiebreaks; an unresolved
+	// sender proceeds, as it does for a send.
+	from, err := h.reg.ResolvePeer(req.FromPeer, &m.Circle)
+	if err != nil || from == nil {
+		from, _ = h.reg.ResolvePeer(req.FromPeer, nil)
+	}
+	if from != nil && from.Circle != m.Circle && !from.Role.BypassesCircles() && !m.Role.BypassesCircles() {
+		return routeErr(http.StatusForbidden, fmt.Sprintf("Circle boundary: %s (%s) cannot schedule to %s (%s)", from.DisplayName, from.Circle, m.DisplayName, m.Circle))
 	}
 	return nil
 }
