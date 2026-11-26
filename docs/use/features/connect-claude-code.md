@@ -46,7 +46,7 @@ small stdio identity shim and proxies the stable tool surface (`ask`, `ack`,
 
 ## Plugins and skills
 
-Claude Code has its own plugin and skill distribution surfaces. Repowire does not currently ship as a Claude Code marketplace plugin, and `repowire setup` does not install third-party skills.
+Claude Code has its own plugin and skill distribution surfaces. Repowire ships its skill pack as a Claude Code marketplace plugin (`repowire@repowire`, see [Skills](skills.md#the-claude-code-plugin)); the plugin carries skills only, and `repowire setup` still owns the hooks, the MCP entry and the services. `repowire setup` does not install third-party skills.
 
 You can still use those surfaces alongside Repowire:
 
@@ -55,7 +55,7 @@ You can still use those surfaces alongside Repowire:
 
 Treat these as capability packaging layers. Repowire's Claude Code integration remains the hooks + MCP transport described above.
 
-A future optional Repowire marketplace plugin should package Claude Code-facing commands, skills, docs, and an MCP bootstrap around the existing `repowire mcp` command. It must not replace `repowire setup`, install a second daemon, own `~/.repowire/config.yaml`, or redefine ask/ack/notify behavior. See [Claude Code plugin packaging](../../contributing/design-notes/claude-code-plugin-packaging.md) for the proposed layout, version/manifest drift checks, and install/update/uninstall docs impact.
+The plugin ships skills today. Packaging Claude Code commands or an MCP bootstrap in it is a separate decision ([#449](https://github.com/prassanna-ravishankar/repowire/issues/449), [#442](https://github.com/prassanna-ravishankar/repowire/issues/442)); whatever it carries, it must not replace `repowire setup`, install a second daemon, own `~/.repowire/config.yaml`, or redefine ask/ack/notify behavior. See [Claude Code plugin packaging](../../contributing/design-notes/claude-code-plugin-packaging.md) for the layout.
 
 ## Channel transport (experimental)
 

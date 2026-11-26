@@ -1,5 +1,6 @@
 {
   "name": "repowire",
+  "version": "0.21.3",
   "description": "Repowire mesh usage skills for AI coding agents: cross-agent review and planning, delegate, usage patterns, and install/update. Backend-agnostic and parameterised on the agent you choose.",
   "author": {
     "name": "Prassanna Ravishankar"
