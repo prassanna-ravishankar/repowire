@@ -280,7 +280,12 @@ func TestParseFireAtNaiveIsUTC(t *testing.T) {
 func TestCreateScheduleChecksTheTarget(t *testing.T) {
 	ctx := context.Background()
 	path := "/work/gone"
-	store := mappedStore{mappings: []*proto.SessionMapping{{SessionID: "repow-dev-gone0001", DisplayName: "gone-claude-code", Circle: "dev", Backend: proto.AgentClaudeCode, Path: &path}}}
+	store := mappedStore{mappings: []*proto.SessionMapping{
+		{SessionID: "repow-dev-gone0001", DisplayName: "gone-claude-code", Circle: "dev", Backend: proto.AgentClaudeCode, Path: &path, Role: proto.RoleAgent},
+		{SessionID: "repow-ops-away0001", DisplayName: "away-claude-code", Circle: "ops", Backend: proto.AgentClaudeCode, Path: &path, Role: proto.RoleAgent},
+		{SessionID: "repow-dev-twin0001", DisplayName: "twin-claude-code", Circle: "dev", Backend: proto.AgentClaudeCode, Path: &path, Role: proto.RoleAgent},
+		{SessionID: "repow-dev-twin0002", DisplayName: "twin-claude-code", Circle: "dev", Backend: proto.AgentClaudeCode, Path: &path, Role: proto.RoleAgent},
+	}}
 	reg, err := peer.NewRegistry(ctx, store, deadLive{}, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -312,10 +317,19 @@ func TestCreateScheduleChecksTheTarget(t *testing.T) {
 		"repow-dev-gone0001": http.StatusOK,        // and by peer_id
 		"calpha-typo":        http.StatusNotFound,  // never known
 		string(other):        http.StatusForbidden, // another circle
+		"away-claude-code":   http.StatusForbidden, // known only by mapping, another circle
+		"twin-claude-code":   http.StatusConflict,  // two mappings answer to it
 	} {
 		if got := create(to); got != want {
 			t.Errorf("schedule to %q: status %d, want %d", to, got, want)
 		}
+	}
+	// A live peer's name scoped to the wrong circle is refused, not let
+	// through by its durable mapping.
+	scoped := postJSON(t, srv.URL+"/schedules", map[string]any{"from_peer": string(alpha), "to_peer": string(other), "circle": "dev", "text": "x", "fire_at": "2030-01-02T15:04:05Z"})
+	scoped.Body.Close()
+	if scoped.StatusCode != http.StatusForbidden {
+		t.Fatalf("a live peer out of the requested circle: status %d, want 403", scoped.StatusCode)
 	}
 	if n := schedules.count(); n != 3 {
 		t.Fatalf("stored %d schedules, want the 3 accepted ones", n)

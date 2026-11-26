@@ -219,19 +219,26 @@ func (r *Registry) Retirement(id proto.PeerID) string {
 	return r.retirementLocked(id)
 }
 
-// KnownIdentity reports whether identifier (a peer_id or display_name) names
-// an identity this daemon has a durable mapping for, live or not: a peer
-// that is offline since a restart is still a valid address for later.
-func (r *Registry) KnownIdentity(identifier string) bool {
+// MappingFor finds the durable identity identifier (a peer_id or
+// display_name) names, within circle when given, for a peer that is not
+// live (offline since a restart). ambiguous reports several matches.
+func (r *Registry) MappingFor(identifier string, circle *string) (m *proto.SessionMapping, ambiguous bool) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	if _, ok := r.mappings[proto.PeerID(identifier)]; ok {
-		return true
+	if hit, ok := r.mappings[proto.PeerID(identifier)]; ok {
+		copy := *hit
+		return &copy, false
 	}
-	for _, m := range r.mappings {
-		if string(m.DisplayName) == identifier {
-			return true
+	var found *proto.SessionMapping
+	for _, candidate := range r.mappings {
+		if string(candidate.DisplayName) != identifier || (circle != nil && candidate.Circle != *circle) {
+			continue
 		}
+		if found != nil {
+			return nil, true
+		}
+		copy := *candidate
+		found = &copy
 	}
-	return false
+	return found, false
 }

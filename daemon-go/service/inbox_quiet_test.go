@@ -413,3 +413,20 @@ func TestRacingReleasesKeepTheOrder(t *testing.T) {
 		t.Fatalf("pushed %s, want %s", got, strings.Join(want, ","))
 	}
 }
+
+// The dashboard is a local surface, not a peer: what is scheduled there is
+// the human's.
+func TestOwnerOfALocalSurfaceIsTheHuman(t *testing.T) {
+	f := newInboxFixture(t, config.HumanConfig{})
+	f.inbox.AddSurface(&fakeLocalSurface{})
+	if got := f.inbox.OwnerOf("dashboard"); got != string(f.human.DisplayName) {
+		t.Fatalf("OwnerOf(dashboard) = %q, want the human", got)
+	}
+	if got := f.inbox.OwnerOf("alpha"); got != "alpha" {
+		t.Fatalf("OwnerOf(alpha) = %q", got)
+	}
+	var none *Inbox
+	if none.OwnerOf("dashboard") != "dashboard" {
+		t.Fatal("a nil inbox must pass names through")
+	}
+}

@@ -16,6 +16,7 @@ package hub
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 	"time"
@@ -235,10 +236,7 @@ func (h *Hub) checkScheduleTarget(ctx context.Context, req scheduleCreateRequest
 	var notAddressable *proto.NotAddressableError
 	switch msg := err.Error(); {
 	case strings.HasPrefix(msg, "Unknown peer"):
-		if h.reg.KnownIdentity(req.ToPeer) {
-			return nil
-		}
-		return routeErr(http.StatusNotFound, "Unknown peer: "+req.ToPeer+" (a schedule's target must be a peer this daemon knows)")
+		return h.checkMappedTarget(req)
 	case strings.HasPrefix(msg, "Circle boundary"):
 		return routeErr(http.StatusForbidden, msg)
 	case errors.As(err, &notAddressable):
@@ -246,4 +244,28 @@ func (h *Hub) checkScheduleTarget(ctx context.Context, req scheduleCreateRequest
 	default:
 		return routeErr(http.StatusConflict, msg) // an ambiguous name
 	}
+}
+
+// checkMappedTarget is the create-time check for a target no live peer
+// answers to: only a peer this daemon knows by its durable mapping, offline
+// since a restart, is accepted, and only under the same rules a live one
+// would meet: unambiguous within the requested circle, and inside the
+// sender's circle unless either side crosses circles.
+func (h *Hub) checkMappedTarget(req scheduleCreateRequest) error {
+	if live := h.reg.ResolvePeerStrict(req.ToPeer, nil); len(live) > 0 {
+		// A live peer has that name, just not in reach of this schedule.
+		return routeErr(http.StatusForbidden, "Circle boundary: "+req.ToPeer+" is not in this schedule's circle")
+	}
+	m, ambiguous := h.reg.MappingFor(req.ToPeer, req.Circle)
+	switch {
+	case ambiguous:
+		return routeErr(http.StatusConflict, "ambiguous target "+req.ToPeer+": name it by peer_id")
+	case m == nil:
+		return routeErr(http.StatusNotFound, "Unknown peer: "+req.ToPeer+" (a schedule's target must be a peer this daemon knows)")
+	}
+	from := h.reg.ResolvePeerStrict(req.FromPeer, nil)
+	if len(from) == 1 && from[0].Circle != m.Circle && !from[0].Role.BypassesCircles() && !m.Role.BypassesCircles() {
+		return routeErr(http.StatusForbidden, fmt.Sprintf("Circle boundary: %s (%s) cannot schedule to %s (%s)", from[0].DisplayName, from[0].Circle, m.DisplayName, m.Circle))
+	}
+	return nil
 }

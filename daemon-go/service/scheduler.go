@@ -49,6 +49,9 @@ type Scheduler struct {
 	delivery schedulerDelivery
 	clock    wallClock
 	events   func(ctx context.Context, typ string, payload map[string]any) string
+	// owner maps a schedule's from_peer to the peer to tell when it fails:
+	// a local inbox surface ("dashboard") belongs to the human. nil: itself.
+	owner func(from string) string
 
 	wake   chan struct{}
 	stop   chan struct{}
@@ -251,11 +254,22 @@ func (s *Scheduler) reportFailure(ctx context.Context, sched *state.Schedule, ca
 	if sched.FromPeer == "" || sched.FromPeer == schedulerSender {
 		return
 	}
+	to := sched.FromPeer
+	if s.owner != nil {
+		to = s.owner(sched.FromPeer)
+	}
 	text := fmt.Sprintf("Your scheduled %s %s to %s did not go out: %v. Nothing was delivered, and %s.",
 		sched.Kind, sched.ScheduleID, sched.ToPeer, cause, retry)
-	if _, err := s.delivery.Notify(ctx, NotifyParams{FromPeer: schedulerSender, ToPeer: sched.FromPeer, Text: text, BypassCircle: true}); err != nil {
+	if _, err := s.delivery.Notify(ctx, NotifyParams{FromPeer: schedulerSender, ToPeer: to, Text: text, BypassCircle: true}); err != nil {
 		log.Printf("scheduler: could not tell %s that schedule %s failed: %v", sched.FromPeer, sched.ScheduleID, err)
 	}
+}
+
+// WithOwner plugs in who owns a schedule's from_peer (Inbox.OwnerOf): the
+// human, for a schedule made on one of its local surfaces.
+func (s *Scheduler) WithOwner(owner func(from string) string) *Scheduler {
+	s.owner = owner
+	return s
 }
 
 // WithEvents plugs the journal in, so a failed scheduled send is recorded

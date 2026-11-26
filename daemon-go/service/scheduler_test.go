@@ -359,3 +359,26 @@ func TestFailedScheduledNotifyIsReported(t *testing.T) {
 		t.Fatalf("the scheduler reported to itself: %+v", got)
 	}
 }
+
+// A schedule made on the dashboard (stored from "dashboard", a local surface
+// that is no peer) is reported to its owner, the human.
+func TestDashboardScheduleFailureGoesToTheHuman(t *testing.T) {
+	store := newFakeScheduleStore()
+	del := &failingSchedDelivery{}
+	_, _ = store.CreateSchedule(context.Background(), "dashboard", "down", "check?", time.Now().Add(-time.Minute), "ask", nil, nil)
+	owner := func(from string) string {
+		if from == "dashboard" {
+			return "prass"
+		}
+		return from
+	}
+	s := NewScheduler(store, del).WithOwner(owner)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	s.Start(ctx)
+	defer s.Stop()
+	waitFor(t, "the human told", func() bool { return len(del.reportsTo("prass")) == 1 })
+	if got := del.reportsTo("dashboard"); len(got) != 0 {
+		t.Fatalf("reported to the surface, not its owner: %+v", got)
+	}
+}
