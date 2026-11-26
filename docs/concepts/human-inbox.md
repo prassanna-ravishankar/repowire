@@ -27,7 +27,7 @@ A surface is a client that displays the inbox and answers on the human's behalf.
 | [Dashboard](../use/features/dashboard.md) | Live in the **Inbox** view while a dashboard is open, with the unread count in the nav | Opening an item | The reply box under the item | A choice question's options, **✓ Acknowledge** for an acknowledge question |
 | [CLI](../reference/cli.md#repowire-inbox) | No; it reads on demand | `repowire inbox read` | `repowire inbox reply` | None |
 
-Read state is shared. Marking an item read on one surface marks it read everywhere, and an open dashboard updates as it happens. A reply from any surface acks the open ask behind it, or answers it for a structured question, and marks the item replied. A reply to anything else asks its sender back.
+Read state is shared. Marking an item read on one surface marks it read everywhere, and an open dashboard updates as it happens. A reply from any surface acks the open ask behind it, or answers it for a structured question, and marks the item replied. A reply to a progress note filed under an ask you can still answer answers that ask. A reply to anything else asks its sender back.
 
 The dashboard has no peer of its own. Its channel is the event stream it already holds open (`GET /events/stream?surface=dashboard`, which the relay tunnels too), so it is a live surface while at least one dashboard is open, and a push to it is receipted once an open stream has flushed the item.
 
