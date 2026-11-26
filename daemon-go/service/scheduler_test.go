@@ -337,6 +337,13 @@ func TestFailedScheduledSendsAreReportedToTheSender(t *testing.T) {
 	}
 	// The recurring schedule is kept for its next slot; the one-shots are gone.
 	waitFor(t, "only the recurring schedule left", func() bool { return store.count() == 1 })
+	// The failed one-shot's count is gone with it; the cron's is kept.
+	s.failMu.Lock()
+	n := len(s.failing)
+	s.failMu.Unlock()
+	if n != 1 {
+		t.Fatalf("failing counts kept = %d, want only the recurring schedule's", n)
+	}
 }
 
 // A notify that fails outright is reported the same way; the scheduler never

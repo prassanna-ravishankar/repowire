@@ -206,6 +206,14 @@ func (s *Scheduler) fire(ctx context.Context, sched *state.Schedule) {
 	case failedBefore > 0:
 		s.reportRecovery(ctx, sched, failedBefore)
 	}
+	if next.IsZero() {
+		// No next slot (a one-shot, or a cron that could not advance): its
+		// count can never be read again. A cron deleted through the routes
+		// mid-outage keeps one entry until the daemon restarts; bounded.
+		s.failMu.Lock()
+		delete(s.failing, sched.ScheduleID)
+		s.failMu.Unlock()
+	}
 }
 
 // noteOutcome records whether sched's slot failed and returns how many slots
