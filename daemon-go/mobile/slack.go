@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -22,14 +23,30 @@ type Slack struct {
 	daemon   *DaemonPeer
 	http     *http.Client
 
-	mu     sync.Mutex
-	target string
+	mu      sync.Mutex
+	target  string
+	options map[string][]string // inbox item id → its choice option ids, by button index
+
+	// inbox carries inbox_item frames from the daemon read loop to one
+	// worker, so a slow Slack call never stalls the socket and items render
+	// in arrival order (#468).
+	inbox chan map[string]any
+	// pushTimeout bounds one item's push, retries included; it stays inside
+	// the daemon's receipt window.
+	pushTimeout time.Duration
+	retryDelay  time.Duration
+	// writeFrame sends a frame (a receipt) to the daemon; tests replace it.
+	writeFrame func(context.Context, any) error
 }
 
 func NewSlack(botToken, appToken, channel string, daemon *DaemonPeer) *Slack {
+	// An inbox surface (#468) that quiet hours may hold (#476).
+	daemon.capabilities = append(daemon.capabilities, inboxSurfaceCapability, inboxHoldCapability)
 	return &Slack{
 		botToken: botToken, appToken: appToken, channel: channel,
 		apiBase: "https://slack.com", daemon: daemon, http: &http.Client{Timeout: 20 * time.Second},
+		options: map[string][]string{}, inbox: make(chan map[string]any, 64),
+		pushTimeout: 45 * time.Second, retryDelay: time.Second, writeFrame: daemon.Write,
 	}
 }
 
@@ -40,9 +57,15 @@ func (b *Slack) Run(ctx context.Context) error {
 	if target := b.daemon.DefaultTarget(ctx); target != "" {
 		b.setTarget(target)
 	}
-	return runTogether(ctx, func(ctx context.Context) error { return b.daemon.Run(ctx, b.onDaemon) }, b.socketLoop)
+	return runTogether(ctx, func(ctx context.Context) error {
+		go b.inboxWorker(ctx)
+		return b.daemon.Run(ctx, b.onDaemon)
+	}, b.socketLoop)
 }
 
+// api calls a Slack Web API method. Every failure is a *slackError with its
+// class: network, rate_limited (HTTP 429, with Retry-After), or Slack's own
+// error code. Tokens travel in a header, so no error text carries one.
 func (b *Slack) api(ctx context.Context, method, token string, input any, output any) error {
 	body, err := json.Marshal(input)
 	if err != nil {
@@ -56,21 +79,30 @@ func (b *Slack) api(ctx context.Context, method, token string, input any, output
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := b.http.Do(req)
 	if err != nil {
-		return err
+		return &slackError{class: "network", msg: b.redact(err.Error())}
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusTooManyRequests {
+		retry, _ := strconv.Atoi(resp.Header.Get("Retry-After"))
+		return classifySlackError(resp.StatusCode, "ratelimited", time.Duration(retry)*time.Second)
+	}
 	var envelope map[string]any
 	if err := json.NewDecoder(resp.Body).Decode(&envelope); err != nil {
-		return err
+		return &slackError{class: "network", msg: fmt.Sprintf("%s: unreadable response (HTTP %d)", method, resp.StatusCode)}
 	}
 	if ok, _ := envelope["ok"].(bool); !ok {
-		return fmt.Errorf("slack %s: %s", method, textField(envelope, "error"))
+		return classifySlackError(resp.StatusCode, textField(envelope, "error"), 0)
 	}
 	if output != nil {
 		encoded, _ := json.Marshal(envelope)
 		return json.Unmarshal(encoded, output)
 	}
 	return nil
+}
+
+// botAPI calls method with the bot token.
+func (b *Slack) botAPI(ctx context.Context, method string, input, output any) error {
+	return b.api(ctx, method, b.botToken, input, output)
 }
 
 func (b *Slack) send(ctx context.Context, text string, blocks any) error {
@@ -82,6 +114,9 @@ func (b *Slack) send(ctx context.Context, text string, blocks any) error {
 }
 
 func (b *Slack) onDaemon(ctx context.Context, message map[string]any) error {
+	if textField(message, "type") == "inbox_item" {
+		return b.enqueueInboxItem(ctx, message)
+	}
 	typ, from, text := textField(message, "type"), textField(message, "from_peer"), textField(message, "text")
 	prefix, ok := map[string]string{"notify": "", "query": ":question: ", "ask": ":question: ", "broadcast": ":loudspeaker: "}[typ]
 	if !ok {
@@ -161,12 +196,20 @@ func (b *Slack) socketOnce(ctx context.Context) (bool, error) {
 }
 
 func (b *Slack) onEvent(ctx context.Context, event map[string]any) error {
-	if textField(event, "type") != "message" || textField(event, "channel") != b.channel || textField(event, "bot_id") != "" || event["subtype"] != nil {
+	// A thread reply also sent to the channel carries subtype
+	// thread_broadcast; it is still the human's message. Every other subtype
+	// (edits, joins, bot posts) is not.
+	if textField(event, "type") != "message" || textField(event, "channel") != b.channel || textField(event, "bot_id") != "" ||
+		event["subtype"] != nil && event["subtype"] != "thread_broadcast" {
 		return nil
 	}
 	text := strings.TrimSpace(textField(event, "text"))
 	if text == "" {
 		return nil
+	}
+	// A reply in an inbox item's thread answers that item.
+	if handled, err := b.onThreadReply(ctx, textField(event, "thread_ts"), textField(event, "ts"), text); handled || err != nil {
+		return err
 	}
 	return b.onText(ctx, text)
 }
@@ -178,6 +221,11 @@ func (b *Slack) onInteraction(ctx context.Context, payload map[string]any) error
 	}
 	action, _ := actions[0].(map[string]any)
 	value := textField(action, "value")
+	message, _ := payload["message"].(map[string]any)
+	thread := firstText(textField(message, "thread_ts"), textField(message, "ts"))
+	if handled, err := b.onInboxAction(ctx, value, thread); handled || err != nil {
+		return err
+	}
 	if strings.HasPrefix(value, "target:") {
 		b.setTarget(strings.TrimPrefix(value, "target:"))
 		return b.send(ctx, "Now talking to *@"+escapeSlack(b.targetName())+"*.", nil)
