@@ -15,6 +15,7 @@ import {
 import type { AttachmentRef, Event, Peer } from "../types";
 import { peerLabel } from "../types";
 import { CRON_PRESETS, formatFire, PeerSchedules, scheduleBody, ScheduleControls, type ScheduleChoice } from "./ComposerSchedule";
+import { PeerDescription } from "./PeerDescription";
 import { PeerMessages } from "./PeerMessages";
 import { formatTime, StatusLabel } from "./status";
 
@@ -131,12 +132,15 @@ export function PeerView({
   apiBase,
   onClose,
   onSent,
+  editDescriptionSignal = 0,
 }: {
   peer: Peer;
   events: Event[];
   apiBase: string;
   onClose: () => void;
   onSent: () => void;
+  /** A change opens the description editor (the command palette). */
+  editDescriptionSignal?: number;
 }) {
   const bottomRef = useRef<HTMLDivElement>(null);
   const [activeTab, setActiveTab] = useState<PeerTab>("chat");
@@ -492,11 +496,8 @@ export function PeerView({
         </div>
       )}
 
-      {peer.description && (
-        <div className="border-b border-border-faint px-4 py-2 font-mono text-xs text-outline md:px-6">
-          <span className="text-primary/70">&gt;</span> {peer.description}
-        </div>
-      )}
+      {/* Keyed by peer: a draft never follows the view to another peer. */}
+      <PeerDescription key={peer.peer_id} peer={peer} apiBase={apiBase} onSaved={onSent} editSignal={editDescriptionSignal} />
 
       <div className="flex shrink-0 gap-0 border-b border-border-faint px-4 md:px-6" role="tablist">
         <TabButton label="chat" active={activeTab === "chat"} onClick={() => setActiveTab("chat")} />

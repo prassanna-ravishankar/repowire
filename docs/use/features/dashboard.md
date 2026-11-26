@@ -90,3 +90,9 @@ The peer header's `Fork to…` control starts a sibling agent on another configu
 - [Spawning](spawning.md)
 - [Relay access](relay-access.md)
 - [HTTP API](../../reference/http-api.md)
+
+## Command palette and peer description
+
+Press **Cmd-K** (macOS) or **Ctrl-K** (elsewhere; on macOS Ctrl-K stays the text fields' delete-to-end-of-line) to open the command palette, from anywhere but another open dialog. It lists the dashboard's own actions: broadcast, spawn, go to inbox, jobs or the mesh feed, settings and refresh. It also lists every visible peer to open, and, with a peer open, **Set description**. Type any words of a command or a peer's name, circle or status to filter; use the arrow keys and Enter to run one, and Escape to close. The palette adds no action of its own: each command does what its button does.
+
+A peer's description (its current task, as an agent sets it with `set_description`) shows under its name. Edit it with the pencil, or from the palette. Enter saves it through `POST /peers/{id}/description`, an empty description clears it, and Escape cancels. It is the same field the agent sets, so the agent's next `set_description` replaces what you wrote.

@@ -126,6 +126,17 @@ describe("PeerView lifecycle controls", () => {
     expect(screen.getByText("cd /tmp/alice && claude --resume s1")).toBeTruthy();
   });
 
+  // A description draft never follows the view to another peer: switching
+  // peers closes the editor, so Enter cannot save a's draft as b's (#215).
+  it("closes the description editor when the view switches peer", () => {
+    vi.stubGlobal("fetch", vi.fn(() => new Promise<Response>(() => {})));
+    const { rerender } = render(<PeerView peer={PEER} events={[]} apiBase="" onClose={() => {}} onSent={() => {}} />);
+    fireEvent.click(screen.getByRole("button", { name: "Edit peer description" }));
+    fireEvent.change(screen.getByLabelText("Peer description"), { target: { value: "alice's task" } });
+    rerender(<PeerView peer={OTHER} events={[]} apiBase="" onClose={() => {}} onSent={() => {}} />);
+    expect(screen.queryByLabelText("Peer description")).toBeNull();
+  });
+
   it("keeps close-view non-destructive", () => {
     const onClose = vi.fn();
     render(<PeerView peer={PEER} events={[]} apiBase="" onClose={onClose} onSent={() => {}} />);

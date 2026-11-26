@@ -17,7 +17,8 @@ import { PendingQuestions } from "./components/PendingQuestions";
 import { TopBar } from "./components/TopBar";
 import { WireTrace } from "./components/WireTrace";
 import type { Event, OrchestratorStatus, Peer } from "./types";
-import { isInboxEvent, isLifecycleEvent } from "./types";
+import { isInboxEvent, isLifecycleEvent, peerLabel } from "./types";
+import { CommandPalette, useCommandShortcut, type Command } from "./components/CommandPalette";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE ?? "";
 
@@ -55,6 +56,10 @@ function DashboardInner() {
   const [showSpawn, setShowSpawn] = useState(false);
   const [showBroadcast, setShowBroadcast] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
+  const [showPalette, setShowPalette] = useState(false);
+  const [descriptionSignal, setDescriptionSignal] = useState(0);
+  // Not over another dialog: running "spawn" from there would stack two.
+  useCommandShortcut(setShowPalette, !showSpawn && !showBroadcast && !showSettings);
   const eventIdsRef = useRef<Set<string>>(new Set());
   const lastSeenIdRef = useRef<string | null>(null);
   const peersRef = useRef<Peer[]>([]);
@@ -250,6 +255,63 @@ function DashboardInner() {
     setMobileTab("mesh");
   }, []);
 
+  // The palette's commands: the dashboard's own actions, one per visible
+  // peer, and, with a peer open, its description. runCommand runs them with
+  // the handlers the buttons use.
+  const commands = useMemo<Command[]>(() => {
+    const list: Command[] = [
+      { id: "broadcast", label: "Broadcast to the mesh…" },
+      { id: "spawn", label: "Spawn a peer…" },
+      { id: "inbox", label: "Go to inbox", hint: inbox.unread ? `${inbox.unread} unread` : undefined },
+      { id: "jobs", label: "Go to jobs" },
+      { id: "mesh", label: "Go to mesh feed" },
+      { id: "settings", label: "Settings…" },
+      { id: "refresh", label: "Refresh" },
+    ];
+    if (selectedPeer) list.unshift({ id: "describe", label: `Set description of @${peerLabel(selectedPeer)}…` });
+    for (const peer of visiblePeers) {
+      list.push({ id: "peer:" + peer.peer_id, label: `Open @${peerLabel(peer)}`, hint: `${peer.circle || "default"} · ${peer.status}` });
+    }
+    return list;
+  }, [selectedPeer, visiblePeers, inbox.unread]);
+
+  const runCommand = useCallback(
+    (id: string) => {
+      if (id.startsWith("peer:")) {
+        const peer = visiblePeers.find((p) => p.peer_id === id.slice("peer:".length));
+        if (peer) selectPeer(peer);
+        return;
+      }
+      switch (id) {
+        case "broadcast":
+          setShowBroadcast(true);
+          break;
+        case "spawn":
+          setShowSpawn(true);
+          break;
+        case "inbox":
+          openInbox();
+          break;
+        case "jobs":
+          openJobs();
+          break;
+        case "mesh":
+          openMesh();
+          break;
+        case "settings":
+          setShowSettings(true);
+          break;
+        case "refresh":
+          void refreshData();
+          break;
+        case "describe":
+          setDescriptionSignal((n) => n + 1);
+          break;
+      }
+    },
+    [visiblePeers, selectPeer, openInbox, openJobs, openMesh, refreshData],
+  );
+
   const handleMobileTab = useCallback((tab: MobileTab) => {
     setMobileTab(tab);
     if (tab === "mesh" || tab === "jobs" || tab === "inbox") {
@@ -319,6 +381,7 @@ function DashboardInner() {
               apiBase={API_BASE}
               onClose={closePeer}
               onSent={refreshData}
+              editDescriptionSignal={descriptionSignal}
             />
           ) : mainView === "inbox" ? (
             <InboxView inbox={inbox} apiBase={API_BASE} />
@@ -348,6 +411,7 @@ function DashboardInner() {
         )}
       </div>
 
+      {showPalette && <CommandPalette commands={commands} onRun={runCommand} onClose={() => setShowPalette(false)} />}
       {showBroadcast && <BroadcastDialog apiBase={API_BASE} peers={peers} onClose={() => setShowBroadcast(false)} />}
       {showSpawn && (
         <SpawnDialog
