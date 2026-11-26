@@ -218,3 +218,20 @@ func (r *Registry) Retirement(id proto.PeerID) string {
 	defer r.mu.Unlock()
 	return r.retirementLocked(id)
 }
+
+// KnownIdentity reports whether identifier (a peer_id or display_name) names
+// an identity this daemon has a durable mapping for, live or not: a peer
+// that is offline since a restart is still a valid address for later.
+func (r *Registry) KnownIdentity(identifier string) bool {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	if _, ok := r.mappings[proto.PeerID(identifier)]; ok {
+		return true
+	}
+	for _, m := range r.mappings {
+		if string(m.DisplayName) == identifier {
+			return true
+		}
+	}
+	return false
+}

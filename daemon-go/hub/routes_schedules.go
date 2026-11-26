@@ -17,8 +17,10 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"strings"
 	"time"
 
+	"github.com/repowire/repowire/daemon-go/proto"
 	"github.com/repowire/repowire/daemon-go/service"
 	"github.com/repowire/repowire/daemon-go/state"
 )
@@ -119,6 +121,10 @@ func (h *Hub) createSchedule(ctx context.Context, req scheduleCreateRequest) (*s
 		fireAt = parsed
 	}
 
+	if err := h.checkScheduleTarget(ctx, req); err != nil {
+		return nil, err
+	}
+
 	sched, err := h.scheduleStore.CreateSchedule(
 		ctx, req.FromPeer, req.ToPeer, req.Text, fireAt, kind, req.Circle, cron,
 	)
@@ -210,4 +216,34 @@ func parseFireAt(raw string) (time.Time, error) {
 		}
 	}
 	return time.Time{}, errors.New("fire_at must be ISO-8601")
+}
+
+// checkScheduleTarget refuses, at create, a schedule whose send could never
+// go out (#641), instead of failing when it fires, possibly days later. A
+// live target is checked as a send would be (unknown, circle, addressable).
+// A target this daemon knows only by its durable mapping (offline since a
+// restart) is accepted: it may be back when the schedule fires, and if not
+// that failure is reported to the sender. A name nobody has ever had is 404.
+func (h *Hub) checkScheduleTarget(ctx context.Context, req scheduleCreateRequest) error {
+	if h.reg == nil {
+		return nil
+	}
+	_, _, err := h.reg.CheckAccess(ctx, req.FromPeer, req.ToPeer, false, req.Circle)
+	if err == nil {
+		return nil
+	}
+	var notAddressable *proto.NotAddressableError
+	switch msg := err.Error(); {
+	case strings.HasPrefix(msg, "Unknown peer"):
+		if h.reg.KnownIdentity(req.ToPeer) {
+			return nil
+		}
+		return routeErr(http.StatusNotFound, "Unknown peer: "+req.ToPeer+" (a schedule's target must be a peer this daemon knows)")
+	case strings.HasPrefix(msg, "Circle boundary"):
+		return routeErr(http.StatusForbidden, msg)
+	case errors.As(err, &notAddressable):
+		return routeErr(http.StatusConflict, msg)
+	default:
+		return routeErr(http.StatusConflict, msg) // an ambiguous name
+	}
 }

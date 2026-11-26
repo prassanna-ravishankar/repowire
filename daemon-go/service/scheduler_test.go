@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -230,5 +231,131 @@ func TestSchedulerCronEarlyWakeAdvancesPastFiredSlot(t *testing.T) {
 	}
 	if del.notifyCount() != 1 {
 		t.Fatalf("notifies = %d, want 1", del.notifyCount())
+	}
+}
+
+// failingSchedDelivery fails scheduled sends to "down" and records every
+// notify (sender, target, text), including the scheduler's own reports.
+type failingSchedDelivery struct {
+	mu       sync.Mutex
+	notifies []NotifyParams
+}
+
+var errPeerDown = errors.New("hub: peer not connected: down")
+
+func (d *failingSchedDelivery) Notify(_ context.Context, p NotifyParams) (NotifyResult, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.notifies = append(d.notifies, p)
+	if p.ToPeer == "down" {
+		return NotifyResult{}, errors.New("Unknown peer: down")
+	}
+	return NotifyResult{Status: "sent"}, nil
+}
+
+func (d *failingSchedDelivery) OpenScheduledAsk(_ context.Context, _, to, _ string, _ *string, _ string) (string, error) {
+	if to == "down" {
+		return "", errPeerDown
+	}
+	return "ask-1", nil
+}
+
+// reportsTo lists the scheduler's reports to sender.
+func (d *failingSchedDelivery) reportsTo(sender string) []NotifyParams {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	var out []NotifyParams
+	for _, n := range d.notifies {
+		if n.FromPeer == schedulerSender && n.ToPeer == sender {
+			out = append(out, n)
+		}
+	}
+	return out
+}
+
+type eventLog struct {
+	mu     sync.Mutex
+	events []map[string]any
+}
+
+func (l *eventLog) add(_ context.Context, typ string, payload map[string]any) string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	payload["type"] = typ
+	l.events = append(l.events, payload)
+	return "evt"
+}
+
+func (l *eventLog) all() []map[string]any {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return append([]map[string]any(nil), l.events...)
+}
+
+// A scheduled send that cannot go out is reported to its sender and
+// journaled (#641), not only logged: a one-shot ask says it was removed, a
+// recurring one says when it tries again. Nothing is held for the target.
+func TestFailedScheduledSendsAreReportedToTheSender(t *testing.T) {
+	store := newFakeScheduleStore()
+	del := &failingSchedDelivery{}
+	events := &eventLog{}
+	cron := "0 9 * * *"
+	_, _ = store.CreateSchedule(context.Background(), "orchestrator", "down", "heartbeat?", time.Now().Add(-time.Minute), "ask", nil, &cron)
+	_, _ = store.CreateSchedule(context.Background(), "prass", "down", "one more thing?", time.Now().Add(-time.Minute), "ask", nil, nil)
+	_, _ = store.CreateSchedule(context.Background(), "alpha", "beta", "fine", time.Now().Add(-time.Minute), "ask", nil, nil)
+
+	s := NewScheduler(store, del).WithEvents(events.add)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	s.Start(ctx)
+	defer s.Stop()
+	waitFor(t, "both failures reported", func() bool { return len(events.all()) == 2 })
+
+	cronReport := del.reportsTo("orchestrator")
+	if len(cronReport) != 1 || !strings.Contains(cronReport[0].Text, "did not go out") ||
+		!strings.Contains(cronReport[0].Text, "tries again at its next slot") || !strings.Contains(cronReport[0].Text, "peer not connected") {
+		t.Fatalf("recurring report = %+v", cronReport)
+	}
+	if !cronReport[0].BypassCircle {
+		t.Fatal("the scheduler's report must reach its sender whatever its circle")
+	}
+	oneShot := del.reportsTo("prass")
+	if len(oneShot) != 1 || !strings.Contains(oneShot[0].Text, "one-shot, so it has been removed") {
+		t.Fatalf("one-shot report = %+v", oneShot)
+	}
+	if got := del.reportsTo("alpha"); len(got) != 0 {
+		t.Fatalf("a delivered ask was reported as failed: %+v", got)
+	}
+	for _, ev := range events.all() {
+		if ev["type"] != "schedule_failed" || ev["to"] != "down" || ev["kind"] != "ask" {
+			t.Fatalf("event = %v", ev)
+		}
+		if ev["from"] == "orchestrator" && (ev["recurring"] != true || ev["next_fire_at"] == nil) {
+			t.Fatalf("recurring event = %v", ev)
+		}
+	}
+	// The recurring schedule is kept for its next slot; the one-shots are gone.
+	waitFor(t, "only the recurring schedule left", func() bool { return store.count() == 1 })
+}
+
+// A notify that fails outright is reported the same way; the scheduler never
+// reports to itself.
+func TestFailedScheduledNotifyIsReported(t *testing.T) {
+	store := newFakeScheduleStore()
+	del := &failingSchedDelivery{}
+	events := &eventLog{}
+	_, _ = store.CreateSchedule(context.Background(), "alpha", "down", "fyi", time.Now().Add(-time.Minute), "notify", nil, nil)
+	_, _ = store.CreateSchedule(context.Background(), schedulerSender, "down", "loop?", time.Now().Add(-time.Minute), "notify", nil, nil)
+	s := NewScheduler(store, del).WithEvents(events.add)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	s.Start(ctx)
+	defer s.Stop()
+	waitFor(t, "both failures journaled", func() bool { return len(events.all()) == 2 })
+	if got := del.reportsTo("alpha"); len(got) != 1 {
+		t.Fatalf("reports to alpha = %+v", got)
+	}
+	if got := del.reportsTo(schedulerSender); len(got) != 0 {
+		t.Fatalf("the scheduler reported to itself: %+v", got)
 	}
 }

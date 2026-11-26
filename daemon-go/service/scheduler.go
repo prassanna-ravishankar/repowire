@@ -16,6 +16,7 @@ package service
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"time"
 
@@ -47,6 +48,7 @@ type Scheduler struct {
 	store    schedulerStore
 	delivery schedulerDelivery
 	clock    wallClock
+	events   func(ctx context.Context, typ string, payload map[string]any) string
 
 	wake   chan struct{}
 	stop   chan struct{}
@@ -161,24 +163,37 @@ func (s *Scheduler) run(ctx context.Context) {
 // not kill the loop, and the schedule is still advanced/dropped in the finally
 // equivalent below. Mirrors Scheduler._fire.
 func (s *Scheduler) fire(ctx context.Context, sched *state.Schedule) {
+	var err error
 	if sched.Kind == "ask" {
-		if _, err := s.delivery.OpenScheduledAsk(ctx, sched.FromPeer, sched.ToPeer, sched.Text, sched.Circle, "push"); err != nil {
-			log.Printf("scheduler: scheduled ask %s failed to deliver: %v", sched.ScheduleID, err)
-		}
+		_, err = s.delivery.OpenScheduledAsk(ctx, sched.FromPeer, sched.ToPeer, sched.Text, sched.Circle, "push")
 	} else {
-		if _, err := s.delivery.Notify(ctx, NotifyParams{
+		// A notify to an offline peer is queued, not failed: only a send that
+		// cannot happen at all (an unknown or unaddressable target, a circle
+		// refusal) returns an error.
+		_, err = s.delivery.Notify(ctx, NotifyParams{
 			FromPeer: sched.FromPeer,
 			ToPeer:   sched.ToPeer,
 			Text:     sched.Text,
 			Circle:   sched.Circle,
-		}); err != nil {
-			log.Printf("scheduler: scheduled notify %s failed to deliver: %v", sched.ScheduleID, err)
-		}
+		})
 	}
-	log.Printf("scheduler: fired schedule %s: %s -> %s (%s)", sched.ScheduleID, sched.FromPeer, sched.ToPeer, sched.Kind)
+	if err != nil {
+		log.Printf("scheduler: scheduled %s %s failed to deliver: %v", sched.Kind, sched.ScheduleID, err)
+	} else {
+		log.Printf("scheduler: fired schedule %s: %s -> %s (%s)", sched.ScheduleID, sched.FromPeer, sched.ToPeer, sched.Kind)
+	}
 
 	// Advance (cron) or drop (one-shot). Always runs regardless of delivery
 	// outcome, mirroring the Python finally block.
+	next := s.advance(ctx, sched)
+	if err != nil {
+		s.reportFailure(ctx, sched, err, next)
+	}
+}
+
+// advance moves a cron schedule to its next slot, or drops a one-shot, and
+// returns the next fire time (zero when none).
+func (s *Scheduler) advance(ctx context.Context, sched *state.Schedule) time.Time {
 	if sched.Cron != nil {
 		// Advance from the slot just fired, never from an earlier now: a timer
 		// can wake a moment before fire_at, and NextFireAfter(now) would then
@@ -191,17 +206,63 @@ func (s *Scheduler) fire(ctx context.Context, sched *state.Schedule) {
 		if err != nil {
 			log.Printf("scheduler: recurring schedule %s has invalid cron after fire (%v); dropping", sched.ScheduleID, err)
 			_, _ = s.store.DeleteSchedule(ctx, sched.ScheduleID)
-			return
+			return time.Time{}
 		}
 		if _, err := s.store.RescheduleNext(ctx, sched.ScheduleID, next); err != nil {
 			log.Printf("scheduler: reschedule %s failed (%v); dropping", sched.ScheduleID, err)
 			_, _ = s.store.DeleteSchedule(ctx, sched.ScheduleID)
+			return time.Time{}
 		}
-		return
+		return next
 	}
 	if _, err := s.store.DeleteSchedule(ctx, sched.ScheduleID); err != nil {
 		log.Printf("scheduler: delete one-shot %s failed: %v", sched.ScheduleID, err)
 	}
+	return time.Time{}
+}
+
+// schedulerSender is who tells a schedule's owner that a send failed.
+const schedulerSender = "repowire:scheduler"
+
+// reportFailure makes a failed scheduled send visible to whoever scheduled
+// it (#641), instead of a log line nobody reads: a schedule_failed event in
+// the journal, and a notify to the sender, which is queued if the sender is
+// offline and lands in the inbox when it is the human. Nothing is held for
+// the target: a live ask to an offline peer fails too, and holding a
+// recurring ask would deliver a pile of stale ones when the peer returns.
+// A recurring schedule tries again at its next slot.
+func (s *Scheduler) reportFailure(ctx context.Context, sched *state.Schedule, cause error, next time.Time) {
+	retry := "it was a one-shot, so it has been removed"
+	if !next.IsZero() {
+		retry = "it tries again at its next slot, " + next.UTC().Format(time.RFC3339)
+	} else if sched.Cron != nil {
+		retry = "its cron could not be advanced, so it has been removed"
+	}
+	if s.events != nil {
+		payload := map[string]any{
+			"schedule_id": sched.ScheduleID, "kind": sched.Kind, "from": sched.FromPeer, "to": sched.ToPeer,
+			"error": cause.Error(), "recurring": sched.Cron != nil,
+		}
+		if !next.IsZero() {
+			payload["next_fire_at"] = next.UTC().Format(time.RFC3339)
+		}
+		s.events(ctx, "schedule_failed", payload)
+	}
+	if sched.FromPeer == "" || sched.FromPeer == schedulerSender {
+		return
+	}
+	text := fmt.Sprintf("Your scheduled %s %s to %s did not go out: %v. Nothing was delivered, and %s.",
+		sched.Kind, sched.ScheduleID, sched.ToPeer, cause, retry)
+	if _, err := s.delivery.Notify(ctx, NotifyParams{FromPeer: schedulerSender, ToPeer: sched.FromPeer, Text: text, BypassCircle: true}); err != nil {
+		log.Printf("scheduler: could not tell %s that schedule %s failed: %v", sched.FromPeer, sched.ScheduleID, err)
+	}
+}
+
+// WithEvents plugs the journal in, so a failed scheduled send is recorded
+// as a schedule_failed event (the registry's AddEvent).
+func (s *Scheduler) WithEvents(add func(ctx context.Context, typ string, payload map[string]any) string) *Scheduler {
+	s.events = add
+	return s
 }
 
 // waitForWake blocks until a wake signal, Stop, or ctx cancellation. Returns

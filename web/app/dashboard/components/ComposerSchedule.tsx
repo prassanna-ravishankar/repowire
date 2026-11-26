@@ -123,7 +123,7 @@ export function ScheduleControls({
       )}
       {choice.when !== "now" && mode === "ask" && (
         <span data-testid="scheduled-ask-note">
-          a scheduled ask is not queued: if {peer.display_name || peer.name} is offline when it fires, it fails
+          a scheduled ask is not queued: if {peer.display_name || peer.name} is offline when it fires, it fails and your inbox says so
         </span>
       )}
     </div>
