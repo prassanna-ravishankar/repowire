@@ -86,7 +86,6 @@ func TestClaudePluginMatchesTheBinary(t *testing.T) {
 	if err != nil || len(skills) == 0 {
 		t.Fatalf("no skills found: %v", err)
 	}
-	call := regexp.MustCompile("`[^`]*?\\b([a-z][a-z_]+)\\(")
 	for _, path := range skills {
 		raw, err := os.ReadFile(path)
 		if err != nil {
@@ -102,9 +101,9 @@ func TestClaudePluginMatchesTheBinary(t *testing.T) {
 			t.Errorf("skills/%s/SKILL.md has no description", dir)
 		}
 		for _, code := range codeSpans(text) {
-			for _, m := range call.FindAllStringSubmatch("`"+code+"`", -1) {
-				if !tools[m[1]] {
-					t.Errorf("skills/%s/SKILL.md shows %s(...), which the MCP server does not serve", dir, m[1])
+			for _, name := range toolCalls(code) {
+				if !tools[name] {
+					t.Errorf("skills/%s/SKILL.md shows %s(...), which the MCP server does not serve", dir, name)
 				}
 			}
 		}
@@ -136,35 +135,57 @@ func mcpToolNames(t *testing.T) map[string]bool {
 	return out
 }
 
-// frontmatter reads a SKILL.md's name and description.
+// frontmatter reads a SKILL.md's name and description. A YAML block
+// scalar (description: > or |) is read from its indented lines, so an empty
+// one is empty, not ">".
 func frontmatter(text string) (name, description string) {
 	body, ok := strings.CutPrefix(text, "---\n")
 	if !ok {
 		return "", ""
 	}
 	head, _, _ := strings.Cut(body, "\n---")
-	for _, line := range strings.Split(head, "\n") {
+	lines := strings.Split(head, "\n")
+	for i, line := range lines {
 		key, value, _ := strings.Cut(line, ":")
+		value = strings.TrimSpace(value)
 		switch strings.TrimSpace(key) {
 		case "name":
-			name = strings.TrimSpace(value)
+			name = value
 		case "description":
-			description = strings.TrimSpace(value)
+			if strings.HasPrefix(value, ">") || strings.HasPrefix(value, "|") {
+				var folded []string
+				for _, next := range lines[i+1:] {
+					if next != "" && next[0] != ' ' && next[0] != '\t' {
+						break
+					}
+					folded = append(folded, strings.TrimSpace(next))
+				}
+				value = strings.TrimSpace(strings.Join(folded, " "))
+			}
+			description = value
 		}
 	}
 	return name, description
 }
 
-// codeSpans are a markdown text's inline code spans and fenced blocks.
+// codeSpans are a markdown text's inline code spans and the fenced blocks
+// that may show tool calls: untagged ones, or tagged text. A fence tagged
+// with a programming language (```python, ```bash) holds that language's
+// own calls (json.loads(, len(), so it is skipped.
 func codeSpans(text string) []string {
 	var out []string
-	inFence := false
+	inFence, keep := false, false
 	var fence []string
 	for _, line := range strings.Split(text, "\n") {
-		if strings.HasPrefix(strings.TrimSpace(line), "```") {
+		if trimmed := strings.TrimSpace(line); strings.HasPrefix(trimmed, "```") {
 			if inFence {
-				out = append(out, strings.Join(fence, "\n"))
+				if keep {
+					out = append(out, strings.Join(fence, "\n"))
+				}
 				fence = nil
+			} else {
+				lang := strings.TrimSpace(strings.TrimPrefix(trimmed, "```"))
+				keep = lang == "" || lang == "text"
 			}
 			inFence = !inFence
 			continue
@@ -179,4 +200,58 @@ func codeSpans(text string) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+var callPattern = regexp.MustCompile(`\b(?:mcp__repowire__)?([a-z][a-z_]*)\(`)
+
+// toolCalls are the Repowire tool calls a code span shows: every lower_snake
+// identifier followed by "(", bare (ask(...)) or with its MCP prefix
+// (mcp__repowire__ask(...)). A method (json.loads() and another server's
+// tool (mcp__other__x() are not ours.
+func toolCalls(code string) []string {
+	var out []string
+	for _, m := range callPattern.FindAllStringSubmatchIndex(code, -1) {
+		if m[0] > 0 && code[m[0]-1] == '.' {
+			continue
+		}
+		name := code[m[2]:m[3]]
+		if strings.HasPrefix(name, "mcp__") {
+			continue
+		}
+		out = append(out, name)
+	}
+	return out
+}
+
+// The drift check reads every call in a span, skips what is not a Repowire
+// tool call, and reads a block-scalar description.
+func TestPluginDriftParsing(t *testing.T) {
+	for code, want := range map[string][]string{
+		"ask(peer_name=\"x\"); wait_on_akc(cid)":      {"ask", "wait_on_akc"},
+		"mcp__repowire__notify_peer(peer_name=\"x\")": {"notify_peer"},
+		"json.loads(raw)":                             nil,
+		"mcp__other__fetch(url)":                      nil,
+	} {
+		if got := toolCalls(code); strings.Join(got, ",") != strings.Join(want, ",") {
+			t.Errorf("toolCalls(%q) = %v, want %v", code, got, want)
+		}
+	}
+	md := "See `list_peers()` then:\n\n```\nask(x)\nack(y)\n```\n\n```python\nprint(len(x))\n```\n\n```bash\nfoo() { :; }\n```\n"
+	var calls []string
+	for _, span := range codeSpans(md) {
+		calls = append(calls, toolCalls(span)...)
+	}
+	sort.Strings(calls)
+	if strings.Join(calls, ",") != "ack,ask,list_peers" {
+		t.Errorf("calls = %v, want ack, ask and list_peers only", calls)
+	}
+	for text, want := range map[string]string{
+		"---\nname: a\ndescription: >\n  folded over\n  two lines\n---\n": "folded over two lines",
+		"---\nname: a\ndescription: |\n---\n":                             "",
+		"---\nname: a\ndescription: plain\n---\n":                         "plain",
+	} {
+		if _, got := frontmatter(text); got != want {
+			t.Errorf("frontmatter description of %q = %q, want %q", text, got, want)
+		}
+	}
 }
