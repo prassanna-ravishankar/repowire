@@ -82,19 +82,22 @@ const (
 )
 
 type threadPeer struct {
-	bridge        *Bridge
-	id            string
-	cwd           string
-	circle        string
-	circleSrc     string
-	role          string
-	hintedID      string
-	hintedPane    string
-	birthCert     map[string]any
-	renewing      bool
-	peerID        string
-	displayName   string
-	model         string
+	bridge      *Bridge
+	id          string
+	cwd         string
+	circle      string
+	circleSrc   string
+	role        string
+	hintedID    string
+	hintedPane  string
+	birthCert   map[string]any
+	renewing    bool
+	peerID      string
+	displayName string
+	model       string
+	// nativeName is the thread's own name in Codex (Thread.name); the daemon
+	// makes it the peer's address.
+	nativeName    string
 	branch        string
 	gitStatus     map[string]any
 	tmux          map[string]any
@@ -403,6 +406,38 @@ func (b *Bridge) handleNotification(method string, params map[string]any) {
 		b.postChatItem(params)
 	case "thread/closed", "thread/deleted":
 		b.closeThread(stringValue(params, "threadId"))
+	case "thread/name/updated":
+		if p := b.thread(stringValue(params, "threadId")); p != nil {
+			go p.rename(stringValue(params, "threadName"))
+		}
+	}
+}
+
+// rename forwards a Codex thread rename to the daemon, which makes it the
+// peer's address. Before registration the name rides the register body.
+func (p *threadPeer) rename(name string) {
+	p.mu.Lock()
+	if name == "" || name == p.nativeName {
+		p.mu.Unlock()
+		return
+	}
+	p.nativeName = name
+	peerID := p.peerID
+	p.mu.Unlock()
+	if peerID == "" {
+		return
+	}
+	ctx, cancel := context.WithTimeout(p.bridge.ctx, 5*time.Second)
+	defer cancel()
+	result, err := p.bridge.daemonRequest(ctx, http.MethodPost, "/session/update", map[string]any{"peer_name": peerID, "native_name": name})
+	if err != nil {
+		log.Printf("codex bridge: rename %s: %v", p.id, err)
+		return
+	}
+	if displayName := stringValue(result, "display_name"); displayName != "" {
+		p.mu.Lock()
+		p.displayName = displayName
+		p.mu.Unlock()
 	}
 }
 
@@ -536,7 +571,7 @@ func (b *Bridge) addThread(thread map[string]any, fresh bool) {
 	gitInfo, _ := thread["gitInfo"].(map[string]any)
 	p := &threadPeer{
 		bridge: b, id: id, cwd: cwd, circle: circle, circleSrc: source, role: role, hintedID: hintedID, hintedPane: hintedPane, birthCert: cert, cancel: cancel,
-		model: stringValue(thread, "model"), branch: stringValue(gitInfo, "branch"), gitStatus: repositoryStatus(cwd),
+		model: stringValue(thread, "model"), nativeName: stringValue(thread, "name"), branch: stringValue(gitInfo, "branch"), gitStatus: repositoryStatus(cwd),
 		toolCalls: map[string][]map[string]string{}, seenItems: map[string]map[string]bool{},
 	}
 	p.tmux = tmux.evidence()
@@ -843,7 +878,7 @@ func (p *threadPeer) registerLocked(ctx context.Context) error {
 		}
 	}
 	p.mu.Lock()
-	pane, tmux := p.hintedPane, p.tmux
+	pane, tmux, nativeName := p.hintedPane, p.tmux, p.nativeName
 	provenance, nickname, threadSource, version := p.provenance, p.nickname, p.threadSource, p.provVersion
 	p.mu.Unlock()
 	metadata := map[string]any{
@@ -867,6 +902,9 @@ func (p *threadPeer) registerLocked(ctx context.Context) error {
 	}
 	if pane != "" {
 		body["pane_id"] = pane
+	}
+	if nativeName != "" {
+		body["native_name"] = nativeName
 	}
 	if p.model != "" {
 		body["model"] = p.model
