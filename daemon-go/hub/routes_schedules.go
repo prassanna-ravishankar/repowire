@@ -29,7 +29,7 @@ import (
 // scheduleStore is the data layer the routes touch. *state.Store satisfies it.
 type scheduleStore interface {
 	CreateSchedule(ctx context.Context, from, to state.ScheduleEnd, text string, fireAt time.Time, kind string, circle, cron *string) (*state.Schedule, error)
-	ListSchedules(ctx context.Context, fromPeer *string) ([]*state.Schedule, error)
+	ListSchedules(ctx context.Context, from ...string) ([]*state.Schedule, error)
 	DeleteSchedule(ctx context.Context, scheduleID string) (*state.Schedule, error)
 }
 
@@ -157,15 +157,19 @@ func (h *Hub) listSchedules(ctx context.Context, fromPeer *string) (scheduleList
 	if h == nil || h.scheduleStore == nil {
 		return scheduleListResponse{}, routeErr(http.StatusServiceUnavailable, "schedules not configured")
 	}
-	// A sender is matched by its peer_id, so its schedules stay its own after
-	// a rename; a sender the registry cannot resolve is matched by name.
-	if fromPeer != nil && h.reg != nil {
-		if p, err := h.reg.ResolvePeer(*fromPeer, nil); err == nil && p != nil {
-			id := string(p.PeerID)
-			fromPeer = &id
+	// A sender is matched by the name it asked with, and, when the registry
+	// knows it, by its peer_id and current name: its schedules stay its own
+	// after a rename, including rows stored by name only.
+	var from []string
+	if fromPeer != nil {
+		from = append(from, *fromPeer)
+		if h.reg != nil {
+			if p, err := h.reg.ResolvePeer(*fromPeer, nil); err == nil && p != nil {
+				from = append(from, string(p.PeerID), string(p.DisplayName))
+			}
 		}
 	}
-	scheds, err := h.scheduleStore.ListSchedules(ctx, fromPeer)
+	scheds, err := h.scheduleStore.ListSchedules(ctx, from...)
 	if err != nil {
 		return scheduleListResponse{}, routeErr(http.StatusInternalServerError, err.Error())
 	}

@@ -8,6 +8,7 @@ import (
 	"github.com/repowire/repowire/daemon-go/proto"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -57,12 +58,12 @@ func (f *fakeScheduleStore) CreateSchedule(_ context.Context, from, to state.Sch
 	return s, nil
 }
 
-func (f *fakeScheduleStore) ListSchedules(_ context.Context, fromPeer *string) ([]*state.Schedule, error) {
+func (f *fakeScheduleStore) ListSchedules(_ context.Context, from ...string) ([]*state.Schedule, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	var out []*state.Schedule
 	for _, s := range f.byID {
-		if fromPeer != nil && s.FromPeer != *fromPeer && s.FromPeerID != *fromPeer {
+		if len(from) > 0 && !slices.Contains(from, s.FromPeer) && !slices.Contains(from, s.FromPeerID) {
 			continue
 		}
 		out = append(out, s)
@@ -382,6 +383,12 @@ func TestScheduleAddressesItsTargetByPeerIDThroughARename(t *testing.T) {
 	}
 	if mapped := create("gone-claude-code"); mapped.ToPeerID != "repow-dev-gone0001" {
 		t.Fatalf("mapped target resolved to %q", mapped.ToPeerID)
+	}
+	// A row stored by name only (the migration could not resolve it) is still
+	// the caller's own.
+	_, _ = schedules.CreateSchedule(ctx, state.ScheduleEnd{Name: string(alpha)}, state.ScheduleEnd{Name: "gone-claude-code"}, "legacy", time.Now(), "notify", nil, nil)
+	if mine, err := h.listSchedules(ctx, strptr(string(alpha))); err != nil || len(mine.Schedules) != 3 {
+		t.Fatalf("listed %d for %s (%v), want its 2 resolved rows and the name-only one", len(mine.Schedules), alpha, err)
 	}
 
 	if name, _ := reg.ApplyNativeName(ctx, fooID, "Bar"); name != "bar" {

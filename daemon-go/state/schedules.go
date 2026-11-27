@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -161,19 +162,21 @@ func (s *Store) GetSchedule(ctx context.Context, scheduleID string) (*Schedule, 
 	return sched, nil
 }
 
-// ListSchedules returns all schedules ordered by fire_at, optionally filtered to
-// one sender, matched by its peer_id or the name it scheduled under. Pass
-// fromPeer == nil for all.
-func (s *Store) ListSchedules(ctx context.Context, fromPeer *string) ([]*Schedule, error) {
-	var (
-		rows *sql.Rows
-		err  error
-	)
-	if fromPeer == nil {
-		rows, err = s.db.QueryContext(ctx, `SELECT `+scheduleColumns+` FROM schedules ORDER BY fire_at`)
-	} else {
-		rows, err = s.db.QueryContext(ctx, `SELECT `+scheduleColumns+` FROM schedules WHERE from_peer = ? OR from_peer_id = ? ORDER BY fire_at`, *fromPeer, *fromPeer)
+// ListSchedules returns schedules ordered by fire_at: all of them, or those
+// sent by a peer named by any of from (its peer_id, current name, or the name a
+// schedule stored without an id was made under), matched against both ends.
+func (s *Store) ListSchedules(ctx context.Context, from ...string) ([]*Schedule, error) {
+	q, args := `SELECT `+scheduleColumns+` FROM schedules`, []any{}
+	if len(from) > 0 {
+		marks := strings.TrimSuffix(strings.Repeat("?,", len(from)), ",")
+		q += ` WHERE from_peer IN (` + marks + `) OR from_peer_id IN (` + marks + `)`
+		for range 2 {
+			for _, f := range from {
+				args = append(args, f)
+			}
+		}
 	}
+	rows, err := s.db.QueryContext(ctx, q+` ORDER BY fire_at`, args...)
 	if err != nil {
 		return nil, fmt.Errorf("list schedules: %w", err)
 	}

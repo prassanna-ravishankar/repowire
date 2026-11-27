@@ -137,7 +137,7 @@ func TestListSchedulesOrderingAndFilter(t *testing.T) {
 		t.Fatalf("create mid: %v", err)
 	}
 
-	all, err := s.ListSchedules(ctx, nil)
+	all, err := s.ListSchedules(ctx)
 	if err != nil {
 		t.Fatalf("ListSchedules all: %v", err)
 	}
@@ -150,7 +150,7 @@ func TestListSchedulesOrderingAndFilter(t *testing.T) {
 	}
 
 	from := "alice"
-	mine, err := s.ListSchedules(ctx, &from)
+	mine, err := s.ListSchedules(ctx, from)
 	if err != nil {
 		t.Fatalf("ListSchedules filtered: %v", err)
 	}
@@ -276,5 +276,34 @@ func TestDeleteSchedule(t *testing.T) {
 	}
 	if missing != nil {
 		t.Errorf("expected nil for missing delete, got %+v", missing)
+	}
+}
+
+// A sender's schedules are found whether a row addresses it by peer_id or only
+// by the name it was made under (a row the migration could not resolve).
+func TestListSchedulesMatchesASenderByNameOrPeerID(t *testing.T) {
+	ctx := context.Background()
+	s, err := NewStore(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	at := time.Now().UTC()
+	for _, from := range []ScheduleEnd{
+		{Name: "orchestrator-claude-code"},                         // name only, id unresolved
+		{Name: "orchestrator-claude-code", PeerID: "repow-1-orch"}, // made before a rename
+		{Name: "orch-renamed", PeerID: "repow-1-orch"},             // made after it
+		{Name: "someone-else", PeerID: "repow-1-other"},
+	} {
+		if _, err := s.CreateSchedule(ctx, from, ScheduleEnd{Name: "bob"}, "t", at, "notify", nil, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	mine, err := s.ListSchedules(ctx, "orch-renamed", "repow-1-orch", "orchestrator-claude-code")
+	if err != nil || len(mine) != 3 {
+		t.Fatalf("listed %d (%v), want the 3 sent by repow-1-orch under either name", len(mine), err)
+	}
+	if byID, _ := s.ListSchedules(ctx, "repow-1-orch"); len(byID) != 2 {
+		t.Fatalf("by peer_id alone: %d, want 2", len(byID))
 	}
 }
