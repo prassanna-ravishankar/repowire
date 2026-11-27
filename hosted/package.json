@@ -1,0 +1,31 @@
+{
+  "name": "@repowire/hosted",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "check": "tsc --noEmit",
+    "test": "tsx --import ./test/support/register.mjs --test test/*.test.ts"
+  },
+  "dependencies": {
+    "@cloudflare/sandbox": "1.0.3",
+    "@earendil-works/chord": "1.6.1",
+    "@earendil-works/pi-ai": "1.6.1",
+    "@earendil-works/pi-durable": "1.6.1",
+    "@earendil-works/pi-schema": "1.6.1",
+    "agents": "0.34.1"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "tsx": "^4.20.6",
+    "typescript": "^5.9.3",
+    "wrangler": "4.152.0"
+  },
+  "engines": {
+    "node": ">=24.11.0"
+  },
+  "overrides": {
+    "undici": "^7.30.1"
+  }
+}

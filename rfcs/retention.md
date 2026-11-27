@@ -82,6 +82,29 @@ Each piece lives with what it expires, so its lifecycle has one owner.
   this without a rule of their own, so config needs no floor; a shorter
   setting warns in `config check` and acts as the ask lifetime.
 
+## Hosted
+
+The hosted runtime follows the same policy (`hosted/src/retention.ts`).
+
+- **Defaults:** one copy in `daemon-go/proto/retention.json`. The daemon's config embeds it, and the Worker imports it.
+- **Policy:** the owner's, held by the Gateway under `retention:policy`, with the defaults until one is set. The data belongs to the namespace, so once accounts exist the policy is the account's, set at the relay and sent to the Gateway from there (`managed-accounts.md`). A Gateway from before managed agents were reached only through the relay kept one policy per connected daemon; the first policy read folds them into the owner's, the most conservative in each class (the longest age, with 0 winning, and the longest ask lifetime), so no deployed data goes sooner than it was kept under.
+- **Rules:** each Gateway table declares its retention as a static field beside its queries. A test fails for a table without exactly one declaration.
+  - `runs`: the answer is content; the settled row is a record.
+  - `requests`: the text is content and the row is a record, both timed from when the request ended: its run settled, or it was settled as not delivered. A request with no settled run is kept, since its reader still reconciles it. The text is stripped only when a stored digest still matches a retry against its receipt.
+  - `remote_*`: the fixed window.
+  - `agents`, `workspaces`: exempt, as identity and live state.
+  - `usage_event`, `usage_day`: exempt, as the billing ledger.
+- **Sweep:** owned by the Gateway Durable Object. It runs at most hourly, when a report or a cross-machine request finds one due, in batches of 500 rows with a per-sweep budget. It never runs on a timer.
+- **Each agent's own records** (`HostedAgent`). The per-operation dedupe markers `reported:<op>` and `undelivered:<op>` record when they were set. The agent sweeps them at most hourly, on its own submits, using the owner's policy from the Gateway.
+  - They expire with records, never sooner than the cross-machine window or the ask lifetime, since a resend or read-back of the id can come until then.
+  - With records kept forever, they are kept forever too.
+  - `report:<op>` and `steps:<op>` are live until the report lands, and are removed then.
+- **Retired agents and unused workspaces go whole** (#587). When the Gateway sweeps, it asks a few retired agents, and workspaces no live agent uses, to delete themselves. Each must be past the content age (no later than records), with the same floors as the markers.
+  - An agent goes only with no open run, no open cross-machine record and nothing unreported. It stops its lifecycle and pi in memory, then deletes its whole Durable Object storage: conversation, operation records and markers. It keeps one fence, a configuration marked retired and purged, so the id never runs again: reads of it answer fenced or expired, and creating the id again is refused (410).
+  - A workspace goes only while no container runs and no command ran since the cutoff, and deletes its saved copy of `/workspace` in R2 with it. The Gateway claims it first, and no agent can take it up until the deletion ends. (Before directory backups, workspaces were container snapshots, which the Worker could not delete; those expire on the platform within 30 days.)
+  - The Gateway rows stay, marked `purged_at`, as identity. A workspace taken up again starts empty, and `/managed` shows a deleted conversation as deleted.
+- **Not covered: a live agent's old transcript.** pi-durable keeps every entry by design (compaction and reset only hide old entries from the model), and it has no API to delete them. Deleting its rows underneath it would break its invariants, so live-agent trimming waits for an upstream API (drafted, held for Prass).
+
 ## Readers
 
 - Routing's ask history reads peer ids, not text: stripping leaves it

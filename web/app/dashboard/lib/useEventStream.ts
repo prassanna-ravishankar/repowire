@@ -25,11 +25,12 @@ interface UseEventStreamOptions {
   getLastSeenId: () => string | null;
 }
 
-const INITIAL_BACKOFF_MS = 1000;
+export const INITIAL_BACKOFF_MS = 1000;
 const MAX_BACKOFF_MS = 30_000;
 const JITTER_RATIO = 0.2;
 
-function nextBackoff(prev: number): number {
+/** Exponential backoff, 1s doubling to 30s with 20% jitter. Shared by every SSE surface. */
+export function nextBackoff(prev: number): number {
   const grown = Math.min(prev * 2, MAX_BACKOFF_MS);
   const jitter = grown * JITTER_RATIO * (Math.random() * 2 - 1);
   return Math.max(500, grown + jitter);

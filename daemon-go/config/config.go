@@ -211,7 +211,7 @@ func Defaults() Config {
 			Host: defaultHost, Port: defaultPort, HeartbeatInterval: 30,
 			CircleBoundary:     proto.CircleBoundarySession,
 			MessageDelivery:    "push",
-			PruneMaxAgeHours:   24,
+			PruneMaxAgeHours:   proto.RetentionDefaults.AskLifeHours,
 			PeerReapTTLSeconds: 600, StaleBusyTimeoutSeconds: 1800,
 			DeliveryQueueTTLSeconds: 86400, DeliveryQueueMaxPerPeer: 100,
 			OrchestratorRecall: OrchestratorRecallConfig{Enabled: true, MaxHits: 3, MaxChars: 900, MaxFileChars: 12000},
@@ -224,7 +224,7 @@ func Defaults() Config {
 			},
 		},
 		Relay:     RelayConfig{URL: defaultRelayURL},
-		Retention: RetentionConfig{ContentDays: 7, RecordsDays: 180, Copies: 3},
+		Retention: RetentionConfig{ContentDays: proto.RetentionDefaults.ContentDays, RecordsDays: proto.RetentionDefaults.RecordsDays, Copies: 3},
 		Wire:      WireConfig{Stuck: WireStuckConfig{IgnoredTurns: 3, SlowMinutes: 30, AskerGoneMinutes: 60, UndeliveredMinutes: 10}},
 		Human:     HumanConfig{Name: "human"},
 		Experiments: ExperimentsConfig{RemoteToolApproval: RemoteToolApprovalConfig{
