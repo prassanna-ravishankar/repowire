@@ -94,11 +94,25 @@ func (h *Hub) createShareDirect(ctx context.Context, req shareRequest) (map[stri
 	if req.Permissions == "" {
 		req.Permissions = "ro"
 	}
-	body, _ := json.Marshal(map[string]any{
+	payload := map[string]any{
 		"peer_name":   req.PeerName,
 		"permissions": req.Permissions,
 		"ttl_secs":    req.TTLSecs,
-	})
+	}
+	// The relay scopes a share by the peer's identity when it gets one (#652):
+	// a name follows the runtime's session name and can change, or pass to
+	// another peer, while the link is live. A name the registry does not know
+	// goes as given, as before; an ambiguous one is refused rather than guessed.
+	if h.reg != nil && req.PeerName != "" {
+		p, err := h.reg.ResolvePeer(req.PeerName, nil)
+		if err != nil {
+			return nil, routeErr(http.StatusConflict, err.Error())
+		}
+		if p != nil {
+			payload["peer_id"], payload["peer_name"] = string(p.PeerID), string(p.DisplayName)
+		}
+	}
+	body, _ := json.Marshal(payload)
 	upstream, err := http.NewRequestWithContext(ctx, http.MethodPost, base+"/api/v1/share", bytes.NewReader(body))
 	if err != nil {
 		return nil, routeErr(http.StatusBadGateway, "relay request build failed: "+err.Error())
