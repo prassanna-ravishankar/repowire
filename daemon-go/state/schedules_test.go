@@ -280,7 +280,8 @@ func TestDeleteSchedule(t *testing.T) {
 }
 
 // A sender's schedules are found whether a row addresses it by peer_id or only
-// by the name it was made under (a row the migration could not resolve).
+// by the name it was made under (a row the migration could not resolve). A row
+// that records a sender's id is that sender's alone, whoever holds the name.
 func TestListSchedulesMatchesASenderByNameOrPeerID(t *testing.T) {
 	ctx := context.Background()
 	s, err := NewStore(filepath.Join(t.TempDir(), "state.db"))
@@ -294,6 +295,7 @@ func TestListSchedulesMatchesASenderByNameOrPeerID(t *testing.T) {
 		{Name: "orchestrator-claude-code", PeerID: "repow-1-orch"}, // made before a rename
 		{Name: "orch-renamed", PeerID: "repow-1-orch"},             // made after it
 		{Name: "someone-else", PeerID: "repow-1-other"},
+		{Name: "orchestrator-claude-code", PeerID: "repow-1-next"}, // a later peer under the old name (#654)
 	} {
 		if _, err := s.CreateSchedule(ctx, from, ScheduleEnd{Name: "bob"}, "t", at, "notify", nil, nil); err != nil {
 			t.Fatal(err)
@@ -305,5 +307,10 @@ func TestListSchedulesMatchesASenderByNameOrPeerID(t *testing.T) {
 	}
 	if byID, _ := s.ListSchedules(ctx, "repow-1-orch"); len(byID) != 2 {
 		t.Fatalf("by peer_id alone: %d, want 2", len(byID))
+	}
+	// The later holder of the old name sees its own row and the id-less one
+	// made under that name, never the rows that record another sender's id.
+	if theirs, _ := s.ListSchedules(ctx, "orchestrator-claude-code", "repow-1-next"); len(theirs) != 2 {
+		t.Fatalf("the name's later holder listed %d, want 2", len(theirs))
 	}
 }

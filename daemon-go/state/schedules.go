@@ -164,12 +164,15 @@ func (s *Store) GetSchedule(ctx context.Context, scheduleID string) (*Schedule, 
 
 // ListSchedules returns schedules ordered by fire_at: all of them, or those
 // sent by a peer named by any of from (its peer_id, current name, or the name a
-// schedule stored without an id was made under), matched against both ends.
+// schedule stored without an id was made under). A row that records its
+// sender's peer_id matches by that id only, so a peer that later takes a
+// sender's old name never lists that sender's schedules (#654); a row without
+// one matches by the name it was made with.
 func (s *Store) ListSchedules(ctx context.Context, from ...string) ([]*Schedule, error) {
 	q, args := `SELECT `+scheduleColumns+` FROM schedules`, []any{}
 	if len(from) > 0 {
 		marks := strings.TrimSuffix(strings.Repeat("?,", len(from)), ",")
-		q += ` WHERE from_peer IN (` + marks + `) OR from_peer_id IN (` + marks + `)`
+		q += ` WHERE from_peer_id IN (` + marks + `) OR (from_peer_id IS NULL AND from_peer IN (` + marks + `))`
 		for range 2 {
 			for _, f := range from {
 				args = append(args, f)
