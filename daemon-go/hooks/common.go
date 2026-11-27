@@ -43,6 +43,9 @@ type Payload struct {
 	Model          string
 	Backend        string
 	PermissionMode string
+	// SessionTitle is the session's own name when one is set (Claude Code's
+	// session_title: -n, /rename or a hook). Absent for an unnamed session.
+	SessionTitle string
 }
 
 func Normalize(raw map[string]any, backend string) Payload {
@@ -63,6 +66,7 @@ func Normalize(raw map[string]any, backend string) Payload {
 		Event: event, SessionID: stringField("session_id"), CWD: stringField("cwd"),
 		TranscriptPath: stringField("transcript_path"), ResponseText: response,
 		Model: extractModel(raw["model"]), Backend: backend, PermissionMode: stringField("permission_mode"),
+		SessionTitle: strings.TrimSpace(stringField("session_title")),
 	}
 }
 
@@ -322,11 +326,16 @@ func daemonPost(path string, payload any) map[string]any {
 	return result
 }
 
-func updateStatus(identifier, status, turnState, model string, byPane bool) bool {
+// updateStatus reports status and turn state; native carries the runtime's
+// session name and title (nativeFields) on the same request.
+func updateStatus(identifier, status, turnState, model string, byPane bool, native map[string]any) bool {
 	if identifier == "" {
 		return false
 	}
 	payload := map[string]any{"name": identifier, "status": status}
+	for key, value := range native {
+		payload[key] = value
+	}
 	if byPane {
 		payload["pane_id"] = identifier
 		delete(payload, "name")
