@@ -40,9 +40,15 @@ export function fakePi() {
 // Gateway. The constructor wires Workers AI and Lifecycle, so it is skipped.
 export function hostedAgent(directory = new Gateway(fakeState() as never, {}), createdBy = 'web') {
   const state = fakeState();
-  const gateway = { failReports: 0, calls: 0, directory };
+  const gateway = { failReports: 0, failDirectory: 0, calls: 0, directory };
   const owner = new Proxy(directory, {
     get(target, name) {
+      if (name === 'retire' || name === 'addAgent') {
+        return async (...args: unknown[]) => {
+          if (gateway.failDirectory > 0) { gateway.failDirectory--; throw new Error('gateway unreachable'); }
+          return (target[name] as (...a: unknown[]) => unknown)(...args);
+        };
+      }
       if (name === 'report') {
         return async (...args: Parameters<Gateway['report']>) => {
           gateway.calls++;

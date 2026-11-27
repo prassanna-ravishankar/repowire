@@ -157,3 +157,29 @@ test('the report job withdraws a never-admitted operation it could not withdraw 
   assert.equal(directory.runs('a').length, 0);
   assert.equal(state.storage.kv.get('report:op-a'), undefined);
 });
+
+// The agent is the only writer of its directory row. A change it could not
+// push stays owed, and the next request that reaches the agent pushes it.
+test('a retire the directory did not hear is pushed again on the next call, once', async () => {
+  const { agent, gateway, directory } = hostedAgent();
+  gateway.failDirectory = 1;
+  await agent.retire();
+  assert.equal((await agent.config()).retired, true, 'the agent refuses new input at once');
+  assert.equal(directory.agent('a')?.retired_at, null, 'the push failed');
+  await agent.syncDirectory();
+  assert.ok(directory.agent('a')?.retired_at, 'and converges');
+  const at = directory.agent('a')?.retired_at;
+  await agent.syncDirectory();
+  assert.equal(directory.agent('a')?.retired_at, at);
+});
+
+test('a new agent writes its own directory row, and one it could not write is written later', async () => {
+  const { agent, gateway, directory, state } = hostedAgent();
+  state.storage.kv.delete('config');
+  gateway.failDirectory = 1;
+  const created = await agent.spawn({ owner: 'alice', id: 'b', workspace: null }, { display_name: 'Bee', circle: 'research' });
+  assert.equal(created.created, true);
+  assert.equal(directory.agent('b'), null);
+  await agent.syncDirectory();
+  assert.deepEqual([directory.agent('b')?.display_name, directory.agent('b')?.circle], ['Bee', 'research']);
+});

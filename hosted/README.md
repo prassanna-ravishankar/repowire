@@ -99,7 +99,10 @@ service through the relay, which names them; they never choose the owner.
 | `GET /admin/summary`, `/admin/owners`, `/admin/sandboxes`, `/admin/usage?days=30` | Control token without an owner: totals, agents by state, sandboxes, and daily usage across owners |
 
 The owner's `Gateway` Durable Object holds the directory, run log and usage
-ledger. Each run's model usage comes from Pi's per-response usage at list
+ledger. Each agent is the only writer of its own directory row: it keeps what
+it owes the directory (its listing on create, its retirement) until the
+directory has it, and the next request that reaches the agent pushes anything
+still owed. Each run's model usage comes from Pi's per-response usage at list
 price; each workspace command records the container wall time the workspace
 measured, so waiting behind another agent's command is not charged. Costs are
 estimates (`prices.ts` names the source and date). Guardrails refuse rather

@@ -41,6 +41,8 @@ export type OperationState =
 // An admitted operation whose report the gateway has not accepted yet, under
 // `report:<op>`. `usage` is allocated once, when it settles, and resent as is.
 interface Unreported { source: string | null; startedAt?: string; usage?: TokenUsage }
+// The directory row fields only creation sets.
+interface Listing { display_name?: string | null; circle?: string }
 
 const REPORT_JOB = 'report';
 // Markers one sweep looks at, so a sweep on a submit's path stays small.
@@ -153,13 +155,52 @@ export class HostedAgent extends DurableObject<Env> {
     };
   }
 
-  async spawn(config: AgentConfig) {
-    return this.ctx.blockConcurrencyWhile(async () => {
+  // The agent is the only writer of its row in the owner's directory: what it
+  // owes the directory is kept here (`directory:listing`, `directory:retired`)
+  // until the directory has it, and every call that reaches the agent through
+  // the Worker pushes what is still owed (syncDirectory).
+  async spawn(config: AgentConfig, listing: Listing = {}) {
+    const result = await this.ctx.blockConcurrencyWhile(async () => {
       const existing = await this.config();
       if (existing) return { created: false, agent: existing };
-      await this.ctx.storage.put('config', config);
+      this.ctx.storage.transactionSync(() => {
+        this.kv.put('config', config);
+        this.kv.put<Listing>('directory:listing', listing);
+      });
       return { created: true, agent: config };
     });
+    return { ...result, ...await this.syncDirectory().catch((error) => {
+      console.error('Hosted directory push failed; the next call retries it', config.id, error);
+      return {};
+    }) };
+  }
+
+  // A row for an agent from before the directory, or one whose listing was
+  // lost: owed again, then pushed.
+  async list() {
+    if (!this.kv.get('directory:listing')) this.kv.put<Listing>('directory:listing', {});
+    return this.syncDirectory();
+  }
+
+  // Pushes what this agent owes its directory row: the listing, then the
+  // retirement. Each marker goes only once the directory has it, so a failed
+  // push is pushed again by the next call. A listing the directory refuses
+  // (its workspace is being deleted) stays owed and is reported.
+  async syncDirectory(): Promise<{ conflict?: string }> {
+    const config = await this.config();
+    if (!config) return {};
+    const owner = this.owner(config);
+    const listing = this.kv.get<Listing>('directory:listing');
+    if (listing) {
+      const added = await owner.addAgent({ id: config.id, workspace: config.workspace, created_by: 'web', ...listing });
+      if (added && 'conflict' in added) return { conflict: String(added.conflict) };
+      this.kv.delete('directory:listing');
+    }
+    if (this.kv.get('directory:retired')) {
+      await owner.retire(config.id);
+      this.kv.delete('directory:retired');
+    }
+    return {};
   }
 
   // The Worker checks the budget first; retirement is checked here, in turn
@@ -330,9 +371,13 @@ export class HostedAgent extends DurableObject<Env> {
     return this.admission(async () => {
       const config = await this.config();
       if (!config) throw new Error('Agent does not exist');
-      await this.ctx.storage.put('config', { ...config, retired: true });
+      this.ctx.storage.transactionSync(() => {
+        this.kv.put('config', { ...config, retired: true });
+        this.kv.put('directory:retired', true);
+      });
       await this.harness.abort({});
-      return this.owner(config).retire(config.id);
+      await this.syncDirectory().catch((error) => console.error('Hosted directory push failed; the next call retries it', config.id, error));
+      return (await this.owner(config).agent(config.id)) ?? { id: config.id, retired: true };
     });
   }
 
@@ -495,12 +540,16 @@ async function createAgent(env: Env, caller: Caller, request: Request, input: Re
   const known = await directory.agent(id);
   // A retired id stays retired, purged or not: it never runs again.
   if (known?.retired_at) throw new HttpError(410, `Agent ${id} is retired; its id cannot be used again`);
-  const result = await env.AGENTS.getByName(scopedName(owner, id)).spawn({ owner, id, workspace });
-  if (result.agent.workspace !== workspace) throw new HttpError(409, 'Agent already exists with a different workspace');
   await directory.owner(owner);
   await env.REGISTRY.getByName('registry').touch(owner);
-  const agent = await directory.addAgent({ id, workspace, display_name: displayName, created_by: 'web', circle });
-  if (agent && 'conflict' in agent) throw new HttpError(409, String(agent.conflict));
+  const stub = env.AGENTS.getByName(scopedName(owner, id));
+  const result = await stub.spawn({ owner, id, workspace }, { display_name: displayName, circle });
+  if (result.agent.workspace !== workspace) throw new HttpError(409, 'Agent already exists with a different workspace');
+  // A create retried after a failed push pushes what is still owed.
+  const synced = result.created ? result : await stub.syncDirectory();
+  if (synced.conflict) throw new HttpError(409, synced.conflict);
+  const agent = await directory.agent(id);
+  if (!agent) throw new HttpError(503, `Agent ${id} was created but is not listed yet; retry to list it`);
   return json({ created: result.created, agent }, result.created ? 201 : 200);
 }
 
@@ -510,13 +559,11 @@ async function agentRoute(env: Env, caller: Caller, request: Request, id: string
   const config = await agent.config();
   if (!config) throw new HttpError(404, 'Agent not found');
   const directory = env.GATEWAYS.getByName(owner);
-  // Lazy repair: an agent created before the directory existed gets its row
-  // the first time it is addressed.
-  // A conflict (the workspace is being deleted) admits nothing.
-  if (!await directory.agent(id)) {
-    const repaired = await directory.addAgent({ id, workspace: config.workspace, created_by: 'web' });
-    if (repaired && 'conflict' in repaired) throw new HttpError(409, String(repaired.conflict));
-  }
+  // Whatever the agent still owes its directory row is pushed first, and an
+  // agent created before the directory existed gets its row the first time it
+  // is addressed. A conflict (the workspace is being deleted) admits nothing.
+  const synced = await directory.agent(id) ? await agent.syncDirectory() : await agent.list();
+  if (synced.conflict) throw new HttpError(409, synced.conflict);
   if (!rest) {
     if (request.method === 'GET') {
       const status = await agent.status();
