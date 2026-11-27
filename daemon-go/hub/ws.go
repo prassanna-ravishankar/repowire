@@ -265,6 +265,9 @@ func (h *Hub) HandleWS(w http.ResponseWriter, r *http.Request) {
 	}
 	sessionID = peerID
 	registered = true
+	if cf.NativeName != nil {
+		assignedName, _ = h.reg.ApplyNativeName(ctx, peerID, *cf.NativeName)
+	}
 
 	// The registry is the source of truth for pane ownership: it may have rejected
 	// the connect-frame pane (sticky orchestrator / unproven live-holder claim) and

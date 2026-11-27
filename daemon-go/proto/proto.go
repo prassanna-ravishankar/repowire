@@ -304,6 +304,8 @@ type ConnectFrame struct {
 	ModelDetails map[string]any `json:"model_details,omitempty"`
 	AgentPID     *int           `json:"agent_pid,omitempty"`
 	PeerID       *PeerID        `json:"peer_id,omitempty"` // claimed on reconnect
+	// NativeName is the runtime's own session name; it becomes the address.
+	NativeName *string `json:"native_name,omitempty"`
 	// Provenance is explicit source evidence from native clients (OpenCode and
 	// Pi send {source: "hook"}); absent keeps what the daemon knows.
 	Provenance *Provenance `json:"provenance,omitempty"`
