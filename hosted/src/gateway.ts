@@ -4,7 +4,7 @@ import { execCost, modelCost, type TokenUsage } from './prices';
 import { followUp, managedTool, type MeshEnv } from './mesh';
 import { MANAGED, remoteResult } from './protocol';
 import { DEFAULT_POLICY, mostConservative, SWEEP_INTERVAL_MS, sweep, type RetentionPolicy, type TableRetention } from './retention';
-import type { ExecOutcome, Workspace } from './workspace';
+import type { ExecOutcome, SaveResult, Workspace } from './workspace';
 import type { HostedAgent } from './index';
 import { scopedName } from './http';
 import { wholeAge } from './retention';
@@ -19,6 +19,9 @@ const LEGACY_BATCH = 500;
 const PURGE_CLAIM_MS = 5 * 60_000;
 const purgeClaimFloor = () => new Date(Date.now() - PURGE_CLAIM_MS).toISOString();
 const MESH_TOOLS = new Set(['notify_peer', 'ask']);
+// A reported save time, kept only when it is later than the one recorded, so
+// reports arriving out of order never move it back. Takes the time three times.
+const LATER_SAVE = 'CASE WHEN ? IS NOT NULL AND (snapshot_at IS NULL OR ? > snapshot_at) THEN ? ELSE snapshot_at END';
 
 export interface GatewayCall { id: string; agent: string; tool: string; args: Record<string, unknown> }
 
@@ -281,7 +284,7 @@ export class Gateway extends DurableObject {
     return this.sql.exec('SELECT * FROM workspaces ORDER BY id').toArray().map((row) => ({
       id: row.id as string, agents: users.get(row.id as string) ?? [], exec_count: Number(row.exec_count),
       container_ms: Number(row.container_ms), last_exec_at: row.last_exec_at, snapshot_at: row.snapshot_at,
-      // A failed checkpoint outranks activity: the files cannot be restored.
+      // A failed save outranks activity: changes since the last save are at risk.
       state: row.purged_at ? 'purged' : row.dirty ? 'needs_repair' : row.running ? 'running' : 'idle',
     }));
   }
@@ -591,10 +594,18 @@ export class Gateway extends DurableObject {
     const wallMs = Math.round(report.wall_ms);
     this.sql.exec(
       `UPDATE workspaces SET running = MAX(running - 1, 0), exec_count = exec_count + 1,
-         container_ms = container_ms + ?, last_exec_at = ?, snapshot_at = COALESCE(?, snapshot_at),
+         container_ms = container_ms + ?, last_exec_at = ?, snapshot_at = ${LATER_SAVE},
          dirty = COALESCE(?, dirty) WHERE id = ?`,
-      wallMs, now(), report.snapshot_at, report.dirty == null ? null : Number(report.dirty), workspace);
+      wallMs, now(), report.snapshot_at, report.snapshot_at, report.snapshot_at, report.dirty == null ? null : Number(report.dirty), workspace);
     this.meter(`exec:${agent}:${callId}`, agent, 'exec', { wallMs, cost: execCost(wallMs) });
+    this.publishWorkspace(workspace);
+  }
+
+  // How a turn-end save went: the saved time moves forward, and dirty says
+  // whether changes since then are at risk.
+  workspaceSaved(workspace: string, result: SaveResult) {
+    this.sql.exec(`UPDATE workspaces SET snapshot_at = ${LATER_SAVE}, dirty = ? WHERE id = ?`,
+      result.snapshot_at, result.snapshot_at, result.snapshot_at, Number(result.dirty), workspace);
     this.publishWorkspace(workspace);
   }
 
@@ -730,8 +741,7 @@ export class Gateway extends DurableObject {
   // sweep. An agent goes only once it has no open run and no open
   // cross-machine record. The rows stay, marked purged_at, as identity: an
   // agent id never moves owner, and a workspace taken up again starts empty.
-  // A workspace's last snapshot cannot be deleted through the Worker API; it
-  // expires on the platform 30 days after it was taken or last restored.
+  // A workspace deletes its saved copy in R2 with it.
   async purgeWhole(policy = this.retentionPolicy(), nowMs = Date.now()) {
     const age = wholeAge(policy);
     const owner = await this.owner();

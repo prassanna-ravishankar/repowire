@@ -5,7 +5,7 @@ import { fakeState } from './support/state';
 
 const gateway = (state = fakeState()) => new Gateway(state as never, {});
 
-test('a workspace whose checkpoint failed needs repair and keeps its last real snapshot', () => {
+test('a workspace whose save failed needs repair and keeps its last real save', () => {
   const owner = gateway();
   owner.addAgent({ id: 'a', workspace: 'w', created_by: 'web' });
   owner.execStarted('w');
@@ -80,4 +80,20 @@ test('a withdrawn start leaves no working run behind, and never removes a settle
   await owner.report({ agent: 'a', operationId: 'op-2', status: 'done' });
   owner.runWithdrawn('a', 'op-2');
   assert.equal(owner.runs('a').length, 1);
+});
+
+// A turn-end save tells the directory how it went; a command report that
+// arrives after a save never moves the saved time back.
+test('a workspace save updates its state, and the saved time only moves forward', () => {
+  const owner = new Gateway(fakeState() as never, {});
+  owner.addAgent({ id: 'a', workspace: 'w', created_by: 'web' });
+  owner.execStarted('w', 'a');
+  owner.execFinished('a', 'w', 'c1', { wall_ms: 10, snapshot_at: null, dirty: false });
+  owner.workspaceSaved('w', { saved: false, dirty: true, snapshot_at: null, lost: true });
+  assert.equal(owner.workspaces()[0].state, 'needs_repair');
+  owner.workspaceSaved('w', { saved: true, dirty: false, snapshot_at: '2026-11-27T10:00:00.000Z' });
+  assert.deepEqual([owner.workspaces()[0].state, owner.workspaces()[0].snapshot_at], ['idle', '2026-11-27T10:00:00.000Z']);
+  owner.execStarted('w', 'a');
+  owner.execFinished('a', 'w', 'c2', { wall_ms: 10, snapshot_at: '2026-11-27T09:00:00.000Z', dirty: false });
+  assert.equal(owner.workspaces()[0].snapshot_at, '2026-11-27T10:00:00.000Z');
 });

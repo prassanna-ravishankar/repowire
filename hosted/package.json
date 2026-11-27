@@ -9,6 +9,7 @@
     "test": "tsx --import ./test/support/register.mjs --test test/*.test.ts"
   },
   "dependencies": {
+    "@cloudflare/sandbox": "1.0.3",
     "@earendil-works/chord": "1.6.1",
     "@earendil-works/pi-ai": "1.6.1",
     "@earendil-works/pi-durable": "1.6.1",

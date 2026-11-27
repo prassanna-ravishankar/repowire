@@ -7,10 +7,16 @@ Worker as the `managed` machine in cross-machine circles, so daemons and their
 agents reach managed agents through the relay like any other machine.
 
 - `HostedAgent` stores a Pi Durable conversation and durable message receipts.
-- `Workspace` owns an on-demand Linux sandbox. Several agents may attach to the
-  same workspace; commands serialize. Agents without a workspace need no sandbox.
-- A shell command checkpoints its filesystem and stops the sandbox. A later call
-  restores that snapshot. The Pi conversation lives independently in SQLite.
+- `Workspace` owns an on-demand Linux sandbox (`@cloudflare/sandbox` 1.0: a
+  Durable Object that runs its own Container). Several agents attach to the
+  same workspace by its id; commands and saves take turns, and each command
+  runs in `/workspace` with `REPOWIRE_AGENT` naming the agent. Agents without
+  a workspace need no sandbox.
+- The container stays up while agents work. When an agent's turn ends, the
+  workspace saves `/workspace` to R2 (a directory backup) and lets the
+  container stop soon after; the next container restores it. Changes a stopped
+  container never saved are reported to the next command as lost. The Pi
+  conversation lives independently in SQLite.
 - Cloudflare's Pi lifecycle maintains recovery alarms while work runs and releases
   them when idle. There is no application polling loop.
 
@@ -37,13 +43,15 @@ With the dev server running, exercise the HTTP boundary with
 turn and durable message deduplication (requires Workers AI access). After a
 redeploy, pass `--recall <agent-id>` using the ID printed by the model test to
 verify conversation recovery. Pass `--workspace` to test two agents sharing files
-across sandbox checkpoint/stop/restore. Set `HOSTED_URL` to test a deployment.
+across sandbox save/stop/restore. Set `HOSTED_URL` to test a deployment.
 These tests invoke billable model/container resources when run against Cloudflare.
 
 Create an ignored `.dev.vars` with a random `CONTROL_TOKEN`; the smoke script
 names its owner with `SMOKE_OWNER` (default `smoke`). Run `npm run dev` (Docker
 is required for local shell execution; the AI binding uses Cloudflare). To
-deploy, set `CONTROL_TOKEN` with `wrangler secret put`, then `npm run deploy`.
+deploy, create the R2 bucket `repowire-hosted-workspaces` (`wrangler r2 bucket
+create repowire-hosted-workspaces`), set `CONTROL_TOKEN` with `wrangler secret
+put`, then `npm run deploy`. `wrangler dev` keeps the bucket locally.
 Configure the account via `CLOUDFLARE_ACCOUNT_ID`.
 
 ## HTTP API
@@ -64,7 +72,7 @@ service through the relay, which names them; they never choose the owner.
 | `GET /agents/helper/runs` | The run log: source, start and settle times, status, reason, tokens, estimated cost |
 | `POST /agents/helper/abort` with optional `{"operationId": ...}` | Stop one run, or everything the agent is doing; it settles `unanswered` with reason `aborted` |
 | `DELETE /agents/helper` | Retire: abort, then refuse new input with 410; the transcript stays readable |
-| `GET /workspaces` | Workspaces with command counts, container time, the last successful snapshot and a state (`idle`, `running`, or `needs_repair` after a checkpoint failed) |
+| `GET /workspaces` | Workspaces with command counts, container time, when the files were last saved and a state (`idle`, `running`, or `needs_repair` after a save failed) |
 | `GET /events` (WebSocket) | A snapshot of agents and workspaces, then each change (`agent`, `run`, `workspace` frames). The relay holds it while someone is watching |
 | `POST /requests` with `{"id":"rq-<32 hex>","agent":"helper","kind":"ask","requester":"relay-mcp-…","text":"…"}` | The relay's ask or notify to an agent, recorded before it is submitted. A known id returns its receipt (202) before budget or retirement is checked again; a known id with a different body is 409; 404 unknown agent, 410 retired, 402 over budget, 502 delivery uncertain |
 | `GET /requests/rq-…?requester=…&wait=0..20` | The daemon's ask-wait contract: `pending`, or `resolved` with `close_reason` (`answered` with `reply`, `not_delivered`, or the run's unanswered reason). 404 unless `requester` sent it. A request the agent has no record of is settled `not_delivered` in turn with admission, and a later submit of it is refused; that check may hold even a `wait=0` read for up to a second |
@@ -93,10 +101,11 @@ with a different workspace is a conflict. Workspace attachment is immutable.
 
 ## Prototype limits
 
-Shell commands have no network access and time out after 45 seconds. Snapshots
-are beta and expire after 30 days without use. An interrupted checkpoint fails
-loudly instead of silently restoring stale files. Snapshotting each command is
-intentionally simple; it costs latency and will need tuning for real workloads.
+Shell commands have no network access and time out after 45 seconds. Saves
+go to the R2 bucket bound as `WORKSPACE_BACKUPS`; a failed save keeps the
+changes in the running container for the next save and marks the workspace
+`needs_repair` until one succeeds. Workspaces from before directory backups
+were container snapshots on another image; their files are not carried over.
 Shell tools are not declared replay-safe.
 
 Authentication is one control token for the relay, not SaaS login. The guardrails above are the only spending caps:

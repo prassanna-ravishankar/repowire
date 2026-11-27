@@ -322,9 +322,6 @@ const WORKSPACE_STATE: Record<Workspace["state"], { label: string; cls: string }
   needs_repair: { label: "NEEDS REPAIR", cls: "text-error" },
 };
 
-// Container snapshots are retained for 30 days; any command refreshes them.
-const SNAPSHOT_TTL_DAYS = 30;
-
 function WorkspaceTab({ agent, workspace, now }: { agent: Agent; workspace: Workspace | null; now: number }) {
   if (!agent.workspace) {
     return (
@@ -334,12 +331,10 @@ function WorkspaceTab({ agent, workspace, now }: { agent: Agent; workspace: Work
     );
   }
   if (!workspace) return <EmptyState icon={<HardDrive className="h-6 w-6" />} title={agent.workspace}>No commands have run here yet.</EmptyState>;
-  const snapshotDays = workspace.snapshot_at ? (now - Date.parse(workspace.snapshot_at)) / 86_400_000 : null;
-  const expiresIn = snapshotDays === null ? null : Math.max(0, Math.ceil(SNAPSHOT_TTL_DAYS - snapshotDays));
   const others = workspace.agents.filter((id) => id !== agent.id);
   const rows: [string, React.ReactNode][] = [
     ["State", <span key="s" className={cn("font-semibold tracking-[0.12em]", WORKSPACE_STATE[workspace.state].cls)}>{WORKSPACE_STATE[workspace.state].label}</span>],
-    ["Snapshot", workspace.snapshot_at ? `${formatAgo(workspace.snapshot_at, now)} (expires in ${expiresIn} days)` : "none"],
+    ["Saved", workspace.snapshot_at ? formatAgo(workspace.snapshot_at, now) : "not yet"],
     ["Shared by", workspace.agents.length ? workspace.agents.join(", ") : "-"],
     ["Commands", `${workspace.exec_count} total · last ${formatWhen(workspace.last_exec_at, now)}`],
     ["Container", formatDuration(workspace.container_ms)],
@@ -350,12 +345,7 @@ function WorkspaceTab({ agent, workspace, now }: { agent: Agent; workspace: Work
       <div className="max-w-2xl rounded-[8px] border border-border bg-surface-container-low">
         <div className="border-b border-border-faint px-4 py-3 font-mono text-sm font-semibold text-on-surface">{workspace.id}</div>
         {workspace.state === "needs_repair" && (
-          <InlineError className="m-4" error="Workspace stopped before checkpointing. Commands are refused until repaired." />
-        )}
-        {expiresIn !== null && expiresIn <= 5 && workspace.state !== "needs_repair" && (
-          <p className="mx-4 mt-4 border border-tertiary-fixed-dim/30 bg-tertiary-fixed-dim/10 px-3 py-2 font-mono text-[11px] text-on-tertiary-container">
-            Snapshot expires in {expiresIn} days; any command refreshes it.
-          </p>
+          <InlineError className="m-4" error="The last save failed. Changes since then are kept in the running workspace and saved at the next turn end, but are lost if it stops first." />
         )}
         <dl className="grid grid-cols-[7rem_1fr] gap-x-4 gap-y-2 px-4 py-4 font-mono text-[12px]">
           {rows.map(([label, value]) => (

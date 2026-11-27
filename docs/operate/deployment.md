@@ -17,8 +17,8 @@ Repowire also ships hosted surfaces:
 The `hosted/` package is a separate Cloudflare Worker deployment in this repo:
 the runtime for managed agents. Each agent is a pi-durable conversation in a
 SQLite-backed Durable Object. Optional Linux workspaces have their own sandbox
-lifetimes, may be shared by several agents, and are checkpointed after each
-command; agents without a workspace do not start containers.
+lifetimes, may be shared by several agents, and are saved to R2 when a turn
+ends; agents without a workspace do not start containers.
 
 Only the relay talks to it, with its control token: the relay serves `/managed`,
 proxies the managed API, and treats the Worker as the `managed` machine, so

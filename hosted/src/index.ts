@@ -11,17 +11,20 @@ import { addResponse, reportDelay, usageSince, zeroUsage, type Cumulative } from
 import { LIMITS, type TokenUsage } from './prices';
 import { serial } from './serial';
 import { stepLimit, stepLimitReason } from './steps';
-import { Workspace, type ExecOutcome } from './workspace';
+import { Workspace, type ExecOutcome, type SaveResult } from './workspace';
 import { DEFAULT_CIRCLE, sharedCircle } from './circles';
 import { followUp } from './mesh';
 import { remoteRoute } from './remote';
 import { markerAge, SWEEP_INTERVAL_MS } from './retention';
 export { Gateway, Registry, Workspace };
+// Directory backups of workspaces reach R2 through this entrypoint (@cloudflare/sandbox).
+export { DirectoryBackupGateway } from '@cloudflare/sandbox';
 
 interface Env {
   AI: Ai;
   AGENTS: DurableObjectNamespace<HostedAgent>;
   WORKSPACES: DurableObjectNamespace<Workspace>;
+  WORKSPACE_BACKUPS: R2Bucket;
   GATEWAYS: DurableObjectNamespace<Gateway>;
   REGISTRY: DurableObjectNamespace<Registry>;
   CONTROL_TOKEN: string;
@@ -97,7 +100,7 @@ export class HostedAgent extends DurableObject<Env> {
         })),
         {
           name: 'workspace_exec',
-          description: 'Execute a shell command in the attached Linux workspace. Files persist between calls. No network access.',
+          description: 'Execute a shell command in the attached Linux workspace, in /workspace. Files persist between calls and are saved when your turn ends. No network access.',
           parameters: obj({ command: str({ maxLength: 16000 }) }),
           // Shell side effects must not be blindly replayed after interruption.
           execute: async ({ command }, api) => {
@@ -110,7 +113,7 @@ export class HostedAgent extends DurableObject<Env> {
             const started = Date.now();
             let outcome: ExecOutcome | undefined;
             try {
-              outcome = await workspace.exec(command);
+              outcome = await workspace.exec(command, config.id);
             } finally {
               // The container ran either way, so a failed command is metered too.
               // The workspace times its own run; when it cannot answer, the
@@ -119,7 +122,11 @@ export class HostedAgent extends DurableObject<Env> {
                 outcome ?? { wall_ms: Date.now() - started, dirty: null, snapshot_at: null });
             }
             if (!outcome.ok) throw new Error(outcome.error);
-            return { output: [{ type: 'text' as const, text: JSON.stringify(outcome.result) }] };
+            // The model hears when the files it worked on are gone.
+            const notice = outcome.legacy
+              ? { notice: 'The workspace moved to a new storage format; its earlier files were not carried over' }
+              : outcome.lost ? { notice: `The workspace restarted; changes made after ${outcome.snapshot_at ?? 'it was created'} were lost` } : {};
+            return { output: [{ type: 'text' as const, text: JSON.stringify({ ...notice, ...outcome.result }) }] };
           },
         }],
     });
@@ -420,6 +427,23 @@ export class HostedAgent extends DurableObject<Env> {
       this.kv.delete(`steps:${operationId}`);
       this.kv.put(`reported:${operationId}`, Date.now());
     });
+    // The turn is over: save what it did to the workspace (a no-op when it
+    // changed nothing), and tell the directory how that went.
+    if (config.workspace) {
+      const name = config.workspace;
+      const workspace = this.env.WORKSPACES.getByName(scopedName(config.owner, name));
+      const owner = this.owner(config);
+      this.ctx.waitUntil(workspace.checkpoint()
+        .catch((error) => {
+          console.error('Workspace save failed', name, error);
+          return { saved: false, dirty: true, snapshot_at: null } as SaveResult;
+        })
+        .then((result: SaveResult) => {
+          if (result.lost) console.warn('Workspace stopped before its turn was saved; changes were lost', name);
+          return owner.workspaceSaved(name, result);
+        })
+        .catch((error) => console.error('Workspace save not recorded', name, error)));
+    }
   }
 
   // Re-checked in turn with admission, which may have handed it to pi since.
