@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
-import type { Agent, Client, Run } from "./api";
+import type { Agent, Run } from "./api";
 import { fixtures } from "./fixtures";
-import { EMPTY_LIVE, agentSubline, applyFrame, connectedDaemon, formatAgo, formatDuration, formatUsd, mergeRun, runStatus, shortId, sortAgents, stateCounts, visibleAgents } from "./state";
+import { EMPTY_LIVE, agentSubline, applyFrame, formatAgo, formatDuration, formatUsd, mergeRun, runStatus, shortId, sortAgents, stateCounts, visibleAgents } from "./state";
 
 const NOW = Date.parse("2026-10-25T14:05:00Z");
 const f = fixtures(NOW);
@@ -57,12 +57,11 @@ describe("runStatus", () => {
 });
 
 describe("applyFrame", () => {
-  const snapshot = applyFrame(EMPTY_LIVE, { type: "snapshot", agents: f.agents, workspaces: f.workspaces, clients: f.clients.gateway, outbox: 2, at: "t" });
+  const snapshot = applyFrame(EMPTY_LIVE, { type: "snapshot", agents: f.agents, workspaces: f.workspaces, at: "t" });
 
   it("replaces state from a snapshot", () => {
-    const next = applyFrame(snapshot, { type: "snapshot", agents: [byId("helper")], workspaces: [], clients: [], outbox: 0, at: "t2" });
+    const next = applyFrame(snapshot, { type: "snapshot", agents: [byId("helper")], workspaces: [], at: "t2" });
     expect(next.agents.map((a) => a.id)).toEqual(["helper"]);
-    expect(next.outbox).toBe(0);
     expect(next.at).toBe("t2");
   });
 
@@ -105,17 +104,8 @@ describe("applyFrame", () => {
   it("invalidates loaded runs on a snapshot so a settled run is refetched, not left working", () => {
     // Runs tab open with a working run; the stream drops while it settles; recovery brings an idle snapshot.
     const loaded = applyFrame(snapshot, { type: "runs", agent: "helper", runs: f.runs });
-    const recovered = applyFrame(loaded, { type: "snapshot", agents: [{ ...byId("helper"), state: "idle" }], workspaces: [], clients: [], outbox: 0, at: "t3" });
+    const recovered = applyFrame(loaded, { type: "snapshot", agents: [{ ...byId("helper"), state: "idle" }], workspaces: [], at: "t3" });
     expect(recovered.runs.helper).toBeUndefined();
-  });
-
-  it("tracks outbox depth and daemon connection", () => {
-    expect(applyFrame(snapshot, { type: "outbox", depth: 5 }).outbox).toBe(5);
-    expect(connectedDaemon(snapshot.clients)?.machine).toBe("prass-mbp");
-    const gone: Client = { ...f.clients.gateway[0], connected: false, disconnected_at: "z" };
-    const next = applyFrame(snapshot, { type: "client", client: gone });
-    expect(next.clients).toHaveLength(1);
-    expect(connectedDaemon(next.clients)).toBeNull();
   });
 });
 

@@ -199,8 +199,6 @@ type managedAgent struct {
 	Description *string `json:"description"`
 	State       string  `json:"state"`
 	Workspace   *string `json:"workspace"`
-	HomeMachine *string `json:"home_machine"`
-	CreatedBy   string  `json:"created_by"`
 	RetiredAt   *string `json:"retired_at"`
 	Circle      string  `json:"circle"`
 }
@@ -214,11 +212,9 @@ func (a managedAgent) circle() string {
 	return a.Circle
 }
 
-// Agents a daemon created stay with it, including ones recorded without a
-// home; only agents created through the relay are on the managed machine.
-func (a managedAgent) onMachine() bool {
-	return a.CreatedBy != "daemon" && a.HomeMachine == nil && a.RetiredAt == nil
-}
+// live reports an agent the managed machine still answers for: every agent
+// but a retired one.
+func (a managedAgent) live() bool { return a.RetiredAt == nil }
 
 func (m managedMachine) agents(ctx context.Context, circle string) ([]map[string]any, error) {
 	var list struct {
@@ -229,7 +225,7 @@ func (m managedMachine) agents(ctx context.Context, circle string) ([]map[string
 	}
 	rows := []map[string]any{}
 	for _, a := range list.Items {
-		if !a.onMachine() || (circle != "" && a.circle() != circle) {
+		if !a.live() || (circle != "" && a.circle() != circle) {
 			continue
 		}
 		status := "online"
@@ -251,7 +247,7 @@ func (m managedMachine) agents(ctx context.Context, circle string) ([]map[string
 func (m managedMachine) checkAgent(ctx context.Context, peerID string) error {
 	var a managedAgent
 	status, err := m.do(ctx, http.MethodGet, "/agents/"+url.PathEscape(peerID), nil, nil, &a)
-	if status == http.StatusNotFound || (err == nil && !a.onMachine()) {
+	if status == http.StatusNotFound || (err == nil && !a.live()) {
 		return fmt.Errorf("no managed agent %q; use the exact peer_id from list_agents", peerID)
 	}
 	return err

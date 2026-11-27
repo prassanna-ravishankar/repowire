@@ -254,6 +254,6 @@ async function deliverReply(env: MeshEnv, owner: string, row: RemoteOutbound) {
   const from = label(row.to_name, row.machine);
   // Peer content, wrapped like any peer message: never mistaken for the human.
   const text = `<peer-message from="@${escape(from)}" type="reply" correlation-id="${row.id}">\n${escape(framedReply(row.id, from, row.close_reason ?? 'unanswered', row.reply))}\n</peer-message>`;
-  const accepted = await agent.submit(text, op, { from, type: 'reply', correlationId: row.id }, 'control');
+  const accepted = await agent.submit(text, op, { from, type: 'reply', correlationId: row.id });
   await directory.markOutboundDelivered(row.id, 'retired' in accepted ? 'asker_retired' : null);
 }

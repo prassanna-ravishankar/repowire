@@ -37,7 +37,7 @@ Errors are `{"error": "..."}`. Until `REPOWIRE_MANAGED_URL` and `REPOWIRE_MANAGE
 | `GET /api/v1/managed/me` | `{user_id, admin, managed}`. `managed` is true when the Worker is configured and the caller is enabled for it. Works without the Worker. |
 | `GET /api/v1/managed/agents`, `POST /api/v1/managed/agents` | Proxied to the Worker. |
 | `GET /api/v1/managed/agents/{id}`, `DELETE /api/v1/managed/agents/{id}` | Proxied. `DELETE` retires the agent. |
-| `PATCH /api/v1/managed/agents/{id}` | Proxied. `{circle}` moves an agent on managed to another shared circle (**422** for a machine-local name such as `default`, `*`, a number or `window-N`). A daemon-owned agent answers **409**: its circle is its daemon peer's. `POST .../agents` also takes `circle`, which defaults to `managed`. An agent never changes owner: a create that would move it between managed and a daemon, or between daemons, answers **409**. |
+| `PATCH /api/v1/managed/agents/{id}` | Proxied. `{circle}` moves an agent to another shared circle (**422** for a machine-local name such as `default`, `*`, a number or `window-N`). `POST .../agents` also takes `circle`, which defaults to `managed`. A retired agent's id cannot be created again (**410**). |
 | `GET /api/v1/managed/agents/{id}/messages`, `POST .../messages` | Proxied. A retired agent answers **410**. |
 | `GET /api/v1/managed/agents/{id}/runs` | Proxied. |
 | `POST /api/v1/managed/agents/{id}/abort` | Proxied. |
@@ -67,19 +67,17 @@ A daemon cannot connect with `daemon_id` `managed` (**409**): the name is reserv
 ```json
 {
   "daemons": [{"daemon_id": "laptop", "connected_at": "...", "connected": true}],
-  "gateway": [{"kind": "daemon", "machine": "...", "daemon_id": "...", "version": "...", "connected_at": "...", "connected": true}],
-  "apps": [{"grant_id": "...", "client_id": "...", "client_name": "...", "scope": "agents:read", "expires": "...", "active": true}],
-  "outbox": 0
+  "apps": [{"grant_id": "...", "client_id": "...", "client_name": "...", "scope": "agents:read", "expires": "...", "active": true}]
 }
 ```
 
-`daemons` are relay tunnel connections, `gateway` and `outbox` come from the Worker's `GET /clients`, and `apps` are OAuth grants that are not revoked (`active` is false until the client has exchanged its first token). If the Worker call fails or is unconfigured, `gateway` is empty and `gateway_error` carries the reason.
+`daemons` are relay tunnel connections and `apps` are OAuth grants that are not revoked (`active` is false until the client has exchanged its first token). Both come from the relay, so the route answers without the Worker.
 
 ### Events
 
 `GET /api/v1/managed/events` is a Server-Sent Events stream for the caller's agents.
 
-- Worker frames arrive unchanged as one `data:` line each (`snapshot`, `agent`, `run`, `workspace`, `client`, `outbox`).
+- Worker frames arrive unchanged as one `data:` line each (`snapshot`, `agent`, `run`, `workspace`).
 - Relay frames use `event: relay`:
   - `{"type":"daemons","daemons":[...]}` first, listing relay tunnel connections.
   - `{"type":"daemon","daemon":{daemon_id, connected_at, connected}}` when a relay tunnel connects or disconnects.

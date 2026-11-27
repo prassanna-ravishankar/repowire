@@ -1,21 +1,17 @@
 import { useState } from "react";
 import { cn } from "../../dashboard/lib/utils";
-import type { Client, Clients, OAuthApp } from "../lib/api";
-import { formatAgo, formatDate, formatWhen } from "../lib/state";
+import type { Clients, OAuthApp } from "../lib/api";
+import { formatAgo, formatDate } from "../lib/state";
 import { InlineError, SectionLabel, SkeletonRows, buttonClass } from "./ui";
 
 export function ClientsView({
   clients,
-  gateway,
-  outbox,
   error,
   now,
   onRetry,
   onRevoke,
 }: {
   clients: Clients | null;
-  gateway: Client[];
-  outbox: number;
   error: string | null;
   now: number;
   onRetry: () => void;
@@ -25,28 +21,6 @@ export function ClientsView({
     <div className="min-h-0 flex-1 overflow-y-auto pb-6">
       <div className="mx-auto max-w-3xl">
         {error && <InlineError className="m-4" error={error} onRetry={onRetry} />}
-        <SectionLabel right={<Muted>One per account. A new connection replaces it.</Muted>}>Gateway daemon</SectionLabel>
-        <Card>
-          {gateway.length === 0 ? (
-            <Row dot="bg-outline" title="No daemon has connected">
-              Run <code>repowire setup</code> with the hosted backend enabled on a machine. Agents still answer you here. Agents a daemon created need it connected for their mesh tools; agents on managed do not.
-            </Row>
-          ) : (
-            gateway.map((client) => (
-              <Row
-                key={client.daemon_id ?? client.connected_at}
-                dot={client.connected ? "bg-secondary pulse-online" : "bg-outline"}
-                title={client.machine ?? client.daemon_id ?? "unknown machine"}
-                right={
-                  <span className={cn(outbox > 0 && !client.connected ? "text-tertiary-fixed-dim" : "text-outline")}>outbox {outbox}</span>
-                }
-              >
-                {[client.version ? `repowire ${client.version}` : "version unknown", client.connected ? `connected since ${formatWhen(client.connected_at, now)}` : `last seen ${formatWhen(client.disconnected_at ?? client.connected_at, now)}`].join(" · ")}
-              </Row>
-            ))
-          )}
-        </Card>
-
         <SectionLabel right={<Muted>Daemons linked to the relay</Muted>}>Relay daemons</SectionLabel>
         <Card>
           {!clients ? (

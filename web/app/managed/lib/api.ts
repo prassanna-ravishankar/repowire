@@ -15,13 +15,11 @@ export interface Agent {
   last_op: string | null;
   last_reason: string | null;
   description: string | null;
-  home_machine: string | null;
-  /** The circle of an agent on managed; a daemon's agent takes its daemon peer's. */
+  /** The shared circle the agent is in across machines. */
   circle?: string;
   /** Bumped on every change to the agent's open cross-machine asks, run or not. */
   asks_rev?: number;
   created_at: string;
-  created_by: string;
   retired_at: string | null;
   /** When retention deleted this retired agent's conversation (null while it is kept). */
   purged_at?: string | null;
@@ -58,16 +56,6 @@ export interface Workspace {
   state: "idle" | "running" | "needs_repair";
 }
 
-export interface Client {
-  kind: "daemon";
-  machine: string | null;
-  daemon_id: string | null;
-  version: string | null;
-  connected_at: string;
-  connected: boolean;
-  disconnected_at?: string;
-}
-
 export interface Usage {
   runs: number;
   tokens_in: number;
@@ -102,9 +90,7 @@ export interface OAuthApp {
 
 export interface Clients {
   daemons: RelayDaemon[];
-  gateway: Client[];
   apps: OAuthApp[];
-  outbox: number;
 }
 
 /** A cross-machine ask an agent sent that is still owed a result or a reply. */
@@ -123,19 +109,16 @@ export interface Receipt {
 }
 
 export type ManagedFrame =
-  | { type: "snapshot"; agents: Agent[]; workspaces: Workspace[]; clients: Client[]; outbox: number; at: string }
+  | { type: "snapshot"; agents: Agent[]; workspaces: Workspace[]; at: string }
   | { type: "agent"; agent: Agent }
   | { type: "run"; agent: string; run: Run }
-  | { type: "workspace"; workspace: Workspace }
-  | { type: "client"; client: Client }
-  | { type: "outbox"; depth: number };
+  | { type: "workspace"; workspace: Workspace };
 
 export interface AdminSummary {
   owners: number;
   agents_by_state: Record<AgentState, number>;
   workspaces: number;
   running_containers: number;
-  connected_daemons: number;
   today: Usage;
   month: Usage;
   relay?: { daemons_connected: number; users_with_daemons: number; oauth_grants_active: number };
@@ -148,7 +131,6 @@ export interface AdminOwner {
   agents_by_state: Record<AgentState, number>;
   workspaces: number;
   running_containers: number;
-  connected_daemons: number;
   last_active_at: string | null;
   today: Usage;
   month: Usage;

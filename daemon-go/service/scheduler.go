@@ -40,7 +40,7 @@ type schedulerStore interface {
 // satisfies it.
 type schedulerDelivery interface {
 	Notify(ctx context.Context, params NotifyParams) (NotifyResult, error)
-	OpenScheduledAsk(ctx context.Context, cid, fromPeer, toPeer, text string, circle *string, replyDelivery string) (string, error)
+	OpenScheduledAsk(ctx context.Context, fromPeer, toPeer, text string, circle *string, replyDelivery string) (string, error)
 }
 
 // Scheduler drives scheduled check-ins off a deadline-driven sleep + wake
@@ -181,7 +181,7 @@ func (s *Scheduler) fire(ctx context.Context, sched *state.Schedule) {
 	to := firstNonEmpty(sched.ToPeerID, sched.ToPeer)
 	var err error
 	if sched.Kind == "ask" {
-		_, err = s.delivery.OpenScheduledAsk(ctx, "", from, to, sched.Text, sched.Circle, "push")
+		_, err = s.delivery.OpenScheduledAsk(ctx, from, to, sched.Text, sched.Circle, "push")
 	} else {
 		// A notify to an offline peer is queued, not failed: only a send that
 		// cannot happen at all (an unknown or unaddressable target, a circle

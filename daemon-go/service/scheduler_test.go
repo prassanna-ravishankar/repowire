@@ -116,7 +116,7 @@ func (d *fakeSchedDelivery) Notify(_ context.Context, p NotifyParams) (NotifyRes
 	return NotifyResult{Status: "sent", DeliveryState: "delivered"}, nil
 }
 
-func (d *fakeSchedDelivery) OpenScheduledAsk(_ context.Context, _, from, to, text string, _ *string, _ string) (string, error) {
+func (d *fakeSchedDelivery) OpenScheduledAsk(_ context.Context, from, to, text string, _ *string, _ string) (string, error) {
 	d.mu.Lock()
 	d.asks = append(d.asks, text)
 	d.ends = append(d.ends, from+"->"+to)
@@ -259,7 +259,7 @@ func (d *failingSchedDelivery) Notify(_ context.Context, p NotifyParams) (Notify
 	return NotifyResult{Status: "sent"}, nil
 }
 
-func (d *failingSchedDelivery) OpenScheduledAsk(_ context.Context, _, _, to, _ string, _ *string, _ string) (string, error) {
+func (d *failingSchedDelivery) OpenScheduledAsk(_ context.Context, _, to, _ string, _ *string, _ string) (string, error) {
 	if to == "down" {
 		return "", errPeerDown
 	}
@@ -402,7 +402,7 @@ type flakyAskDelivery struct {
 	down atomic.Bool
 }
 
-func (d *flakyAskDelivery) OpenScheduledAsk(_ context.Context, _, _, _, _ string, _ *string, _ string) (string, error) {
+func (d *flakyAskDelivery) OpenScheduledAsk(_ context.Context, _, _, _ string, _ *string, _ string) (string, error) {
 	if d.down.Load() {
 		return "", errPeerDown
 	}

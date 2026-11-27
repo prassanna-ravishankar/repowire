@@ -9,11 +9,11 @@ import { AgentList } from "./components/AgentList";
 import { ClientsView } from "./components/ClientsView";
 import { CreateAgentDialog, RetireDialog } from "./components/Dialogs";
 import { GateScreen } from "./components/Gate";
-import { Banner, Brand, ConnectionBadge, EmptyState, InlineError, Toasts, primaryButtonClass, useToasts } from "./components/ui";
+import { Brand, ConnectionBadge, EmptyState, InlineError, Toasts, primaryButtonClass, useToasts } from "./components/ui";
 import { managedApi, type Agent, type Me, type OAuthApp } from "./lib/api";
 import { deliver, draft, reconcile, retrying, type Outgoing } from "./lib/composer";
 import { useHashRoute, type Route } from "./lib/hashRoute";
-import { connectedDaemon, formatClock, visibleAgents } from "./lib/state";
+import { formatClock, visibleAgents } from "./lib/state";
 import type { TranscriptItem } from "./lib/transcript";
 import { useManagedLive } from "./lib/useManagedLive";
 import { useMe } from "./lib/useMe";
@@ -49,9 +49,6 @@ function ManagedApp({ me }: { me: Me }) {
   const selected = live.agents.find((a) => a.id === selectedId) ?? null;
   const shown = useMemo(() => visibleAgents(live.agents, showRetired || selected?.state === "retired"), [live.agents, showRetired, selected?.state]);
   const retiredCount = live.agents.filter((a) => a.state === "retired").length;
-  const daemon = connectedDaemon(live.clients);
-  // Agents on managed run their mesh tools in the cloud; only a daemon's own agents need it connected.
-  const needsDaemon = live.agents.some((a) => a.created_by === "daemon" && a.state !== "retired");
   const degraded = connection.status === "live" && !upstream.connected;
   const stale = connection.status === "offline" || degraded;
 
@@ -141,18 +138,11 @@ function ManagedApp({ me }: { me: Me }) {
         </div>
       </header>
 
-      {loaded && !daemon && (needsDaemon || live.outbox > 0) && (
-        <Banner tone="warning">
-          Your Repowire daemon is not connected. Agents it created still answer you here, but their mesh tools fail
-          {live.outbox > 0 ? ` and ${live.outbox} result${live.outbox === 1 ? "" : "s"} wait in the outbox` : ""}.{" "}
-          <a href="#/clients" className="font-semibold underline underline-offset-2">Clients</a>
-        </Banner>
-      )}
       {listError && <InlineError className="mx-4 mt-3" error={listError} onRetry={() => void resync()} />}
 
       <div className={cn("flex min-h-0 flex-1 transition-opacity", stale && "opacity-60")}>
         {route.view === "clients" ? (
-          <ClientsView clients={clients} gateway={live.clients} outbox={live.outbox} error={clientsError} now={now} onRetry={loadClients} onRevoke={revoke} />
+          <ClientsView clients={clients} error={clientsError} now={now} onRetry={loadClients} onRevoke={revoke} />
         ) : (
           <>
             <div className={cn("min-h-0 w-full md:block md:w-[360px] md:shrink-0 md:border-r md:border-border-faint", selected ? "hidden" : "block")}>
@@ -204,7 +194,7 @@ function ManagedApp({ me }: { me: Me }) {
       {!selected && (
         <nav className="flex shrink-0 border-t border-border-faint bg-surface-dim pb-[max(env(safe-area-inset-bottom),0.5rem)] md:hidden">
           <MobileTab active={route.view === "agents"} label="AGENTS" sub={`${live.agents.length - retiredCount} agents`} onClick={() => go({ view: "agents", agent: null })} />
-          <MobileTab active={route.view === "clients"} label="CLIENTS" sub={daemon ? "daemon online" : "no daemon"} onClick={() => go({ view: "clients" })} />
+          <MobileTab active={route.view === "clients"} label="CLIENTS" sub={clients ? `${clients.daemons.length} on relay` : "clients"} onClick={() => go({ view: "clients" })} />
         </nav>
       )}
 

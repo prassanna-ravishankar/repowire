@@ -13,9 +13,6 @@ const (
 	// SourceCodexAppServer is a thread registered by the codex bridge from the
 	// Codex App Server socket (ChatGPT desktop, VS Code, or codex CLI threads).
 	SourceCodexAppServer PeerSource = "codex-app-server"
-	// SourceHosted is a managed agent the daemon registered for the hosted
-	// runtime.
-	SourceHosted PeerSource = "hosted"
 	// SourceUnknown is a peer whose registration predates provenance or that
 	// never declared one. It is a first-class value, never guessed away.
 	SourceUnknown PeerSource = "unknown"
@@ -23,7 +20,7 @@ const (
 
 func (s PeerSource) Valid() bool {
 	switch s {
-	case SourceHook, SourceCodexAppServer, SourceHosted, SourceUnknown:
+	case SourceHook, SourceCodexAppServer, SourceUnknown:
 		return true
 	}
 	return false

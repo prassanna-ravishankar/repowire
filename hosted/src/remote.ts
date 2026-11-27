@@ -26,7 +26,7 @@ export interface RemoteEnv {
 }
 
 interface Principal { peer_id: string; display_name: string; circle: string }
-type Row = { id: string; display_name: unknown; circle: unknown; state: unknown; description: unknown; retired_at: unknown; created_by: unknown; home_machine: unknown };
+type Row = { id: string; display_name: unknown; circle: unknown; state: unknown; description: unknown; retired_at: unknown; };
 
 const json = (value: unknown, status = 200) => Response.json(value, { status });
 // The daemon's error shape: {detail}.
@@ -40,7 +40,7 @@ function principal(value: unknown): Principal | null {
   return { peer_id: from.peer_id!, display_name: from.display_name!, circle: from.circle };
 }
 
-const onManaged = (row: Row) => row.created_by !== 'daemon' && !row.home_machine && !row.retired_at;
+const live = (row: Row) => !row.retired_at;
 const nameOf = (row: Row) => (typeof row.display_name === 'string' && row.display_name) || row.id;
 
 // deadline is the relay's absolute Unix-ms deadline for this request. Work
@@ -72,7 +72,7 @@ export async function remoteRoute(env: RemoteEnv, owner: string, fromMachine: st
     if (!from) return refuse(403, 'from must name the sending peer in a shared circle');
     const name = typeof input.name === 'string' ? input.name : '';
     const peers = (await directory.agents() as Row[])
-      .filter((row) => onManaged(row) && row.circle === from.circle && (!name || nameOf(row) === name || row.id === name))
+      .filter((row) => live(row) && row.circle === from.circle && (!name || nameOf(row) === name || row.id === name))
       .map((row) => ({
         peer_id: row.id, display_name: nameOf(row), circle: row.circle, backend: 'hosted',
         status: row.state === 'working' ? 'busy' : 'online', ...(row.description ? { description: row.description } : {}),
@@ -91,7 +91,7 @@ export async function remoteRoute(env: RemoteEnv, owner: string, fromMachine: st
     if (!from) return refuse(403, 'from must name the sending peer in a shared circle');
     if (typeof input.text !== 'string' || !input.text.trim() || input.text.length > 16000) return refuse(400, 'text must contain 1-16000 characters');
     const target = typeof input.to_peer === 'string' ? await directory.agent(input.to_peer) as Row | null : null;
-    if (!target || !onManaged(target) || target.circle !== from.circle) {
+    if (!target || !live(target) || target.circle !== from.circle) {
       return refuse(404, `no reachable peer ${String(input.to_peer)} in circle ${from.circle}`);
     }
     if (late()) return refuse(504, 'the request deadline passed before it was handled; nothing was done');
@@ -166,7 +166,7 @@ async function dispatch(env: RemoteEnv, owner: string, record: RemoteInbound, la
   const framed = `<peer-message from="@${escape(sender)}" type="${record.kind}" correlation-id="${record.id}">\n${escape(record.text)}\n</peer-message>`;
   let accepted;
   try {
-    accepted = await agentOf(env, owner, record.to_agent).submit(framed, record.id, { from: sender, type: record.kind, correlationId: record.id }, 'control');
+    accepted = await agentOf(env, owner, record.to_agent).submit(framed, record.id, { from: sender, type: record.kind, correlationId: record.id });
   } catch (error) {
     console.error('Remote request submit failed; left for recovery', record.id, error);
     throw new HttpError(502, `Delivery is uncertain; read ${record.id} for its outcome and do not resend`);

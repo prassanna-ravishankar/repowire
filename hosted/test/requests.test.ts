@@ -10,7 +10,7 @@ import { fakeState } from './support/state';
 function relay(createdBy = 'web') {
   const parts = hostedAgent(new Gateway(fakeState() as never, {}), createdBy);
   const env = {
-    CONTROL_TOKEN: 'control', HOSTED_TOKEN: 'daemon', HOSTED_OWNER: 'alice',
+    CONTROL_TOKEN: 'control',
     GATEWAYS: { getByName: () => parts.directory }, AGENTS: { getByName: () => parts.agent },
   };
   const call = (method: string, path: string, body?: unknown, token = 'control') => worker.fetch(new Request(`https://hosted${path}`, {
@@ -24,8 +24,8 @@ const id = (n: number) => `rq-${String(n).padStart(32, '0')}`;
 const ask = (n: number, extra: Record<string, unknown> = {}) => ({ id: id(n), agent: 'a', kind: 'ask', requester: 'relay-mcp-g1', text: 'what is 6*7?', ...extra });
 const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
 
-test('an ask is answered through the run it started, and never reaches the daemon outbox', async () => {
-  const { call, pi, directory } = relay();
+test('an ask is answered through the run it started', async () => {
+  const { call, pi } = relay();
   const sent = await call('POST', '/requests', ask(1));
   assert.equal(sent.status, 202);
   assert.deepEqual(await sent.json(), { request_id: id(1), state: 'accepted', created: true });
@@ -39,7 +39,6 @@ test('an ask is answered through the run it started, and never reaches the daemo
   assert.deepEqual(await (await call('GET', `/requests/${id(1)}?requester=relay-mcp-g1&wait=5`)).json(),
     { correlation_id: id(1), status: 'resolved', responder: 'a', close_reason: 'answered', reply: '42' });
   assert.deepEqual((await (await call('GET', '/requests?requester=relay-mcp-g1')).json()).items, []);
-  assert.equal((await directory.clients()).outbox, 0);
 });
 
 test('a retry returns the first receipt before budget or retirement is checked again', async () => {
@@ -140,21 +139,13 @@ test('a step-limited run reads the same before and after its report lands', asyn
   assert.match(before.close_reason, /^step_limit/);
 });
 
-test('requests are for the relay, and only reach agents on the managed machine', async () => {
-  const { call, directory } = relay();
-  assert.equal((await call('POST', '/requests', ask(9), 'daemon')).status, 403);
-  // A daemon cannot claim a managed agent: ownership never changes, so the
-  // agent stays on managed and keeps answering the relay.
-  assert.ok('conflict' in (directory.addAgent({ id: 'a', workspace: null, created_by: 'daemon', home_machine: 'laptop' }) ?? {}));
+test('requests need the relay\'s control token', async () => {
+  const { call } = relay();
+  assert.equal((await call('POST', '/requests', ask(9), 'wrong')).status, 401);
   assert.equal((await call('POST', '/requests', ask(9))).status, 202);
 });
 
-test('a daemon-created agent without a home is not on the managed machine', async () => {
-  const { call } = relay('daemon');
-  assert.equal((await call('POST', '/requests', ask(13))).status, 404);
-});
-
-test('a managed agent has a shared circle, editable here; a daemon agent has none to edit', async () => {
+test('an agent has a shared circle, editable here', async () => {
   const { call } = relay();
   const patch = (circle: unknown) => call('PATCH', '/agents/a', { circle });
   assert.equal((await patch('default')).status, 422);
@@ -162,9 +153,6 @@ test('a managed agent has a shared circle, editable here; a daemon agent has non
   const changed = await patch('research');
   assert.equal(changed.status, 200);
   assert.equal((await changed.json()).agent.circle, 'research');
-
-  const daemonOwned = relay('daemon');
-  assert.equal((await daemonOwned.call('PATCH', '/agents/a', { circle: 'research' })).status, 409);
 });
 
 test('a retry still finds its request after retention has stripped the text', async () => {
@@ -190,18 +178,18 @@ test('a retired agent id cannot be created again, so none of its operations can 
 
 test('an agent whose workspace is being deleted is admitted nothing until the deletion ends', async () => {
   const gatewayState = fakeState();
-  const parts = hostedAgent(new Gateway(gatewayState as never, {}), 'daemon');
+  const parts = hostedAgent(new Gateway(gatewayState as never, {}));
   // The agent exists but its directory row does not (a create the purge
   // refused), and its workspace is mid-deletion.
   parts.state.storage.kv.put('config', { owner: 'alice', id: 'b', workspace: 'w' });
   gatewayState.storage.sql.exec(`INSERT INTO workspaces (id, purging_at) VALUES ('w', ?)`, new Date().toISOString());
   const env = {
-    CONTROL_TOKEN: 'control', HOSTED_TOKEN: 'daemon', HOSTED_OWNER: 'alice',
+    CONTROL_TOKEN: 'control',
     GATEWAYS: { getByName: () => parts.directory }, AGENTS: { getByName: () => parts.agent },
   };
   const sent = await worker.fetch(new Request('https://hosted/agents/b/messages', {
     method: 'POST', body: JSON.stringify({ text: 'hello', operationId: 'op-1' }),
-    headers: { Authorization: 'Bearer daemon' },
+    headers: { Authorization: 'Bearer control', 'X-Repowire-Owner': 'alice' },
   }), env as never);
   assert.equal(sent.status, 409);
   assert.equal(parts.pi.submitted.size, 0);

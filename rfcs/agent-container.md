@@ -169,7 +169,7 @@ The socket is designed to fit every execution Repowire launches today or has
 planned. Each plug maps the verbs to its own mechanism, and a verb a plug
 cannot honour is declared unsupported, not faked.
 
-| Verb | tmux (default) | ACP (daemon child) | Codex thread (App Server) | Hosted (#517, Cloudflare) |
+| Verb | tmux (default) | ACP (daemon child) | Codex thread (App Server) | Hosted (#517, Cloudflare; dropped 2026-11-27) |
 |---|---|---|---|---|
 | Reserve | placeholder pane | none | none | none |
 | Launch | `respawn-pane -k` with the command | spawn with its own process group, lazily on first prompt (today) | `thread/start` through the bridge | `Hosted.Spawn`: allocate, then `CreateAgent` (a reclaimed peer reattaches to its agent and conversation) |
@@ -179,6 +179,10 @@ cannot honour is declared unsupported, not faked.
 | Sleep and wake | none | none | none | the Worker's own concern (idle, working, parked, failed and retired live in its Gateway). The daemon sees only addressable plus busy: BUSY while a submission is in flight |
 | Attach | `switch-client` or `attach`, then window and pane | none | to verify (open question) | none; the transcript is observe-only |
 | Adopt | pid and start time reconcile | none: does not survive a daemon restart | the bridge resubscribes | `Hosted.Restore`: mappings, plus unsettled operations resubmitted by id |
+
+The hosted column is the shape #517 had until 2026-11-27, when the daemon's
+hosted backend was dropped: managed agents are now reached only through the
+relay, as the `managed` machine, so no daemon plug owns them.
 
 Two consequences for the socket's shape:
 - **Watch is optional.** For a plug without a process (hosted), "ended"

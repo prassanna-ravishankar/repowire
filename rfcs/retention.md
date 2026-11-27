@@ -87,14 +87,14 @@ Each piece lives with what it expires, so its lifecycle has one owner.
 The hosted runtime follows the same policy (`hosted/src/retention.ts`).
 
 - **Defaults:** one copy in `daemon-go/proto/retention.json`. The daemon's config embeds it, and the Worker imports it.
-- **Policy:** the daemon names its policy (seconds) in `X-Repowire-Retention` on every gateway connect. The owner's Gateway keeps each daemon's policy, keyed by daemon id, and sweeps by the most conservative of them in each class: the longest age, with 0 (forever) winning, and the longest ask lifetime. No machine can shorten retention for another, and with no policy yet the defaults apply. This is interim. The data belongs to the namespace, so once accounts exist, the policy is the account's, set at the relay and sent to the Gateway from there (`managed-accounts.md`).
+- **Policy:** the owner's, held by the Gateway (`setRetention`), with the defaults until one is set. The data belongs to the namespace, so once accounts exist the policy is the account's, set at the relay and sent to the Gateway from there (`managed-accounts.md`). A Gateway from before managed agents were reached only through the relay kept one policy per connected daemon; the first policy read folds them into the owner's, the most conservative in each class (the longest age, with 0 winning, and the longest ask lifetime), so no deployed data goes sooner than it was kept under.
 - **Rules:** each Gateway table declares its retention as a static field beside its queries. A test fails for a table without exactly one declaration.
   - `runs`: the answer is content; the settled row is a record.
   - `requests`: the text is content and the row is a record, both timed from when the request ended: its run settled, or it was settled as not delivered. A request with no settled run is kept, since its reader still reconciles it. The text is stripped only when a stored digest still matches a retry against its receipt.
   - `remote_*`: the fixed window.
   - `agents`, `workspaces`: exempt, as identity and live state.
   - `usage_event`, `usage_day`: exempt, as the billing ledger.
-- **Sweep:** owned by the Gateway Durable Object. It runs at most hourly, when a report, a daemon connect or a cross-machine request finds one due, in batches of 500 rows with a per-sweep budget. It never runs on a timer.
+- **Sweep:** owned by the Gateway Durable Object. It runs at most hourly, when a report or a cross-machine request finds one due, in batches of 500 rows with a per-sweep budget. It never runs on a timer.
 - **Each agent's own records** (`HostedAgent`). The per-operation dedupe markers `reported:<op>` and `undelivered:<op>` record when they were set. The agent sweeps them at most hourly, on its own submits, using the owner's policy from the Gateway.
   - They expire with records, never sooner than the cross-machine window or the ask lifetime, since a resend or read-back of the id can come until then.
   - With records kept forever, they are kept forever too.

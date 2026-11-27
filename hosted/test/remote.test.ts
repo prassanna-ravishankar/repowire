@@ -9,7 +9,7 @@ import { hostedAgent } from './support/agent';
 function managed(createdBy = 'web') {
   const parts = hostedAgent(new Gateway(fakeState() as never, {}), createdBy);
   const env = {
-    CONTROL_TOKEN: 'control', HOSTED_TOKEN: 'daemon', HOSTED_OWNER: 'alice',
+    CONTROL_TOKEN: 'control',
     GATEWAYS: { getByName: () => parts.directory }, AGENTS: { getByName: () => parts.agent },
   };
   const call = async (path: string, body: unknown, { machine = 'laptop', token = 'control', deadline = Date.now() + 25_000 } = {}) => {
@@ -33,7 +33,7 @@ async function epochOf(call: ReturnType<typeof managed>['call']) {
 
 test('the remote API is for the relay, naming another machine', async () => {
   const { call } = managed();
-  assert.equal((await call('/remote/peers', { from }, { token: 'daemon' })).status, 403);
+  assert.equal((await call('/remote/peers', { from }, { token: 'wrong' })).status, 401);
   assert.equal((await call('/remote/peers', { from }, { machine: 'managed' })).status, 400);
   assert.equal((await call('/remote/peers', { from: { ...from, circle: 'default' } })).status, 403);
 });
@@ -41,7 +41,8 @@ test('the remote API is for the relay, naming another machine', async () => {
 test('discovery lists live managed agents in the caller circle only', async () => {
   const { call, directory } = managed();
   directory.addAgent({ id: 'other', workspace: null, created_by: 'web', circle: 'research' });
-  directory.addAgent({ id: 'mine', workspace: null, created_by: 'daemon', home_machine: 'laptop' });
+  directory.addAgent({ id: 'gone', workspace: null, created_by: 'web' });
+  directory.retire('gone');
   const listed = await call('/remote/peers', { from });
   assert.deepEqual((listed.body.peers as { peer_id: string }[]).map((p) => p.peer_id), ['a']);
   assert.ok(listed.body.store_epoch);
@@ -86,7 +87,7 @@ test('a waited read settles from the result before the report lands', async () =
   assert.deepEqual([read.body.state, read.body.close_reason], ['settled', 'aborted']);
 });
 
-test('creates are refused for a stale id, a changed epoch, another circle or a non-managed agent', async () => {
+test('creates are refused for a stale id, a changed epoch, another circle or a retired agent', async () => {
   const { call, directory } = managed();
   const epoch = await epochOf(call);
   const ask = (extra: Record<string, unknown>) => call('/remote/ask', { id: remoteID(), from, to_peer: 'a', text: 'q', expected_epoch: epoch, ...extra });
@@ -96,8 +97,9 @@ test('creates are refused for a stale id, a changed epoch, another circle or a n
   assert.equal(changed.status, 409);
   assert.equal((changed.body.detail as { error: string }).error, 'epoch_changed');
   assert.equal((await ask({ from: { ...from, circle: 'research' } })).status, 404);
-  directory.addAgent({ id: 'home', workspace: null, created_by: 'daemon', home_machine: 'laptop' });
-  assert.equal((await ask({ to_peer: 'home' })).status, 404);
+  directory.addAgent({ id: 'gone', workspace: null, created_by: 'web' });
+  directory.retire('gone');
+  assert.equal((await ask({ to_peer: 'gone' })).status, 404);
 });
 
 test('a read of an unknown id fences it, so a late create dispatches nothing', async () => {

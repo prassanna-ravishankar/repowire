@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { Gateway } from '../src/gateway';
-import { cutoffs, DEFAULT_POLICY, mostConservative, parsePolicy, REMOTE_WINDOW_S } from '../src/retention';
+import { cutoffs, DEFAULT_POLICY, REMOTE_WINDOW_S } from '../src/retention';
 import { fakeState } from './support/state';
 
 const DAY = 24 * 3600 * 1000;
@@ -79,7 +79,7 @@ test('sweeps run at most hourly, on the request that finds one due', () => {
 
 test('cross-machine records keep the protocol window whatever the policy', () => {
   const { owner, sql, rows } = directory();
-  owner.setRetention('laptop', { content_s: 0, records_s: 0, ask_life_s: 0 });
+  owner.setRetention({ content_s: 0, records_s: 0, ask_life_s: 0 });
   for (const [id, age] of [['old', 8 * DAY], ['live', 6 * DAY]] as const) {
     sql.exec(`INSERT INTO remote_fences (id, from_machine, from_peer, created_at) VALUES (?, 'm', 'p', ?)`, id, agoS(age));
     sql.exec(`INSERT INTO remote_inbound (id, kind, from_machine, from_peer, from_name, from_circle, to_agent, text, created_at, state)
@@ -90,9 +90,9 @@ test('cross-machine records keep the protocol window whatever the policy', () =>
   assert.deepEqual(rows('SELECT id FROM remote_fences').map((row) => row.id), ['live']);
 });
 
-test('the daemon\'s policy governs, with nothing younger than the ask lifetime expiring', () => {
+test('the owner\'s policy governs, with nothing younger than the ask lifetime expiring', () => {
   const { owner, sql, rows } = directory();
-  owner.setRetention('laptop', { content_s: 60, records_s: 0, ask_life_s: 6 * 3600 });
+  owner.setRetention({ content_s: 60, records_s: 0, ask_life_s: 6 * 3600 });
   for (const [op, age] of [['young', 2 * 3600 * 1000], ['past', 7 * 3600 * 1000]] as const) {
     sql.exec(`INSERT INTO runs (agent, op, started_at, settled_at, status, answer) VALUES ('a', ?, ?, ?, 'done', 'text')`, op, ago(age), ago(age));
   }
@@ -108,18 +108,17 @@ test('content goes no later than its record', () => {
   assert.equal(cutoffs({ content_s: 0, records_s: 0, ask_life_s: 3600 }, NOW).content, null);
 });
 
-test('the policy header is taken only when every field is a whole number of seconds in range', () => {
-  assert.deepEqual(parsePolicy('{"content_s":604800,"records_s":0,"ask_life_s":86400}'), { content_s: 604800, records_s: 0, ask_life_s: 86400 });
-  for (const raw of [null, '', 'not json', '{"content_s":-1,"records_s":0,"ask_life_s":0}', '{"content_s":1.5,"records_s":0,"ask_life_s":0}', '{"records_s":0,"ask_life_s":0}']) {
-    assert.equal(parsePolicy(raw), null, String(raw));
-  }
+test('without a policy of its own an owner gets the shared defaults; one it sets replaces them', () => {
   const { owner } = directory();
   assert.deepEqual(owner.retentionPolicy(), DEFAULT_POLICY);
+  const policy = { content_s: 3 * 86400, records_s: 30 * 86400, ask_life_s: 7200 };
+  owner.setRetention(policy);
+  assert.deepEqual(owner.retentionPolicy(), policy);
 });
 
 test('a request outlives an ask that ran past the records window, timed from when it settled', () => {
   const { owner, sql, rows } = directory();
-  owner.setRetention('laptop', { content_s: 7 * 86400, records_s: 30 * 86400, ask_life_s: 86400 });
+  owner.setRetention({ content_s: 7 * 86400, records_s: 30 * 86400, ask_life_s: 86400 });
   sql.exec(`INSERT INTO runs (agent, op, started_at, settled_at, status, answer) VALUES ('a', 'long', ?, ?, 'done', '42')`, ago(90 * DAY), ago(60 * 1000));
   sql.exec(`INSERT INTO requests (id, agent, kind, requester, text, digest, created_at, state) VALUES ('long', 'a', 'ask', 'r', 'q', 'h', ?, 'accepted')`, ago(90 * DAY));
   assert.deepEqual(owner.housekeep(NOW), {});
@@ -127,14 +126,30 @@ test('a request outlives an ask that ran past the records window, timed from whe
   assert.deepEqual(rows('SELECT answer FROM runs'), [{ answer: '42' }]);
 });
 
-test('several daemons: each class is kept as long as any of them asks', () => {
-  assert.deepEqual(mostConservative([
-    { content_s: 7 * 86400, records_s: 30 * 86400, ask_life_s: 3600 },
-    { content_s: 1 * 86400, records_s: 0, ask_life_s: 86400 },
-  ]), { content_s: 7 * 86400, records_s: 0, ask_life_s: 86400 });
-  const { owner } = directory();
-  owner.setRetention('laptop', { content_s: 86400, records_s: 30 * 86400, ask_life_s: 3600 });
-  owner.setRetention('desktop', { content_s: 3 * 86400, records_s: 10 * 86400, ask_life_s: 7200 });
-  owner.setRetention('laptop', { content_s: 2 * 86400, records_s: 30 * 86400, ask_life_s: 3600 });
-  assert.deepEqual(owner.retentionPolicy(), { content_s: 3 * 86400, records_s: 30 * 86400, ask_life_s: 7200 });
+// A Gateway from before managed agents were reached only through the relay
+// kept one policy per daemon that connected. The first policy read takes the
+// most conservative of them as the owner's, so no deployed data goes sooner.
+test('per-daemon policies from before become the owner policy, the most conservative of them', () => {
+  const state = fakeState();
+  state.storage.kv.put('retention:policy:laptop', { content_s: 0, records_s: 30 * 86400, ask_life_s: 3600 });
+  state.storage.kv.put('retention:policy:desktop', { content_s: 3 * 86400, records_s: 10 * 86400, ask_life_s: 7200 });
+  const owner = new Gateway(state as never, {});
+  assert.deepEqual(owner.retentionPolicy(), { content_s: 0, records_s: 30 * 86400, ask_life_s: 7200 });
+  assert.equal(state.storage.kv.list({ prefix: 'retention:policy:' }).length, 0, 'the per-daemon keys are folded in once');
+  assert.deepEqual(owner.retentionPolicy(), { content_s: 0, records_s: 30 * 86400, ask_life_s: 7200 });
+});
+
+// The daemon's report outbox and its connection list have no reader any
+// more. A sweep deletes them in bounded batches, so a run's answer never
+// outlives retention in a stale copy.
+test('a sweep deletes the old daemon outbox and connection list, a batch at a time', () => {
+  const state = fakeState();
+  for (let i = 0; i < 1200; i++) state.storage.kv.put(`outbox:a:op-${String(i).padStart(4, '0')}`, { text: 'answer' });
+  state.storage.kv.put('clients:recent', [{ kind: 'daemon' }]);
+  const owner = new Gateway(state as never, {});
+  owner.housekeep(NOW);
+  assert.ok(state.storage.kv.list({ prefix: 'outbox:' }).length < 1200, 'a sweep removes a batch');
+  assert.equal(state.storage.kv.get('clients:recent'), undefined);
+  for (let hour = 1; hour <= 5; hour++) owner.housekeep(NOW + hour * 3600_000);
+  assert.equal(state.storage.kv.list({ prefix: 'outbox:' }).length, 0);
 });

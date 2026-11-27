@@ -8,7 +8,7 @@ import { hostedAgent } from './support/agent';
 // Two agents on managed in one owner's Gateway, the Worker's env wired the
 // way Cloudflare wires it: the Gateway reaches agents and itself by name.
 function owner({ delay = 0 } = {}) {
-  const env: Record<string, unknown> = { CONTROL_TOKEN: 'control', HOSTED_TOKEN: 'daemon', HOSTED_OWNER: 'alice', RELAY_URL: 'https://relay.test' };
+  const env: Record<string, unknown> = { CONTROL_TOKEN: 'control', RELAY_URL: 'https://relay.test' };
   const state = fakeState();
   const directory = new Gateway(state as never, env);
   state.storage.kv.put('owner', 'alice');

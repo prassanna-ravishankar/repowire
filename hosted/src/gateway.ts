@@ -3,19 +3,18 @@ import { admission, deriveState, meshWindow, utcDay, type AgentState } from './l
 import { execCost, modelCost, type TokenUsage } from './prices';
 import { followUp, managedTool, type MeshEnv } from './mesh';
 import { MANAGED, remoteResult } from './protocol';
-import { mostConservative, parsePolicy, SWEEP_INTERVAL_MS, sweep, type RetentionPolicy, type TableRetention } from './retention';
+import { DEFAULT_POLICY, mostConservative, SWEEP_INTERVAL_MS, sweep, type RetentionPolicy, type TableRetention } from './retention';
 import type { ExecOutcome, Workspace } from './workspace';
 import type { HostedAgent } from './index';
 import { scopedName } from './http';
 import { wholeAge } from './retention';
 
-// How long an agent's tool call waits for the daemon before failing.
-const CALL_TIMEOUT_MS = 60_000;
-// Keep an outbox entry well inside the storage value limit.
+// A run's answer as the run log keeps it.
 export const REPORT_TEXT_LIMIT = 64_000;
-const RECENT_CLIENTS = 20;
 // Agents and workspaces one sweep deletes whole, each a call to its own object.
 const PURGE_BATCH = 4;
+// Leftover keys of the daemon's gateway link one sweep deletes.
+const LEGACY_BATCH = 500;
 // A purge claim older than this was cut off (an eviction mid-call) and lapses.
 const PURGE_CLAIM_MS = 5 * 60_000;
 const purgeClaimFloor = () => new Date(Date.now() - PURGE_CLAIM_MS).toISOString();
@@ -23,19 +22,11 @@ const MESH_TOOLS = new Set(['notify_peer', 'ask']);
 
 export interface GatewayCall { id: string; agent: string; tool: string; args: Record<string, unknown> }
 
-// An agent on the managed machine: created through the relay and claimed by
-// no daemon. Rows a daemon created, including lazily repaired ones without a
-// home, stay with the daemon.
-export const onManaged = (row: { created_by: unknown; home_machine: unknown }) => row.created_by !== 'daemon' && !row.home_machine;
 export interface GatewayReport {
   agent: string; operationId: string; status: string; reason?: string; text?: string; usage?: TokenUsage;
   // The run's admission, so a report that arrives first can create its row.
   source?: string | null; startedAt?: string;
-  // Who submitted it. Only the daemon's runs go to its outbox; the relay's
-  // are answered from the run log.
-  via?: Via;
 }
-export type Via = 'daemon' | 'control';
 export interface RelayRequest {
   id: string; agent: string; kind: 'ask' | 'notify'; requester: string; text: string;
   created_at: string; state: 'submitting' | 'accepted' | 'not_delivered';
@@ -48,8 +39,7 @@ export interface RelayRequest {
 // A finished command as the agent reports it: the workspace's own outcome, or
 // when the workspace could not answer, the agent's elapsed time and no state.
 export type ExecReport = Pick<ExecOutcome, 'wall_ms' | 'snapshot_at'> & { dirty: boolean | null };
-export interface AgentInit { id: string; workspace: string | null; display_name?: string | null; created_by: string; home_machine?: string | null; circle?: string }
-interface Pending { socket: WebSocket; resolve(text: string): void; reject(error: Error): void }
+export interface AgentInit { id: string; workspace: string | null; display_name?: string | null; created_by: string; circle?: string }
 // A cross-machine request as the source sent it; immutable once recorded.
 export interface RemoteEnvelope {
   id: string; kind: 'ask' | 'notify'; from_machine: string; from_peer: string; from_name: string; from_circle: string;
@@ -61,11 +51,6 @@ export interface RemoteOutboundInit {
 }
 export interface RemoteOutbound extends RemoteOutboundInit {
   state: string; close_reason: string | null; reply: string | null; delivered: number; disposition: string | null; checked_at: number; delivery_at: number;
-}
-
-export interface Client {
-  kind: 'daemon'; machine: string | null; daemon_id: string | null; version: string | null;
-  connected_at: string; connected: boolean; disconnected_at?: string;
 }
 
 const now = () => new Date().toISOString();
@@ -143,19 +128,13 @@ function addUsage(total: Usage, row: Row) {
 
 /**
  * One owner's Durable Object: their directory of agents, runs and workspaces,
- * their usage ledger, and their link to the Repowire daemon.
- *
- * The daemon dials in and holds a hibernating WebSocket (tag `daemon`);
- * agents' mesh tool calls go out over it and the daemon runs them as the
- * calling hosted peer. Settled runs are reported through a durable outbox,
- * resent on every connect until the daemon acknowledges them. The relay
- * watches the owner over a second socket kind (tag `ui`) that gets a snapshot
- * and then every change. Agents and workspaces push their state here, so
- * listing never wakes an agent. Protocol pings are answered by the runtime,
- * so idle links never wake this object.
+ * and their usage ledger. The relay watches the owner over a hibernating
+ * WebSocket (tag `ui`) that gets a snapshot and then every change. Agents and
+ * workspaces push their state here, so listing never wakes an agent.
+ * Protocol pings are answered by the runtime, so an idle watch never wakes
+ * this object.
  */
 export class Gateway extends DurableObject {
-  private pending = new Map<string, Pending>();
   private sql = this.ctx.storage.sql;
 
   constructor(ctx: DurableObjectState, env: unknown) {
@@ -170,31 +149,10 @@ export class Gateway extends DurableObject {
 
   async fetch(request: Request): Promise<Response> {
     if (request.headers.get('Upgrade') !== 'websocket') return new Response('Expected WebSocket', { status: 426 });
+    if (new URL(request.url).pathname !== '/events') return new Response('Not found', { status: 404 });
     const [client, server] = Object.values(new WebSocketPair());
-    if (new URL(request.url).pathname === '/events') {
-      this.ctx.acceptWebSocket(server, ['ui']);
-      server.send(JSON.stringify(await this.snapshot()));
-      return new Response(null, { status: 101, webSocket: client });
-    }
-    // One daemon per owner: a reconnect replaces a socket that may be half open.
-    for (const old of this.ctx.getWebSockets('daemon')) {
-      await this.webSocketClose(old);
-      old.close(1012, 'Replaced by a newer daemon connection');
-    }
-    const header = (name: string) => request.headers.get(name)?.slice(0, 200) || null;
-    const info: Client = {
-      kind: 'daemon', machine: header('X-Repowire-Machine'), daemon_id: header('X-Repowire-Daemon-Id'),
-      version: header('X-Repowire-Version'), connected_at: now(), connected: true,
-    };
-    server.serializeAttachment(info);
-    const policy = parsePolicy(request.headers.get('X-Repowire-Retention'));
-    if (policy) this.setRetention(info.daemon_id ?? 'unknown', policy);
-    this.ctx.acceptWebSocket(server, ['daemon']);
-    for (const [id, report] of await this.ctx.storage.list<GatewayReport>({ prefix: 'outbox:' })) {
-      server.send(JSON.stringify({ type: 'settled', id, ...report }));
-    }
-    this.ui({ type: 'client', client: info });
-    this.housekeep();
+    this.ctx.acceptWebSocket(server, ['ui']);
+    server.send(JSON.stringify(this.snapshot()));
     return new Response(null, { status: 101, webSocket: client });
   }
 
@@ -213,22 +171,7 @@ export class Gateway extends DurableObject {
     return this.ctx.storage.get<string>('owner');
   }
 
-  // Ownership never changes until phase 4 (rfcs/managed-in-the-mesh.md): a
-  // create that would move an agent between managed and a daemon, or
-  // between daemons, is refused, so each runtime keeps one ask authority. A
-  // daemon may fill the home of its own row created before homes existed.
   addAgent(init: AgentInit) {
-    const existing = this.sql.exec('SELECT created_by, home_machine FROM agents WHERE id = ?', init.id).toArray()[0];
-    const home = init.home_machine ?? null;
-    if (existing) {
-      const daemonOwned = (by: unknown) => by === 'daemon';
-      if (daemonOwned(existing.created_by) !== daemonOwned(init.created_by)) {
-        return { conflict: `Agent ${init.id} belongs to ${daemonOwned(existing.created_by) ? 'a daemon' : 'managed'}` };
-      }
-      if (existing.home_machine && home && existing.home_machine !== home) {
-        return { conflict: `Agent ${init.id} belongs to machine ${existing.home_machine}` };
-      }
-    }
     // A workspace being deleted takes no new agent until the deletion ends:
     // its files are going, whatever the newcomer expects of them.
     if (init.workspace && this.sql.exec('SELECT 1 FROM workspaces WHERE id = ? AND purging_at > ?', init.workspace, purgeClaimFloor()).toArray().length) {
@@ -236,11 +179,10 @@ export class Gateway extends DurableObject {
     }
     const at = now();
     this.sql.exec(
-      `INSERT INTO agents (id, workspace, display_name, home_machine, circle, created_at, created_by, state, state_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, 'idle', ?)
-       ON CONFLICT (id) DO UPDATE SET display_name = COALESCE(excluded.display_name, agents.display_name),
-         home_machine = COALESCE(agents.home_machine, excluded.home_machine)`,
-      init.id, init.workspace, init.display_name ?? null, home, init.circle ?? 'managed', at, init.created_by, at);
+      `INSERT INTO agents (id, workspace, display_name, circle, created_at, created_by, state, state_at)
+       VALUES (?, ?, ?, ?, ?, ?, 'idle', ?)
+       ON CONFLICT (id) DO UPDATE SET display_name = COALESCE(excluded.display_name, agents.display_name)`,
+      init.id, init.workspace, init.display_name ?? null, init.circle ?? 'managed', at, init.created_by, at);
     // A purged workspace taken up again starts empty.
     if (init.workspace) this.sql.exec('INSERT INTO workspaces (id) VALUES (?) ON CONFLICT (id) DO UPDATE SET purged_at = NULL', init.workspace);
     return this.publish(init.id);
@@ -344,12 +286,6 @@ export class Gateway extends DurableObject {
     }));
   }
 
-  async clients(): Promise<{ items: Client[]; outbox: number }> {
-    const live = this.ctx.getWebSockets('daemon').map((socket) => socket.deserializeAttachment() as Client);
-    const recent = (await this.ctx.storage.get<Client[]>('clients:recent')) ?? [];
-    return { items: [...live, ...recent], outbox: (await this.ctx.storage.list({ prefix: 'outbox:' })).size };
-  }
-
   // ---- runs and metering --------------------------------------------------
 
   // A settled run is a record and its answer is content; an open run stays.
@@ -397,8 +333,7 @@ export class Gateway extends DurableObject {
   }
 
   async report(report: GatewayReport) {
-    const id = `outbox:${report.agent}:${report.operationId}`;
-    const { source, startedAt, via, ...settled } = report;
+    const { source, startedAt, ...settled } = report;
     const stored = { ...settled, text: report.text?.slice(0, REPORT_TEXT_LIMIT) };
     const usage = report.usage;
     const cost = usage ? modelCost(usage) : 0;
@@ -424,16 +359,9 @@ export class Gateway extends DurableObject {
     // The asker's run completed: a reply it is owed may be deliverable now.
     const owner = await this.owner();
     if (owner) this.ctx.waitUntil(followUp(this.env as MeshEnv, owner));
-    // The relay's runs were never queued by the daemon; their answer is in the
-    // run log, so the outbox does not carry them.
-    if ((via ?? 'daemon') === 'daemon') {
-      await this.ctx.storage.put(id, stored);
-      this.daemon()?.send(JSON.stringify({ type: 'settled', id, ...stored }));
-    }
     const run = this.run(report.agent, report.operationId);
     if (run) this.ui({ type: 'run', agent: report.agent, run });
     this.refresh(report.agent, report.operationId, report.reason ?? null);
-    await this.publishOutbox();
     this.housekeep();
   }
 
@@ -649,7 +577,7 @@ export class Gateway extends DurableObject {
   // as running, the workspace cannot be claimed for deletion.
   execStarted(workspace: string, agent?: string) {
     if (agent && !this.agent(agent)) {
-      const added = this.addAgent({ id: agent, workspace, created_by: 'daemon' });
+      const added = this.addAgent({ id: agent, workspace, created_by: 'web' });
       if (added && 'conflict' in added) throw new Error(String(added.conflict));
     }
     if (this.sql.exec('SELECT 1 FROM workspaces WHERE id = ? AND purging_at > ?', workspace, purgeClaimFloor()).toArray().length) {
@@ -701,7 +629,6 @@ export class Gateway extends DurableObject {
       owner: await this.owner(), agents: Object.values(states).reduce((a, b) => a + b, 0), agents_by_state: states,
       workspaces: Number(this.sql.exec('SELECT COUNT(*) AS n FROM workspaces').one().n),
       running_containers: Number(this.sql.exec('SELECT COALESCE(SUM(running), 0) AS n FROM workspaces').one().n),
-      connected_daemons: this.ctx.getWebSockets('daemon').length,
       last_active_at: this.sql.exec('SELECT MAX(state_at) AS at FROM agents').one().at,
       today: this.usageTotal('day = ?', day), month: this.usageTotal('day >= ?', `${day.slice(0, 7)}-01`),
     };
@@ -720,8 +647,8 @@ export class Gateway extends DurableObject {
 
   // ---- mesh link ----------------------------------------------------------
 
-  // A mesh tool call. The owner's rate limit applies to every sent message;
-  // an agent on managed is served here, a daemon's agent by its daemon.
+  // A mesh tool call, run through the relay as the calling agent. The
+  // owner's rate limit applies to every sent message.
   async call(call: GatewayCall): Promise<string> {
     if (MESH_TOOLS.has(call.tool)) {
       const kept = meshWindow((await this.ctx.storage.get<number[]>('mesh:recent')) ?? [], Date.now());
@@ -729,77 +656,46 @@ export class Gateway extends DurableObject {
       await this.ctx.storage.put('mesh:recent', kept);
     }
     const row = this.agent(call.agent);
-    if (row && onManaged(row)) {
-      const owner = await this.owner();
-      if (!owner) throw new Error('This account is not set up for mesh tools');
-      const env = this.env as MeshEnv;
-      const principal = { peer_id: row.id, display_name: (row.display_name as string | null) || row.id, circle: String(row.circle ?? MANAGED) };
-      try {
-        return await managedTool(env, owner, principal, call.tool, call.args);
-      } finally {
-        this.ctx.waitUntil(followUp(env, owner));
-      }
+    if (!row) throw new Error(`Agent ${call.agent} is not in this directory`);
+    const owner = await this.owner();
+    if (!owner) throw new Error('This account is not set up for mesh tools');
+    const env = this.env as MeshEnv;
+    const principal = { peer_id: row.id, display_name: (row.display_name as string | null) || row.id, circle: String(row.circle ?? MANAGED) };
+    try {
+      return await managedTool(env, owner, principal, call.tool, call.args);
+    } finally {
+      this.ctx.waitUntil(followUp(env, owner));
     }
-    const socket = this.daemon();
-    if (!socket) throw new Error('The Repowire daemon is not connected; mesh tools are unavailable right now');
-    const key = `${call.agent}:${call.id}`;
-    return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => this.settle(key, new Error(`The daemon did not answer ${call.tool} within 60 seconds; it may still have run`)), CALL_TIMEOUT_MS);
-      this.pending.set(key, {
-        socket,
-        resolve: (text) => { clearTimeout(timer); resolve(text); },
-        reject: (error) => { clearTimeout(timer); reject(error); },
-      });
-      socket.send(JSON.stringify({ type: 'call', id: key, agent: call.agent, tool: call.tool, args: call.args }));
-    });
-  }
-
-  async webSocketMessage(socket: WebSocket, message: string | ArrayBuffer) {
-    if (typeof message !== 'string' || !this.ctx.getTags(socket).includes('daemon')) return;
-    const frame = JSON.parse(message) as { type?: string; id?: string; text?: string; error?: boolean };
-    if (typeof frame.id !== 'string') return;
-    if (frame.type === 'ack' && frame.id.startsWith('outbox:')) {
-      await this.ctx.storage.delete(frame.id);
-      await this.publishOutbox();
-      return;
-    }
-    if (frame.type !== 'result') return;
-    this.settle(frame.id, frame.error ? new Error(frame.text || 'Mesh tool failed') : frame.text ?? '');
-  }
-
-  async webSocketClose(socket: WebSocket) {
-    if (!this.ctx.getTags(socket).includes('daemon')) return;
-    for (const [key, pending] of this.pending) {
-      if (pending.socket === socket) this.settle(key, new Error('The daemon disconnected before answering; the call may have run'));
-    }
-    const info = socket.deserializeAttachment() as Client | null;
-    if (!info?.connected) return;
-    const gone: Client = { ...info, connected: false, disconnected_at: now() };
-    socket.serializeAttachment(gone);
-    const recent = (await this.ctx.storage.get<Client[]>('clients:recent')) ?? [];
-    await this.ctx.storage.put('clients:recent', [gone, ...recent].slice(0, RECENT_CLIENTS));
-    this.ui({ type: 'client', client: gone });
   }
 
   // ---- internals ----------------------------------------------------------
 
   // Every table's retention, each declared beside its queries. Key-value
-  // state is bounded or live and is not swept: the report outbox (until the
-  // daemon acknowledges it), the recent clients and mesh windows, the owner,
+  // state is bounded or live and is not swept: the mesh window, the owner,
   // the store epoch and the retention keys themselves.
   static readonly retention: TableRetention[] = [
     Gateway.directoryRetention, Gateway.requestsRetention, Gateway.runsRetention, Gateway.usageRetention, Gateway.remoteRetention,
   ];
 
-  // Each daemon's policy, as it last named it on connect. One namespace may
-  // have several machines: the sweep keeps each class as long as any of them
-  // asks, so no machine's data goes sooner than its own policy allows. A
-  // daemon that stops connecting keeps its say. Without any, the shared
-  // defaults apply. Accounts move this to the account (rfcs/managed-accounts.md).
-  setRetention(daemonId: string, policy: RetentionPolicy) { this.ctx.storage.kv.put(`retention:policy:${daemonId}`, policy); }
+  // The owner's policy (rfcs/managed-accounts.md: retention is per account),
+  // or the shared defaults (daemon-go/proto/retention.json) until one is set.
+  setRetention(policy: RetentionPolicy) { this.ctx.storage.kv.put('retention:policy', policy); }
 
   retentionPolicy(): RetentionPolicy {
-    return mostConservative([...this.ctx.storage.kv.list<RetentionPolicy>({ prefix: 'retention:policy:' })].map(([, policy]) => policy));
+    const kv = this.ctx.storage.kv;
+    const own = kv.get<RetentionPolicy>('retention:policy');
+    if (own) return own;
+    // A Gateway from before kept one policy per connected daemon: the most
+    // conservative of them becomes the owner's, once, so no data goes sooner
+    // than a policy it was kept under allowed.
+    const legacy = [...kv.list<RetentionPolicy>({ prefix: 'retention:policy:' })];
+    if (!legacy.length) return DEFAULT_POLICY;
+    const policy = mostConservative(legacy.map(([, value]) => value));
+    this.ctx.storage.transactionSync(() => {
+      kv.put('retention:policy', policy);
+      for (const [key] of legacy) kv.delete(key);
+    });
+    return policy;
   }
 
   // Sweeps at most hourly, on the path of a request that found one due:
@@ -812,10 +708,21 @@ export class Gateway extends DurableObject {
     // than retrying on every request.
     this.ctx.storage.kv.put('retention:swept_at', nowMs);
     const policy = this.retentionPolicy();
+    this.dropLegacy();
     const counts = this.ctx.storage.transactionSync(() => sweep(this.sql, Gateway.retention, policy, nowMs));
     if (Object.keys(counts).length) console.log('retention_swept', JSON.stringify(counts));
     this.ctx.waitUntil(this.purgeWhole(policy, nowMs).catch((error) => console.error('Hosted purge failed', error)));
     return counts;
+  }
+
+  // The daemon's report outbox and connection list, from before managed agents
+  // were reached only through the relay. Nothing reads them, and an outbox
+  // entry holds a run's answer, so a stale copy must not outlive retention: a
+  // batch goes with each sweep until none is left.
+  private dropLegacy() {
+    const kv = this.ctx.storage.kv;
+    kv.delete('clients:recent');
+    for (const [key] of [...kv.list({ prefix: 'outbox:', limit: LEGACY_BATCH })]) kv.delete(key);
   }
 
   // Retired agents, and workspaces no live agent uses, past the whole-object
@@ -873,17 +780,7 @@ export class Gateway extends DurableObject {
     return { agents, workspaces };
   }
 
-  private daemon() {
-    return this.ctx.getWebSockets('daemon').filter((socket) => (socket.deserializeAttachment() as Client | null)?.connected !== false).at(-1);
-  }
 
-  private settle(key: string, outcome: string | Error) {
-    const pending = this.pending.get(key);
-    if (!pending) return;
-    this.pending.delete(key);
-    if (outcome instanceof Error) pending.reject(outcome);
-    else pending.resolve(outcome);
-  }
 
   // Recomputes an agent's state from its runs after any change.
   private refresh(id: string, op?: string, reason?: string | null) {
@@ -909,9 +806,6 @@ export class Gateway extends DurableObject {
     if (workspace) this.ui({ type: 'workspace', workspace });
   }
 
-  private async publishOutbox() {
-    this.ui({ type: 'outbox', depth: (await this.ctx.storage.list({ prefix: 'outbox:' })).size });
-  }
 
   private ui(frame: unknown) {
     const text = JSON.stringify(frame);
@@ -920,17 +814,16 @@ export class Gateway extends DurableObject {
     }
   }
 
-  private async snapshot() {
-    const { items, outbox } = await this.clients();
-    return { type: 'snapshot', agents: this.agents(), workspaces: this.workspaces(), clients: items, outbox, at: now() };
+  private snapshot() {
+    return { type: 'snapshot', agents: this.agents(), workspaces: this.workspaces(), at: now() };
   }
 
   private agentRow(row: Row) {
     const totals = this.usageTotal('agent = ?', row.id as string);
     return {
       id: row.id as string, workspace: row.workspace, display_name: row.display_name, state: row.state, state_at: row.state_at,
-      last_op: row.last_op, last_reason: row.last_reason, description: row.description, home_machine: row.home_machine, circle: row.circle, asks_rev: Number(row.asks_rev ?? 0),
-      created_at: row.created_at, created_by: row.created_by, retired_at: row.retired_at, purged_at: row.purged_at ?? null,
+      last_op: row.last_op, last_reason: row.last_reason, description: row.description, circle: row.circle, asks_rev: Number(row.asks_rev ?? 0),
+      created_at: row.created_at, retired_at: row.retired_at, purged_at: row.purged_at ?? null,
       runs: Number(this.sql.exec('SELECT COUNT(*) AS n FROM runs WHERE agent = ?', row.id as string).one().n),
       tokens_in: totals.tokens_in, tokens_out: totals.tokens_out, cost_usd: totals.cost_usd,
     };

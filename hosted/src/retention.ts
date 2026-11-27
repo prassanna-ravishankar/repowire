@@ -2,9 +2,8 @@
 // policy as the daemon's: two classes, content (text someone wrote) and
 // records (who did what, when, how it ended), never anything younger than
 // the ask lifetime, and a fixed window for cross-machine records. The
-// defaults are the daemon's own file; a connected daemon names its policy on
-// every connect. The Gateway keeps each daemon's policy and sweeps by the most
-// conservative of them (mostConservative).
+// defaults are the daemon's own file; an owner's policy replaces them
+// (Gateway.setRetention).
 import defaults from '../../daemon-go/proto/retention.json';
 
 const DAY_S = 24 * 3600;
@@ -24,27 +23,10 @@ export const REMOTE_WINDOW_S = defaults.remote_window_days * DAY_S;
 export const SWEEP_INTERVAL_MS = 3600_000;
 const BATCH = 500;
 const MAX_BATCHES = 20;
-const MAX_S = 36500 * DAY_S;
 
-// The X-Repowire-Retention header, or null when it is absent or malformed.
-export function parsePolicy(raw: string | null): RetentionPolicy | null {
-  if (!raw) return null;
-  try {
-    const value = JSON.parse(raw) as Record<string, unknown>;
-    const field = (key: string) => {
-      const n = value[key];
-      return typeof n === 'number' && Number.isInteger(n) && n >= 0 && n <= MAX_S ? n : null;
-    };
-    const [content_s, records_s, ask_life_s] = [field('content_s'), field('records_s'), field('ask_life_s')];
-    return content_s === null || records_s === null || ask_life_s === null ? null : { content_s, records_s, ask_life_s };
-  } catch {
-    return null;
-  }
-}
-
-// The policy a sweep applies when several daemons named one: per class the
-// longest keep, where 0 (forever) outranks any age, and the longest ask
-// lifetime. No machine's data goes sooner than its own policy allows.
+// Per class the longest keep, where 0 (forever) outranks any age, and the
+// longest ask lifetime. It folds the per-daemon policies a Gateway kept before
+// managed agents were reached only through the relay into one.
 export function mostConservative(policies: RetentionPolicy[]): RetentionPolicy {
   if (!policies.length) return DEFAULT_POLICY;
   const keep = (ages: number[]) => (ages.includes(0) ? 0 : Math.max(...ages));

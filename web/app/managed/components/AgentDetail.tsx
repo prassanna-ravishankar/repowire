@@ -86,9 +86,8 @@ export function AgentDetail({
               <span>{agent.workspace ? `ws ${agent.workspace}` : "no workspace"}</span>
               <span title="Estimated from metered tokens and container time">est. {formatUsd(agent.cost_usd)}</span>
               <span className="hidden sm:inline">{formatTokens(agent.tokens_in + agent.tokens_out)} tokens</span>
-              <span className="hidden sm:inline">created {formatDate(agent.created_at)} by {agent.created_by}</span>
-              <span>{`home ${agent.home_machine ?? "managed"}`}</span>
-              {onManaged(agent) && <CircleField agent={agent} since={since} onSaved={onAgent} />}
+              <span className="hidden sm:inline">created {formatDate(agent.created_at)}</span>
+              {agent.state !== "retired" && <CircleField agent={agent} since={since} onSaved={onAgent} />}
             </div>
             {agent.description && <p className="mt-1 truncate font-mono text-[11px] text-tertiary-fixed-dim">↳ {agent.description}</p>}
           </div>
@@ -372,13 +371,8 @@ function WorkspaceTab({ agent, workspace, now }: { agent: Agent; workspace: Work
   );
 }
 
-/** An agent on managed: created through the relay and claimed by no daemon. */
-function onManaged(agent: Agent) {
-  return agent.created_by !== "daemon" && !agent.home_machine && agent.state !== "retired";
-}
-
 /**
- * The circle an agent on managed shares with daemon peers across machines.
+ * The circle an agent shares with peers on the owner's other machines.
  * The Worker refuses a machine-local name (default, *, a number, window-N)
  * and the field shows its reason verbatim.
  */

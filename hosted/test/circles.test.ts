@@ -11,20 +11,11 @@ test('sharedCircle agrees with the daemon on every shared vector', () => {
   for (const { circle, shared } of vectors) assert.equal(sharedCircle(circle), shared, JSON.stringify(circle));
 });
 
-test('an agent never changes owner: managed stays managed, a daemon keeps its home', () => {
+test('adding a known agent again keeps its circle and fills a missing display name', () => {
   const owner = new Gateway(fakeState() as never, {});
   owner.addAgent({ id: 'web', workspace: null, created_by: 'web', circle: 'research' });
-  assert.match(String((owner.addAgent({ id: 'web', workspace: null, created_by: 'daemon', home_machine: 'laptop' }) as { conflict?: string }).conflict), /managed/);
-  assert.equal(owner.agent('web')?.home_machine, null);
+  assert.equal(owner.addAgent({ id: 'web', workspace: null, display_name: 'Helper', created_by: 'web' })?.display_name, 'Helper');
   assert.equal(owner.agent('web')?.circle, 'research');
-
-  owner.addAgent({ id: 'old', workspace: null, created_by: 'daemon' });
-  // A daemon may fill the home of its own row created before homes existed.
-  assert.equal((owner.addAgent({ id: 'old', workspace: null, created_by: 'daemon', home_machine: 'laptop' }) as { home_machine?: string }).home_machine, 'laptop');
-  assert.match(String((owner.addAgent({ id: 'old', workspace: null, created_by: 'daemon', home_machine: 'desktop' }) as { conflict?: string }).conflict), /laptop/);
-  assert.match(String((owner.addAgent({ id: 'old', workspace: null, created_by: 'web' }) as { conflict?: string }).conflict), /daemon/);
-  // Recreating with the same owner is idempotent.
-  assert.equal((owner.addAgent({ id: 'old', workspace: null, created_by: 'daemon', home_machine: 'laptop' }) as { conflict?: string }).conflict, undefined);
 });
 
 test('a directory created before agent circles gives every agent the managed circle', () => {

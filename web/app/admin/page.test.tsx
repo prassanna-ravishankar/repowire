@@ -44,7 +44,7 @@ describe("Admin page", () => {
     expect(screen.getByText("$30 alert")).toBeInTheDocument();
   });
 
-  it("shows actual spend, projection, unavailable datasets and per-owner gateways", async () => {
+  it("shows actual spend, projection, unavailable datasets and the owner table", async () => {
     vi.stubGlobal("ResizeObserver", NoopObserver);
     stub(all);
     render(<AdminPage />);
@@ -52,9 +52,8 @@ describe("Admin page", () => {
     expect(screen.getByText(/Projected month end/)).toBeInTheDocument();
     expect(screen.getByText(/^proj\. \$/)).toBeInTheDocument();
     expect(screen.getByText("Workers AI analytics unavailable: dataset not enabled for this account")).toBeInTheDocument();
-    const table = screen.getAllByRole("table").find((t) => t.textContent?.includes("Gateway"))!;
-    const row = Array.from(table.querySelectorAll("tr")).find((tr) => tr.textContent?.includes("token-c0ffee"))!;
-    expect(row).toHaveTextContent("none");
+    const table = screen.getAllByRole("table").find((t) => t.textContent?.includes("Last active"))!;
+    expect(Array.from(table.querySelectorAll("tr")).some((tr) => tr.textContent?.includes("token-c0ffee"))).toBe(true);
   });
 
   it("shows not authorised for non-admins", async () => {

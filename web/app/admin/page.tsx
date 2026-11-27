@@ -203,7 +203,7 @@ function Tiles({ summary, sandboxes, costs }: { summary: AdminSummary; sandboxes
         sub={[`${live} active`, `${s.working} working`, s.failed ? `${s.failed} failed` : null, `${s.retired} retired`].filter(Boolean).join(" · ")}
       />
       <Tile label="Sandboxes" value={summary.workspaces} sub={[`${summary.running_containers} running`, repair ? `${repair} need repair` : null].filter(Boolean).join(" · ")} />
-      <Tile label="Owners" value={summary.owners} sub={`${summary.connected_daemons} gateway daemon${summary.connected_daemons === 1 ? "" : "s"} connected`} />
+      <Tile label="Owners" value={summary.owners} sub={`${summary.relay?.users_with_daemons ?? 0} with a daemon on the relay`} />
     </div>
   );
 }
@@ -299,17 +299,11 @@ function OwnerTable({ rows, now, onCopied }: { rows: AdminOwner[]; now: number; 
   if (rows.length === 0) return <Card className="p-4 font-mono text-[11px] text-outline">No owners yet.</Card>;
   const sorted = [...rows].sort((a, b) => b.month.cost_usd - a.month.cost_usd);
   const live = (row: AdminOwner) => row.agents - row.agents_by_state.retired;
-  const daemons = (row: AdminOwner) => (
-    <span className={cn("inline-flex items-center gap-1.5", row.connected_daemons ? "text-on-surface-variant" : "text-outline")}>
-      <span className={cn("h-1.5 w-1.5 rounded-full", row.connected_daemons ? "bg-secondary" : "bg-outline")} />
-      {row.connected_daemons ? row.connected_daemons : "none"}
-    </span>
-  );
   return (
     <Card>
       <DataTable
-        head={["Owner", "Agents", "Working", "Failed", "Workspaces", "Running", "Gateway", "Today est.", "MTD est.", "Last active"]}
-        numeric={[1, 2, 3, 4, 5, 7, 8]}
+        head={["Owner", "Agents", "Working", "Failed", "Workspaces", "Running", "Today est.", "MTD est.", "Last active"]}
+        numeric={[1, 2, 3, 4, 5, 6, 7]}
         rows={sorted.map((row) => ({
           key: row.owner,
           cells: [
@@ -319,7 +313,6 @@ function OwnerTable({ rows, now, onCopied }: { rows: AdminOwner[]; now: number; 
             <span key="f" className={cn(row.agents_by_state.failed > 0 && "text-error")}>{row.agents_by_state.failed}</span>,
             row.workspaces,
             row.running_containers,
-            daemons(row),
             formatUsd(row.today.cost_usd),
             <span key="c" className="text-on-surface">{formatUsd(row.month.cost_usd)}</span>,
             formatAgo(row.last_active_at, now),
@@ -333,7 +326,7 @@ function OwnerTable({ rows, now, onCopied }: { rows: AdminOwner[]; now: number; 
           state: <span className="tabular-nums text-on-surface">{formatUsd(row.month.cost_usd)}</span>,
           sub: (
             <>
-              {live(row)} agents{row.agents_by_state.failed ? <span className="text-error"> · {row.agents_by_state.failed} failed</span> : null} · gateway {daemons(row)} · active {formatAgo(row.last_active_at, now)}
+              {live(row)} agents{row.agents_by_state.failed ? <span className="text-error"> · {row.agents_by_state.failed} failed</span> : null} · active {formatAgo(row.last_active_at, now)}
             </>
           ),
         }))}
@@ -344,7 +337,6 @@ function OwnerTable({ rows, now, onCopied }: { rows: AdminOwner[]; now: number; 
 
 function Connections({ summary }: { summary: AdminSummary }) {
   const rows: [string, ReactNode, string][] = [
-    ["Gateway daemons", summary.connected_daemons, "Daemons holding a Worker gateway socket (mesh tools for hosted agents)"],
     ["Relay daemons", summary.relay?.daemons_connected ?? "-", "Daemons connected to this relay"],
     ["Users with daemons", summary.relay?.users_with_daemons ?? "-", "Relay accounts with at least one daemon online"],
     ["OAuth grants", summary.relay?.oauth_grants_active ?? "-", "Active app authorisations"],

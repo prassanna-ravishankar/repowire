@@ -88,15 +88,6 @@ describe("Managed page", () => {
     expect(within(list).getByText("old-experiment")).toBeInTheDocument();
   });
 
-  it("warns when no daemon is connected, and clears when one connects", async () => {
-    const f = fixtures();
-    stubApi((url) => (url.endsWith("/clients") ? json({ ...f.clients, gateway: [], outbox: 3 }) : undefined));
-    render(<ManagedPage />);
-    expect(await screen.findByText(/daemon is not connected/)).toHaveTextContent("3 results wait in the outbox");
-    FakeEventSource.instances[0].emit({ type: "client", client: f.clients.gateway[0] });
-    expect(screen.queryByText(/daemon is not connected/)).toBeNull();
-  });
-
   it("retries a failed send with the same web- operationId", async () => {
     let posts = 0;
     const calls = stubApi((url, init) => {
@@ -163,19 +154,6 @@ describe("Managed page", () => {
 
 describe("Managed page live state", () => {
   const listed = (name: string) => within(screen.getByRole("complementary")).getByText(name).closest("button")!;
-
-  it("does not warn about the daemon when every agent is on managed", async () => {
-    const f = fixtures();
-    stubApi((url) => {
-      if (url.endsWith("/clients")) return json({ ...f.clients, gateway: [], outbox: 0 });
-      if (url.endsWith("/agents")) return json({ items: f.agents.filter((a) => a.created_by !== "daemon") });
-      return undefined;
-    });
-    render(<ManagedPage />);
-    await screen.findByRole("complementary");
-    await waitFor(() => expect(screen.getAllByText(/nightly-digest/).length).toBeGreaterThan(0));
-    expect(screen.queryByText(/daemon is not connected/)).toBeNull();
-  });
 
   it("does not let a slow HTTP bootstrap overwrite a newer stream frame", async () => {
     const f = fixtures();
@@ -244,7 +222,7 @@ describe("Managed page live state", () => {
     expect((await screen.findAllByText("WORKING")).length).toBeGreaterThan(0);
     await waitFor(() => expect(runReads).toBeGreaterThanOrEqual(1));
     const before = runReads;
-    FakeEventSource.latest.emit({ type: "snapshot", agents: [{ ...f.agents[0], state: "idle" }], workspaces: f.workspaces, clients: f.clients.gateway, outbox: 0, at: "now" });
+    FakeEventSource.latest.emit({ type: "snapshot", agents: [{ ...f.agents[0], state: "idle" }], workspaces: f.workspaces, at: "now" });
     await waitFor(() => expect(runReads).toBe(before + 1));
     await waitFor(() => expect(screen.getAllByText("ANSWERED").length).toBeGreaterThanOrEqual(2));
   });
@@ -271,15 +249,6 @@ describe("Managed page live state", () => {
     expect(patches).toEqual(["default", "research"]);
     // The saved agent is applied without any stream frame.
     expect(screen.getByRole("button", { name: "circle research" })).toBeInTheDocument();
-    window.location.hash = "";
-  });
-
-  it("offers no circle for a daemon's agent", async () => {
-    stubApi();
-    window.location.hash = "#/agents/helper";
-    render(<ManagedPage />);
-    await screen.findAllByText(/home/);
-    expect(screen.queryByRole("button", { name: /^circle / })).toBeNull();
     window.location.hash = "";
   });
 

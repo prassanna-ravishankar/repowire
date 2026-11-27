@@ -12,9 +12,7 @@ function agent(now: number, partial: Partial<Agent> & Pick<Agent, "id" | "state"
     last_op: null,
     last_reason: null,
     description: null,
-    home_machine: "prass-mbp",
     created_at: iso(now, 60 * 30),
-    created_by: "daemon",
     retired_at: null,
     runs: 0,
     tokens_in: 0,
@@ -34,7 +32,7 @@ export function fixtures(now = Date.now()) {
   const agents: Agent[] = [
     agent(now, { id: "helper", state: "working", workspace: "project", last_op: "web-3f2a9c1e-0000-4000-8000-000000000001", description: "Summarising failing parser tests", runs: 14, tokens_in: 182_400, tokens_out: 21_300, cost_usd: 0.41 }, 0.7),
     agent(now, { id: "reviewer-hosted", state: "idle", workspace: "project", runs: 6, tokens_in: 64_100, tokens_out: 8_800, cost_usd: 0.12 }, 2),
-    agent(now, { id: "nightly-digest", state: "failed", last_reason: "run_failed: model error 429", last_op: "job-7c1e", runs: 31, tokens_in: 402_000, tokens_out: 51_200, cost_usd: 0.88, home_machine: null, created_by: "web" }, 12),
+    agent(now, { id: "nightly-digest", state: "failed", last_reason: "run_failed: model error 429", last_op: "job-7c1e", runs: 31, tokens_in: 402_000, tokens_out: 51_200, cost_usd: 0.88 }, 12),
     agent(now, { id: "scratch", state: "parked", workspace: "scratch", last_reason: "waiting on ask #a81f", runs: 3, tokens_in: 12_000, tokens_out: 1_900, cost_usd: 0.03 }, 41),
     agent(now, { id: "haiku-bot", state: "idle", runs: 2, tokens_in: 3_100, tokens_out: 400, cost_usd: 0.004 }, 60 * 20),
     agent(now, { id: "old-experiment", state: "retired", retired_at: iso(now, 60 * 48), runs: 9, tokens_in: 90_000, tokens_out: 10_000, cost_usd: 0.19 }, 60 * 48),
@@ -48,12 +46,10 @@ export function fixtures(now = Date.now()) {
 
   const clients: Clients = {
     daemons: [{ daemon_id: "d-prass-mbp", connected_at: iso(now, 60 * 5), connected: true }],
-    gateway: [{ kind: "daemon", machine: "prass-mbp", daemon_id: "d-prass-mbp", version: "0.11.2", connected_at: iso(now, 60 * 5), connected: true }],
     apps: [
       { grant_id: "g-1", client_id: "claude-ai", client_name: "Claude", scope: "mesh:read mesh:write", expires: iso(now, -60 * 24 * 20), active: true },
       { grant_id: "g-2", client_id: "cli-test", scope: "mesh:read", expires: iso(now, -60 * 24 * 2), active: false },
     ],
-    outbox: 0,
   };
 
   const runs: Run[] = [
@@ -83,27 +79,25 @@ export function fixtures(now = Date.now()) {
     agents_by_state: { idle: 4, working: 2, parked: 1, failed: 1, retired: 3 },
     workspaces: 5,
     running_containers: 1,
-    connected_daemons: 2,
     today: usage(0.62),
     month: usage(11.84),
     relay: { daemons_connected: 4, users_with_daemons: 3, oauth_grants_active: 5 },
   };
 
-  const owner = (id: string, byState: AdminOwner["agents_by_state"], workspaces: number, running: number, daemons: number, minutesAgo: number, today: number, month: number): AdminOwner => ({
+  const owner = (id: string, byState: AdminOwner["agents_by_state"], workspaces: number, running: number, minutesAgo: number, today: number, month: number): AdminOwner => ({
     owner: id,
     agents: Object.values(byState).reduce((a, b) => a + b, 0),
     agents_by_state: byState,
     workspaces,
     running_containers: running,
-    connected_daemons: daemons,
     last_active_at: iso(now, minutesAgo),
     today: usage(today),
     month: usage(month),
   });
   const owners: AdminOwner[] = [
-    owner("token-3f9a2c", { idle: 2, working: 1, parked: 1, failed: 1, retired: 1 }, 3, 1, 1, 1, 0.48, 9.2),
-    owner("token-81bd07", { idle: 1, working: 1, parked: 0, failed: 0, retired: 1 }, 1, 0, 1, 60 * 5, 0.14, 2.1),
-    owner(`token-c0ffee${"5e".repeat(26)}08e6`, { idle: 1, working: 0, parked: 0, failed: 0, retired: 1 }, 1, 0, 0, 60 * 24 * 9, 0, 0.54),
+    owner("token-3f9a2c", { idle: 2, working: 1, parked: 1, failed: 1, retired: 1 }, 3, 1, 1, 0.48, 9.2),
+    owner("token-81bd07", { idle: 1, working: 1, parked: 0, failed: 0, retired: 1 }, 1, 0, 60 * 5, 0.14, 2.1),
+    owner(`token-c0ffee${"5e".repeat(26)}08e6`, { idle: 1, working: 0, parked: 0, failed: 0, retired: 1 }, 1, 0, 60 * 24 * 9, 0, 0.54),
   ];
 
   const sandboxes: AdminSandbox[] = [

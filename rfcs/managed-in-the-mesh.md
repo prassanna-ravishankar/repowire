@@ -1,6 +1,6 @@
 # Managed in the mesh
 
-Status: design approved by Codex review (revision 3); built and verified live on 2026-10-27 (draft PR #517). Phase 2 of
+Status: design approved by Codex review (revision 3); built and verified live on 2026-10-27 (draft PR #517). Since 2026-11-27 there are no daemon-owned agents: every agent is on `managed`, and references below to agents a daemon owns describe the earlier shape. Phase 2 of
 [managed-machine](managed-machine.md). It extends
 [cross-machine circles](cross-machine-circles.md) (#516) to the `managed`
 machine. Every guarantee, id rule and state machine of that RFC applies

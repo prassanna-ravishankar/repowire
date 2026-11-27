@@ -2,7 +2,6 @@ package service
 
 import (
 	"context"
-	"fmt"
 	"log"
 	"regexp"
 	"time"
@@ -86,71 +85,38 @@ func (c *JobCompletion) complete(ctx context.Context, peerID proto.PeerID, text 
 		if work.AssignedPeerID == nil || *work.AssignedPeerID != string(peerID) || work.Phase == nil || *work.Phase != "turn_started" {
 			continue
 		}
-		if attemptID := currentWorkAttempt(work); attemptID != "" {
-			if err := c.finish(ctx, work, attemptID, text); err != nil {
-				log.Printf("job completion: complete %s: %v", work.WorkID, err)
+		attemptID := currentWorkAttempt(work)
+		if attemptID == "" {
+			continue
+		}
+		status, phase := "completed", "completed"
+		if _, err := c.store.UpdateAttempt(ctx, work.WorkID, attemptID, state.AttemptUpdate{Status: &status, Phase: &phase}); err != nil {
+			continue
+		}
+		reason := "turn_complete"
+		summary := text
+		if len(summary) > 2000 {
+			summary = summary[:2000]
+		}
+		message := text
+		if len(message) > 65536 {
+			message = message[:65536]
+		}
+		updated, err := c.store.UpdateWorkState(ctx, work.WorkID, state.WorkUpdate{State: "completed", StateReason: &reason, Phase: &phase, ResultSummary: &summary, ResultData: map[string]any{"final_message": message}, AttemptID: &attemptID})
+		if err != nil || updated == nil {
+			continue
+		}
+		if c.asks != nil && updated.CorrelationID != nil {
+			_, _ = c.asks.Close(ctx, *updated.CorrelationID, "fire_completed")
+		}
+		c.emit(updated, "running")
+		if c.control != nil {
+			if _, err := c.control.ReleaseExecutorForWork(ctx, updated, "completed"); err != nil {
+				log.Printf("job completion: release %s: %v", updated.WorkID, err)
 			}
 		}
+		c.notifyOwner(ctx, updated)
 	}
-}
-
-// finish completes the attempt and the work with the run's final message,
-// then closes, releases, and notifies.
-func (c *JobCompletion) finish(ctx context.Context, work *state.TrackedWork, attemptID, text string) error {
-	status, phase := "completed", "completed"
-	if _, err := c.store.UpdateAttempt(ctx, work.WorkID, attemptID, state.AttemptUpdate{Status: &status, Phase: &phase}); err != nil {
-		return err
-	}
-	reason := "turn_complete"
-	summary := text
-	if len(summary) > 2000 {
-		summary = summary[:2000]
-	}
-	message := text
-	if len(message) > 65536 {
-		message = message[:65536]
-	}
-	updated, err := c.store.UpdateWorkState(ctx, work.WorkID, state.WorkUpdate{State: "completed", StateReason: &reason, Phase: &phase, ResultSummary: &summary, ResultData: map[string]any{"final_message": message}, AttemptID: &attemptID})
-	if err != nil {
-		return err
-	}
-	if updated == nil {
-		return nil
-	}
-	return c.afterTerminal(ctx, updated, "running", "fire_completed", "completed")
-}
-
-// afterTerminal runs what follows a terminal job state: the ask closes, the
-// change is emitted, a per-fire executor is released, and the owner hears.
-// It is safe to repeat: the ask stays closed and a released executor stays
-// released, while a repeated owner notice is sent again.
-func (c *JobCompletion) afterTerminal(ctx context.Context, work *state.TrackedWork, prior, askReason, releaseReason string) error {
-	if c.asks != nil && work.CorrelationID != nil {
-		_, _ = c.asks.Close(ctx, *work.CorrelationID, askReason)
-	}
-	c.emit(work, prior)
-	if err := c.release(ctx, work, releaseReason); err != nil {
-		return err
-	}
-	c.notifyOwner(ctx, work)
-	return nil
-}
-
-// release frees the work's executor. A release that reports failure (a
-// hosted agent the runtime could not retire) is an error, so a caller that
-// is retried, such as a hosted run's report, tries it again.
-func (c *JobCompletion) release(ctx context.Context, work *state.TrackedWork, reason string) error {
-	if c.control == nil {
-		return nil
-	}
-	released, err := c.control.ReleaseExecutorForWork(ctx, work, reason)
-	if err != nil {
-		return fmt.Errorf("release %s: %w", work.WorkID, err)
-	}
-	if released["status"] == "failed" {
-		return fmt.Errorf("release %s: %v", work.WorkID, released["reason"])
-	}
-	return nil
 }
 
 // OnPeerTerminalOffline fails active work whose assigned executor is
@@ -171,112 +137,48 @@ func (c *JobCompletion) OnPeerTerminalOffline(peerID proto.PeerID, detail string
 			if work.AssignedPeerID == nil || *work.AssignedPeerID != string(peerID) {
 				continue
 			}
-			if attemptID := currentWorkAttempt(work); attemptID != "" {
-				if err := c.failWork(ctx, work, attemptID, "executor_died", detail); err != nil {
-					log.Printf("job completion: fail %s after terminal offline: %v", work.WorkID, err)
+			attemptID := currentWorkAttempt(work)
+			if attemptID == "" {
+				continue
+			}
+			errorData := map[string]any{
+				"reason":  "executor_died",
+				"detail":  detail,
+				"peer_id": peerID,
+			}
+			status, phase := "failed", "executor_died"
+			if _, err := c.store.UpdateAttempt(ctx, work.WorkID, attemptID, state.AttemptUpdate{
+				Status: &status,
+				Phase:  &phase,
+				Error:  errorData,
+			}); err != nil {
+				log.Printf("job completion: fail attempt %s/%s: %v", work.WorkID, attemptID, err)
+				continue
+			}
+			reason := "executor_died"
+			updated, err := c.store.UpdateWorkState(ctx, work.WorkID, state.WorkUpdate{
+				State:       "failed",
+				StateReason: &reason,
+				Phase:       &phase,
+				Error:       errorData,
+				AttemptID:   &attemptID,
+			})
+			if err != nil || updated == nil {
+				log.Printf("job completion: fail work %s after terminal offline: %v", work.WorkID, err)
+				continue
+			}
+			if c.asks != nil && updated.CorrelationID != nil {
+				_, _ = c.asks.Close(ctx, *updated.CorrelationID, "executor_died")
+			}
+			c.emit(updated, activeState)
+			if c.control != nil {
+				if _, err := c.control.ReleaseExecutorForWork(ctx, updated, "executor_died"); err != nil {
+					log.Printf("job completion: release failed work %s: %v", updated.WorkID, err)
 				}
 			}
+			c.notifyOwner(ctx, updated)
 		}
 	}
-}
-
-// OnHostedRun settles the job a hosted run carried, found by the job and
-// attempt markers in its prompt: an answer completes it and a run without
-// one fails it as hosted_unanswered. The settlement observer reruns it when
-// a report is replayed, so each step tolerates finding its work further on.
-// An attempt recovered as runner_interrupted (the daemon stopped before the
-// send confirmed, but the runtime had it) still takes its run's result, as
-// long as no newer attempt replaced it.
-func (c *JobCompletion) OnHostedRun(ctx context.Context, delivery HostedDelivery, result HostedResult) error {
-	if c == nil || c.store == nil || delivery.ToPeerID == "" {
-		return nil
-	}
-	work, attemptID, err := c.hostedWork(ctx, delivery)
-	if err != nil || work == nil {
-		return err
-	}
-	if state.InterruptedByRunner(work) {
-		resumed, err := c.store.ResumeInterruptedAttempt(ctx, work.WorkID, attemptID)
-		if err != nil || resumed == nil {
-			return err
-		}
-		c.emit(resumed, work.State)
-		work = resumed
-	}
-	switch {
-	case work.State == "delivered" || work.State == "running":
-		if result.Status != "done" {
-			return c.failWork(ctx, work, attemptID, "hosted_unanswered", result.Reason)
-		}
-		if work.State == "delivered" {
-			reason, phase := "turn_started", "turn_started"
-			if work, err = c.store.UpdateWorkState(ctx, work.WorkID, state.WorkUpdate{State: "running", StateReason: &reason, Phase: &phase, AttemptID: &attemptID}); err != nil || work == nil {
-				return err
-			}
-			c.emit(work, "delivered")
-		}
-		return c.finish(ctx, work, attemptID, result.Text)
-	case work.State == "completed":
-		return c.afterTerminal(ctx, work, "running", "fire_completed", "completed")
-	case work.State == "failed":
-		return c.afterTerminal(ctx, work, "running", "hosted_unanswered", "hosted_unanswered")
-	case work.State == "expired":
-		// ExpireOverdue ended the job and told its owner; the run's report
-		// retries a release that failed then, until the agent is retired.
-		return c.release(ctx, work, "deadline_exceeded")
-	}
-	return nil
-}
-
-// hostedWork is the job the delivery carried, or nil when it carried none or
-// the job has moved to another attempt or executor.
-func (c *JobCompletion) hostedWork(ctx context.Context, delivery HostedDelivery) (*state.TrackedWork, string, error) {
-	workID, attemptID := workMarker.FindString(delivery.Text), attemptMarker.FindString(delivery.Text)
-	if workID == "" || attemptID == "" {
-		return nil, "", nil
-	}
-	work, err := c.store.GetWork(ctx, workID)
-	if err != nil || work == nil {
-		return nil, "", err
-	}
-	if currentWorkAttempt(work) != attemptID || work.AssignedPeerID == nil || *work.AssignedPeerID != delivery.ToPeerID {
-		return nil, "", nil
-	}
-	return work, attemptID, nil
-}
-
-// failWork fails the attempt and the work with reason, then closes,
-// releases, and notifies.
-func (c *JobCompletion) failWork(ctx context.Context, work *state.TrackedWork, attemptID, reason, detail string) error {
-	prior := work.State
-	errorData := map[string]any{
-		"reason":  reason,
-		"detail":  detail,
-		"peer_id": strOrEmpty(work.AssignedPeerID),
-	}
-	status, phase := "failed", reason
-	if _, err := c.store.UpdateAttempt(ctx, work.WorkID, attemptID, state.AttemptUpdate{
-		Status: &status,
-		Phase:  &phase,
-		Error:  errorData,
-	}); err != nil {
-		return err
-	}
-	stateReason := reason
-	updated, err := c.store.UpdateWorkState(ctx, work.WorkID, state.WorkUpdate{
-		State:       "failed",
-		StateReason: &stateReason,
-		Phase:       &phase,
-		Error:       errorData,
-		AttemptID:   &attemptID,
-	})
-	if err != nil {
-		return err
-	}
-	if updated == nil {
-		return nil
-	}
-	return c.afterTerminal(ctx, updated, prior, reason, reason)
 }
 
 // ExpireOverdue ends every job whose deadline_at is at or before now and that
@@ -324,9 +226,8 @@ func (c *JobCompletion) ExpireOverdue(ctx context.Context, now time.Time) {
 			_, _ = c.asks.Close(ctx, *updated.CorrelationID, reason)
 		}
 		c.emit(updated, work.State)
-		if updated.AssignedPeerID != nil {
-			// A failed release is retried by a hosted run's report (OnHostedRun).
-			if err := c.release(ctx, updated, reason); err != nil {
+		if c.control != nil && updated.AssignedPeerID != nil {
+			if _, err := c.control.ReleaseExecutorForWork(ctx, updated, reason); err != nil {
 				log.Printf("job completion: release expired work %s: %v", updated.WorkID, err)
 			}
 		}

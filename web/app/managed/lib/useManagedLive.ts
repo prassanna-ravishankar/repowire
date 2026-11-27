@@ -53,7 +53,7 @@ export function useManagedLive() {
         buffer.current = null;
         setListError(null);
         setClients(clientData);
-        dispatch({ type: "snapshot", agents, workspaces, clients: clientData.gateway, outbox: clientData.outbox, at: new Date().toISOString() });
+        dispatch({ type: "snapshot", agents, workspaces, at: new Date().toISOString() });
         for (const frame of replay) dispatch(frame);
         setLoaded(true);
       },

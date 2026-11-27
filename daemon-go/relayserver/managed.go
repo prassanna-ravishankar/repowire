@@ -323,34 +323,15 @@ func (s *Server) userApps(userID string) ([]managedApp, error) {
 	return apps, err
 }
 
-// managedClients combines what connects on the user's behalf: daemons on this
-// relay, daemons on the Worker gateway, and OAuth apps. A Worker failure
-// degrades the gateway section with a visible gateway_error, not the response.
+// managedClients lists what connects on the user's behalf: daemons on this
+// relay and OAuth apps.
 func (s *Server) managedClients(w http.ResponseWriter, r *http.Request, user string) {
-	out := map[string]any{"daemons": s.relayDaemons(user), "gateway": []any{}, "outbox": 0}
 	apps, err := s.userApps(user)
 	if err != nil {
 		managedError(w, http.StatusServiceUnavailable, "OAuth storage unavailable")
 		return
 	}
-	out["apps"] = apps
-	if worker, err := s.managedFor(user); err != nil {
-		out["gateway_error"] = err.Error()
-	} else {
-		var gateway struct {
-			Items  []any `json:"items"`
-			Outbox int   `json:"outbox"`
-		}
-		if err := worker.getJSON(r.Context(), "/clients", "", user, &gateway); err != nil {
-			out["gateway_error"] = err.Error()
-		} else {
-			if gateway.Items != nil {
-				out["gateway"] = gateway.Items
-			}
-			out["outbox"] = gateway.Outbox
-		}
-	}
-	writeJSON(w, http.StatusOK, out)
+	writeJSON(w, http.StatusOK, map[string]any{"daemons": s.relayDaemons(user), "apps": apps})
 }
 
 func (s *Server) managedRevokeApp(w http.ResponseWriter, r *http.Request, user string) {

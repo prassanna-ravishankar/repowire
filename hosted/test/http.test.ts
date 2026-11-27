@@ -43,15 +43,14 @@ test('mesh source is optional, bounded, and requires a sender and type', () => {
   }
 });
 
-test('callers: the daemon token is bound to its owner, the control token names one or reaches admin', async () => {
+test('callers: the relay\'s control token names an owner, or reaches admin without one', async () => {
   const { authorize } = await import('../src/http');
-  const env = { HOSTED_TOKEN: 'daemon-secret', HOSTED_OWNER: 'owner-a', CONTROL_TOKEN: 'control-secret' };
+  const env = { CONTROL_TOKEN: 'control-secret' };
   const call = (token: string, owner?: string) => new Request('https://example.test', {
     headers: { Authorization: `Bearer ${token}`, ...(owner ? { 'X-Repowire-Owner': owner } : {}) },
   });
-  assert.deepEqual(await authorize(call('daemon-secret', 'owner-b'), env), { role: 'daemon', owner: 'owner-a' });
-  assert.deepEqual(await authorize(call('control-secret', 'token-abc'), env), { role: 'control', owner: 'token-abc' });
-  assert.deepEqual(await authorize(call('control-secret'), env), { role: 'control', owner: null });
+  assert.deepEqual(await authorize(call('control-secret', 'token-abc'), env), { owner: 'token-abc' });
+  assert.deepEqual(await authorize(call('control-secret'), env), { owner: null });
   await assert.rejects(authorize(call('control-secret', '../x'), env), { status: 400 });
   await assert.rejects(authorize(call('wrong'), env), { status: 401 });
   await assert.rejects(authorize(call('x'), {}), { status: 503 });

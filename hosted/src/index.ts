@@ -6,7 +6,7 @@ import { PiHarness, type PiOperationResult } from 'agents/harness/pi';
 import { Lifecycle, type LifecycleJobContext, type LifecycleJobOutcome } from 'agents/lifecycle';
 import { createAI } from 'agents/models/pi-ai';
 import { authorize, body, escape, HttpError, identifier, scopedName, source, within, type Caller } from './http';
-import { Gateway, onManaged, Registry, REPORT_TEXT_LIMIT, type RelayRequest, type RemoteOutbound, type Via } from './gateway';
+import { Gateway, Registry, REPORT_TEXT_LIMIT, type RelayRequest, type RemoteOutbound } from './gateway';
 import { addResponse, reportDelay, usageSince, zeroUsage, type Cumulative } from './ledger';
 import { LIMITS, type TokenUsage } from './prices';
 import { serial } from './serial';
@@ -24,8 +24,6 @@ interface Env {
   WORKSPACES: DurableObjectNamespace<Workspace>;
   GATEWAYS: DurableObjectNamespace<Gateway>;
   REGISTRY: DurableObjectNamespace<Registry>;
-  HOSTED_TOKEN: string;
-  HOSTED_OWNER: string;
   CONTROL_TOKEN: string;
   MODEL: string;
   // The relay, for settlement pushes to a source machine.
@@ -39,7 +37,7 @@ export type OperationState =
   | { status: 'terminal'; result: { status: string; reason: string | null; text: string | null } };
 // An admitted operation whose report the gateway has not accepted yet, under
 // `report:<op>`. `usage` is allocated once, when it settles, and resent as is.
-interface Unreported { source: string | null; startedAt?: string; usage?: TokenUsage; via?: Via }
+interface Unreported { source: string | null; startedAt?: string; usage?: TokenUsage }
 
 const REPORT_JOB = 'report';
 // Markers one sweep looks at, so a sweep on a submit's path stays small.
@@ -131,16 +129,17 @@ export class HostedAgent extends DurableObject<Env> {
 
   private owner(config: AgentConfig) { return this.env.GATEWAYS.getByName(config.owner); }
 
-  // A mesh tool runs in the daemon as this agent's peer. Not replay-safe: a
-  // message must not be sent twice because a run was interrupted.
-  private meshTool<T extends Schema>(name: string, description: string, parameters: T, daemonTool = name) {
+  // A mesh tool runs through the owner's Gateway as this agent. Not
+  // replay-safe: a message must not be sent twice because a run was
+  // interrupted.
+  private meshTool<T extends Schema>(name: string, description: string, parameters: T, gatewayTool = name) {
     return {
       name, description, parameters,
       execute: async (args: Static<T>, api: { callId: string }) => {
         const config = await this.config();
         if (!config) throw new Error('Agent does not exist');
         const owner = this.owner(config);
-        const text = await owner.call({ id: api.callId, agent: config.id, tool: daemonTool, args: args as Record<string, unknown> });
+        const text = await owner.call({ id: api.callId, agent: config.id, tool: gatewayTool, args: args as Record<string, unknown> });
         if (name === 'set_description') await owner.describe(config.id, String((args as { description: string }).description));
         return { output: [{ type: 'text' as const, text }] };
       },
@@ -159,7 +158,7 @@ export class HostedAgent extends DurableObject<Env> {
   // The Worker checks the budget first; retirement is checked here, in turn
   // with retire(). A new operation records its report and its run row before
   // pi admits it, so a crash in between still reports.
-  async submit(text: string, operationId: string, source: Record<string, string> | undefined, via: Via) {
+  async submit(text: string, operationId: string, source: Record<string, string> | undefined) {
     return this.admission(async () => {
       const config = await this.config();
       if (!config) throw new Error('Agent does not exist');
@@ -169,11 +168,11 @@ export class HostedAgent extends DurableObject<Env> {
       const key = `report:${operationId}`;
       const fresh = !this.kv.get(key) && !this.kv.get(`reported:${operationId}`);
       const owner = this.owner(config);
-      const from = source?.from ?? (via === 'control' ? 'web' : null);
+      const from = source?.from ?? 'web';
       try {
         if (fresh) {
           const startedAt = new Date().toISOString();
-          this.kv.put<Unreported>(key, { source: from, startedAt, via });
+          this.kv.put<Unreported>(key, { source: from, startedAt });
           await this.armReports();
           await owner.runStarted(config.id, operationId, from, startedAt);
         }
@@ -400,9 +399,7 @@ export class HostedAgent extends DurableObject<Env> {
     const key = `report:${operationId}`;
     const stored = this.kv.get<Unreported | true>(key);
     if (!stored) return;
-    // Records from before `via` existed: the web's runs carried a web- id.
     let pending: Unreported = stored === true ? { source: null } : stored;
-    const via = pending.via ?? (operationId.startsWith('web-') ? 'control' : 'daemon');
     if (!pending.usage) {
       const total = this.kv.get<Cumulative>('usage:total') ?? zeroUsage();
       pending = { ...pending, usage: usageSince(total, this.kv.get<Cumulative>('usage:reported') ?? zeroUsage()) };
@@ -416,7 +413,7 @@ export class HostedAgent extends DurableObject<Env> {
     if (!config) return;
     const reason = this.reason(operationId, result);
     await this.owner(config).report({
-      agent: config.id, ...result, reason, usage: pending.usage, source: pending.source, startedAt: pending.startedAt, via,
+      agent: config.id, ...result, reason, usage: pending.usage, source: pending.source, startedAt: pending.startedAt,
     });
     this.ctx.storage.transactionSync(() => {
       this.kv.delete(key);
@@ -471,18 +468,14 @@ async function createAgent(env: Env, caller: Caller, request: Request, input: Re
   const displayName = typeof input.display_name === 'string' ? input.display_name.slice(0, 80) : null;
   const circle = input.circle == null ? DEFAULT_CIRCLE : circleOf(input.circle);
   const directory = env.GATEWAYS.getByName(owner);
-  // A daemon-created agent is a peer on that daemon's mesh: its home.
-  const daemon = caller.role === 'daemon';
-  const homeMachine = daemon ? request.headers.get('X-Repowire-Machine')?.slice(0, 200) || null : null;
   const known = await directory.agent(id);
-  if (known && (known.created_by === 'daemon') !== daemon) throw new HttpError(409, `Agent ${id} belongs to ${daemon ? 'managed' : 'a daemon'}`);
   // A retired id stays retired, purged or not: it never runs again.
   if (known?.retired_at) throw new HttpError(410, `Agent ${id} is retired; its id cannot be used again`);
   const result = await env.AGENTS.getByName(scopedName(owner, id)).spawn({ owner, id, workspace });
   if (result.agent.workspace !== workspace) throw new HttpError(409, 'Agent already exists with a different workspace');
   await directory.owner(owner);
   await env.REGISTRY.getByName('registry').touch(owner);
-  const agent = await directory.addAgent({ id, workspace, display_name: displayName, created_by: daemon ? 'daemon' : 'web', home_machine: homeMachine, circle });
+  const agent = await directory.addAgent({ id, workspace, display_name: displayName, created_by: 'web', circle });
   if (agent && 'conflict' in agent) throw new HttpError(409, String(agent.conflict));
   return json({ created: result.created, agent }, result.created ? 201 : 200);
 }
@@ -497,7 +490,7 @@ async function agentRoute(env: Env, caller: Caller, request: Request, id: string
   // the first time it is addressed.
   // A conflict (the workspace is being deleted) admits nothing.
   if (!await directory.agent(id)) {
-    const repaired = await directory.addAgent({ id, workspace: config.workspace, created_by: 'daemon' });
+    const repaired = await directory.addAgent({ id, workspace: config.workspace, created_by: 'web' });
     if (repaired && 'conflict' in repaired) throw new HttpError(409, String(repaired.conflict));
   }
   if (!rest) {
@@ -508,9 +501,6 @@ async function agentRoute(env: Env, caller: Caller, request: Request, id: string
     if (request.method === 'DELETE') return json({ agent: await agent.retire() });
     if (request.method === 'PATCH') {
       const input = await body(request);
-      const row = await directory.agent(id);
-      // A daemon-owned agent's circle is its daemon peer's.
-      if (!row || !onManaged(row)) throw new HttpError(409, 'Only an agent on managed has a circle here; a daemon agent takes its daemon peer\'s');
       return json({ agent: await directory.setCircle(id, circleOf(input.circle)) });
     }
   }
@@ -525,7 +515,7 @@ async function agentRoute(env: Env, caller: Caller, request: Request, id: string
     if (config.retired) throw new HttpError(410, 'Agent is retired');
     const refusal = await directory.admit(id);
     if (refusal) throw new HttpError(402, refusal);
-    const receipt = await agent.submit(input.text, operationId, source(input.source), caller.role);
+    const receipt = await agent.submit(input.text, operationId, source(input.source));
     if ('retired' in receipt) throw new HttpError(410, 'Agent is retired');
     return json(receipt, 202);
   }
@@ -609,7 +599,7 @@ async function submitRequest(env: Env, owner: string, input: Record<string, unkn
   const agent = env.AGENTS.getByName(scopedName(owner, agentId));
   const config = await agent.config();
   const row = config && await directory.agent(agentId);
-  if (!config || !row || !onManaged(row)) throw new HttpError(404, 'Agent not found on the managed machine');
+  if (!config || !row) throw new HttpError(404, 'Agent not found on the managed machine');
   if (config.retired) throw new HttpError(410, 'Agent is retired');
   const refusal = await directory.admit(agentId);
   if (refusal) throw new HttpError(402, refusal);
@@ -618,7 +608,7 @@ async function submitRequest(env: Env, owner: string, input: Record<string, unkn
   const framed = `<peer-message from="@${escape(requester)}" type="${kind}" correlation-id="${id}">\n${escape(input.text)}\n</peer-message>`;
   let accepted;
   try {
-    accepted = await agent.submit(framed, id, { from: requester, type: kind, correlationId: id }, 'control');
+    accepted = await agent.submit(framed, id, { from: requester, type: kind, correlationId: id });
   } catch (error) {
     // The agent withdraws what pi never took; the request then reads as
     // not delivered. Either way the relay must not resend.
@@ -696,12 +686,11 @@ async function adminRoute(env: Env, path: string, url: URL) {
   if (path === 'summary') {
     const summaries = await each(async (owner) => directory(owner).summary());
     const total = { owners: owners.length, agents_by_state: { idle: 0, working: 0, parked: 0, failed: 0, retired: 0 } as Record<string, number>,
-      workspaces: 0, running_containers: 0, connected_daemons: 0, today: {} as Record<string, number>, month: {} as Record<string, number> };
+      workspaces: 0, running_containers: 0, today: {} as Record<string, number>, month: {} as Record<string, number> };
     for (const summary of summaries) {
       for (const [state, n] of Object.entries(summary.agents_by_state)) total.agents_by_state[state] += n;
       total.workspaces += summary.workspaces;
       total.running_containers += summary.running_containers;
-      total.connected_daemons += summary.connected_daemons;
       for (const period of ['today', 'month'] as const) {
         for (const [key, value] of Object.entries(summary[period])) total[period][key] = (total[period][key] ?? 0) + value;
       }
@@ -719,13 +708,9 @@ export default {
       const caller = await authorize(request, env);
       const admin = /^\/admin\/([a-z]+)$/.exec(url.pathname);
       if (admin) {
-        if (caller.role !== 'control' || caller.owner) throw new HttpError(403, 'Admin routes need the control token without an owner');
+        if (caller.owner) throw new HttpError(403, 'Admin routes take no owner');
         if (request.method !== 'GET') throw new HttpError(405, 'Method not allowed');
         return await adminRoute(env, admin[1], url);
-      }
-      if (url.pathname === '/gateway' && request.method === 'GET') {
-        if (caller.role !== 'daemon') throw new HttpError(403, 'The gateway is for the daemon token');
-        return await env.GATEWAYS.getByName(ownerOf(caller)).fetch(request);
       }
       if (url.pathname === '/events' && request.method === 'GET') {
         return await env.GATEWAYS.getByName(ownerOf(caller)).fetch(new Request('https://gateway/events', request));
@@ -738,7 +723,7 @@ export default {
       if (url.pathname === '/workspaces' && request.method === 'GET') return json({ items: await directory().workspaces() });
       // The cross-machine API, for the relay only, naming the sending machine.
       if (url.pathname.startsWith('/remote/')) {
-        if (caller.role !== 'control' || !caller.owner) throw new HttpError(403, 'The remote API is for the relay');
+        if (!caller.owner) throw new HttpError(403, 'The remote API needs an owner');
         const fromMachine = request.headers.get('X-Repowire-From-Machine') ?? '';
         if (!fromMachine || fromMachine.length > 200 || fromMachine === 'managed') throw new HttpError(400, 'X-Repowire-From-Machine must name the sending machine');
         // The relay's absolute deadline (Unix ms); without one, the relay's cap.
@@ -749,10 +734,8 @@ export default {
         return await remoteRoute(env, caller.owner, fromMachine, request, url.pathname, await body(request, true), deadline, background);
       }
       if (url.pathname.startsWith('/requests')) {
-        if (caller.role !== 'control') throw new HttpError(403, 'Requests are for the relay');
         return await requestRoute(env, ownerOf(caller), request, url);
       }
-      if (url.pathname === '/clients' && request.method === 'GET') return json(await directory().clients());
       const match = /^\/agents\/([^/]+)(?:\/(.+))?$/.exec(url.pathname);
       if (!match) throw new HttpError(404, 'Not found');
       return await agentRoute(env, caller, request, identifier(match[1], 'id'), match[2], ctx);

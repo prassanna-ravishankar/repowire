@@ -695,20 +695,6 @@ func runnerCurrentAttempt(w *TrackedWork) string {
 	return ""
 }
 
-// currentAttemptField returns a string field of the current runner attempt,
-// or "".
-func currentAttemptField(w *TrackedWork, key string) string {
-	current := runnerCurrentAttempt(w)
-	runner, _ := w.Provenance["runner"].(map[string]any)
-	for _, raw := range toAnySlice(runner["attempts"]) {
-		if attempt, ok := raw.(map[string]any); ok && attempt["attempt_id"] == current {
-			value, _ := attempt[key].(string)
-			return value
-		}
-	}
-	return ""
-}
-
 // requestDueAt extracts request.execution.schedule.due_at, or "".
 func requestDueAt(w *TrackedWork) string {
 	exec, ok := w.Request["execution"].(map[string]any)

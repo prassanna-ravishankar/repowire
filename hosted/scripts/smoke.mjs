@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 const base = process.env.HOSTED_URL ?? 'http://localhost:8791';
-const token = process.env.HOSTED_TOKEN;
-if (!token) throw new Error('Set HOSTED_TOKEN (or use node --env-file=.dev.vars)');
+const token = process.env.CONTROL_TOKEN;
+if (!token) throw new Error('Set CONTROL_TOKEN (or use node --env-file=.dev.vars)');
+const owner = process.env.SMOKE_OWNER ?? 'smoke';
 const recallIndex = process.argv.indexOf('--recall');
 const recallId = recallIndex >= 0 ? process.argv[recallIndex + 1] : null;
 if (recallIndex >= 0 && !recallId) throw new Error('--recall requires an agent ID');
@@ -9,7 +10,7 @@ const id = recallId ?? `smoke-${crypto.randomUUID()}`;
 async function api(path, data, expected = 200, authenticated = true) {
   const response = await fetch(`${base}${path}`, {
     method: data ? 'POST' : 'GET',
-    headers: { ...(authenticated ? { Authorization: `Bearer ${token}` } : {}), 'Content-Type': 'application/json' },
+    headers: { ...(authenticated ? { Authorization: `Bearer ${token}`, 'X-Repowire-Owner': owner } : {}), 'Content-Type': 'application/json' },
     ...(data ? { body: JSON.stringify(data) } : {}),
     signal: AbortSignal.timeout(120000),
   });

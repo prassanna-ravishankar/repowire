@@ -48,7 +48,7 @@ function pick(workspace: { state: string; snapshot_at: unknown; container_ms: nu
 
 test('a run settles whether its start or its report arrives first', async () => {
   const owner = gateway();
-  owner.addAgent({ id: 'a', workspace: null, created_by: 'daemon' });
+  owner.addAgent({ id: 'a', workspace: null, created_by: 'web' });
   const usage = { input: 10, cacheRead: 0, output: 5, cost: { total: 0.01 } };
 
   owner.runStarted('a', 'op-1', 'planner');
@@ -71,7 +71,7 @@ test('a run settles whether its start or its report arrives first', async () => 
 
 test('a withdrawn start leaves no working run behind, and never removes a settled one', async () => {
   const owner = gateway();
-  owner.addAgent({ id: 'a', workspace: null, created_by: 'daemon' });
+  owner.addAgent({ id: 'a', workspace: null, created_by: 'web' });
   owner.runStarted('a', 'op-1', null);
   assert.equal(owner.agent('a')?.state, 'working');
   owner.runWithdrawn('a', 'op-1');

@@ -74,8 +74,6 @@ func newFakeWorker(t *testing.T) *fakeWorker {
 		case "/agents/retired-one/messages":
 			w.WriteHeader(http.StatusGone)
 			_, _ = io.WriteString(w, `{"error":"agent is retired"}`)
-		case "/clients":
-			_, _ = io.WriteString(w, `{"items":[{"kind":"daemon","machine":"laptop","daemon_id":"d1","version":"1","connected_at":"2026-10-25T00:00:00Z","connected":true}],"outbox":2}`)
 		case "/admin/summary":
 			_, _ = io.WriteString(w, `{"owners":1,"agents_by_state":{"idle":1}}`)
 		case "/admin/usage":
@@ -162,8 +160,9 @@ func TestManagedMeAndUnconfigured(t *testing.T) {
 	if res.StatusCode != http.StatusServiceUnavailable || !strings.Contains(body["error"].(string), "REPOWIRE_MANAGED_URL") {
 		t.Fatalf("unconfigured agents = %d %v", res.StatusCode, body)
 	}
+	// Clients come from the relay alone, so they answer without the Worker.
 	res, body = f.do(t, "GET", "/api/v1/managed/clients", managedKey, "", nil)
-	if res.StatusCode != 200 || body["gateway_error"] == nil {
+	if res.StatusCode != 200 || body["daemons"] == nil {
 		t.Fatalf("unconfigured clients = %d %v", res.StatusCode, body)
 	}
 }
@@ -249,9 +248,8 @@ func TestManagedClientsAndAppRevoke(t *testing.T) {
 
 	res, clients := f.do(t, "GET", "/api/v1/managed/clients", managedKey, "", nil)
 	daemons, _ := clients["daemons"].([]any)
-	gateway, _ := clients["gateway"].([]any)
 	apps, _ := clients["apps"].([]any)
-	if res.StatusCode != 200 || len(daemons) != 1 || len(gateway) != 1 || clients["outbox"] != float64(2) || len(apps) != 1 {
+	if res.StatusCode != 200 || len(daemons) != 1 || len(apps) != 1 || clients["gateway"] != nil || clients["outbox"] != nil {
 		t.Fatalf("clients = %d %v", res.StatusCode, clients)
 	}
 	if app := apps[0].(map[string]any); app["grant_id"] != "g1" || app["client_name"] != "Claude" || app["active"] != true {
@@ -684,8 +682,9 @@ func TestManagedRefusesAKeyNotEnabled(t *testing.T) {
 			t.Fatalf("%s = %d %v", route, res.StatusCode, body)
 		}
 	}
+	// Clients are the key's own relay daemons and apps, not the Worker's.
 	res, clients := f.do(t, "GET", "/api/v1/managed/clients", strangerKey, "", nil)
-	if res.StatusCode != 200 || clients["gateway_error"] != errManagedNotEnabled.Error() {
+	if res.StatusCode != 200 || clients["daemons"] == nil {
 		t.Fatalf("clients = %d %v", res.StatusCode, clients)
 	}
 	f.worker.mu.Lock()

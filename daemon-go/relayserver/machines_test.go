@@ -36,17 +36,13 @@ func newManagedService(t *testing.T) *managedService {
 		switch {
 		case r.URL.Path == "/agents":
 			write(200, `{"items":[
-				{"id":"scout","display_name":"Scout","state":"working","home_machine":null,"created_by":"web","retired_at":null},
-				{"id":"reader","state":"idle","home_machine":null,"created_by":"web","retired_at":null,"circle":"research"},
-				{"id":"old","state":"retired","home_machine":null,"created_by":"web","retired_at":"2026-10-25T00:00:00Z"},
-				{"id":"laptop-agent","state":"idle","home_machine":"laptop","created_by":"daemon","retired_at":null},
-				{"id":"legacy","state":"idle","home_machine":null,"created_by":"daemon","retired_at":null}]}`)
+				{"id":"scout","display_name":"Scout","state":"working","retired_at":null},
+				{"id":"reader","state":"idle","retired_at":null,"circle":"research"},
+				{"id":"old","state":"retired","retired_at":"2026-10-25T00:00:00Z"}]}`)
 		case r.URL.Path == "/agents/scout":
-			write(200, `{"id":"scout","state":"idle","home_machine":null,"created_by":"web","retired_at":null}`)
-		case r.URL.Path == "/agents/legacy":
-			write(200, `{"id":"legacy","state":"idle","home_machine":null,"created_by":"daemon","retired_at":null}`)
-		case r.URL.Path == "/agents/laptop-agent":
-			write(200, `{"id":"laptop-agent","state":"idle","home_machine":"laptop","retired_at":null}`)
+			write(200, `{"id":"scout","state":"idle","retired_at":null}`)
+		case r.URL.Path == "/agents/old":
+			write(200, `{"id":"old","state":"retired","retired_at":"2026-10-25T00:00:00Z"}`)
 		case strings.HasPrefix(r.URL.Path, "/agents/"):
 			write(404, `{"error":"Agent not found"}`)
 		case r.URL.Path == "/requests" && r.Method == http.MethodPost:
@@ -126,10 +122,8 @@ func TestRelayMCPManagedMachine(t *testing.T) {
 		t.Fatalf("owner %q, want the caller's relay user", service.owner)
 	}
 
-	for _, daemonOwned := range []string{"laptop-agent", "legacy"} {
-		if _, failed := call("ask_agent", map[string]any{"daemon_id": "managed", "peer_id": daemonOwned, "message": "hi"}); !failed {
-			t.Fatalf("daemon-owned agent %s was addressable on the managed machine", daemonOwned)
-		}
+	if _, failed := call("ask_agent", map[string]any{"daemon_id": "managed", "peer_id": "old", "message": "hi"}); !failed {
+		t.Fatal("a retired agent was addressable on the managed machine")
 	}
 
 	sent, failed := call("ask_agent", map[string]any{"daemon_id": "managed", "peer_id": "scout", "message": "what is 6*7?"})

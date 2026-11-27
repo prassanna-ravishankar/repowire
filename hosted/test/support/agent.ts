@@ -38,7 +38,7 @@ export function fakePi() {
 
 // The real agent code over fake storage, pi, Lifecycle jobs, and a real
 // Gateway. The constructor wires Workers AI and Lifecycle, so it is skipped.
-export function hostedAgent(directory = new Gateway(fakeState() as never, {}), createdBy = 'daemon') {
+export function hostedAgent(directory = new Gateway(fakeState() as never, {}), createdBy = 'web') {
   const state = fakeState();
   const gateway = { failReports: 0, calls: 0, directory };
   const owner = new Proxy(directory, {

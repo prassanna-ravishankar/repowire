@@ -46,7 +46,7 @@ export function AgentList({
         ) : agents.length === 0 ? (
           <EmptyState icon={<Bot className="h-6 w-6" />} title="No managed agents">
             <p>
-              Create one here, or from any mesh session with <code className="text-on-surface-variant">spawn_peer(backend=&quot;hosted&quot;)</code>.
+              Create one here. Agents on your machines can then reach it on the <code className="text-on-surface-variant">managed</code> machine.
             </p>
             <button onClick={onCreate} className={cn(primaryButtonClass, "mt-4")}>
               <Plus className="h-3.5 w-3.5" /> New agent
@@ -83,7 +83,7 @@ function AgentRow({ agent, active, now, onClick }: { agent: Agent; active: boole
         {agentSubline(agent, now)}
       </div>
       <div className="ml-[18px] truncate font-mono text-[11px] leading-5 text-outline">
-        {[agent.workspace ? `ws ${agent.workspace}` : "no workspace", agent.home_machine ?? "managed"].join(" · ")}
+        {[agent.workspace ? `ws ${agent.workspace}` : "no workspace", agent.circle ?? "managed"].join(" · ")}
       </div>
     </button>
   );

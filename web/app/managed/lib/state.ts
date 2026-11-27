@@ -1,4 +1,4 @@
-import type { Agent, AgentState, Client, ManagedFrame, Run, Workspace } from "./api";
+import type { Agent, AgentState, ManagedFrame, Run, Workspace } from "./api";
 
 // Attention first: a silent failure is what this view exists to surface.
 const STATE_RANK: Record<AgentState, number> = { failed: 0, working: 1, parked: 2, idle: 3, retired: 4 };
@@ -63,16 +63,9 @@ export function stateCounts(agents: Agent[]): Record<AgentState, number> {
   return counts;
 }
 
-/** The connected gateway daemon, if any. Mesh tools fail without one. */
-export function connectedDaemon(clients: Client[]): Client | null {
-  return clients.find((client) => client.kind === "daemon" && client.connected) ?? null;
-}
-
 export interface LiveState {
   agents: Agent[];
   workspaces: Workspace[];
-  clients: Client[];
-  outbox: number;
   /** Loaded run lists, per agent. Absent means "fetch when shown". */
   runs: Record<string, Run[]>;
   /** Run deltas for agents whose runs are not loaded yet, merged into the next load. */
@@ -80,7 +73,7 @@ export interface LiveState {
   at: string | null;
 }
 
-export const EMPTY_LIVE: LiveState = { agents: [], workspaces: [], clients: [], outbox: 0, runs: {}, pendingRuns: {}, at: null };
+export const EMPTY_LIVE: LiveState = { agents: [], workspaces: [], runs: {}, pendingRuns: {}, at: null };
 
 const PENDING_RUNS_CAP = 50;
 
@@ -107,8 +100,6 @@ function upsertRun(runs: Run[], next: Run): Run[] {
   return merged === prev ? runs : upsert(runs, merged, (r) => r.op === next.op);
 }
 
-const clientKey = (client: Client) => client.daemon_id ?? client.machine ?? client.connected_at;
-
 /** A live frame, or runs fetched over HTTP for one agent's Runs tab. */
 export type LiveAction = ManagedFrame | { type: "runs"; agent: string; runs: Run[] };
 
@@ -127,7 +118,7 @@ export function applyFrame(state: LiveState, frame: LiveAction): LiveState {
       return { ...state, runs: { ...state.runs, [frame.agent]: merged }, pendingRuns };
     }
     case "snapshot":
-      return { ...state, agents: frame.agents, workspaces: frame.workspaces, clients: frame.clients, outbox: frame.outbox, runs: {}, at: frame.at };
+      return { ...state, agents: frame.agents, workspaces: frame.workspaces, runs: {}, at: frame.at };
     case "agent":
       return { ...state, agents: upsert(state.agents, frame.agent, (a) => a.id === frame.agent.id) };
     case "run": {
@@ -138,10 +129,6 @@ export function applyFrame(state: LiveState, frame: LiveAction): LiveState {
     }
     case "workspace":
       return { ...state, workspaces: upsert(state.workspaces, frame.workspace, (w) => w.id === frame.workspace.id) };
-    case "client":
-      return { ...state, clients: upsert(state.clients, frame.client, (c) => clientKey(c) === clientKey(frame.client)) };
-    case "outbox":
-      return { ...state, outbox: frame.depth };
     default:
       return state;
   }
@@ -150,7 +137,7 @@ export function applyFrame(state: LiveState, frame: LiveAction): LiveState {
 export function isFrame(value: unknown): value is ManagedFrame {
   if (!value || typeof value !== "object") return false;
   const type = (value as { type?: unknown }).type;
-  return type === "snapshot" || type === "agent" || type === "run" || type === "workspace" || type === "client" || type === "outbox";
+  return type === "snapshot" || type === "agent" || type === "run" || type === "workspace";
 }
 
 // Formatting. Times are ISO 8601 UTC strings from the server and are shown in
