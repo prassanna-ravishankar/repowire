@@ -262,7 +262,7 @@ export class HostedAgent extends DurableObject<Env> {
   // This agent's own records: the per-operation dedupe markers `reported:<op>`
   // and `undelivered:<op>` (each holds the time it was set). They guard an
   // operation id against a second run while anything may still resend or
-  // read it: the daemon's open delivery, the relay's request record, a remote
+  // read it: the relay's request record, a remote
   // record within the cross-machine window. So they expire with the owner's
   // records, never sooner than that window or the ask lifetime, and never
   // when records are kept forever. `report:<op>` and `steps:<op>` are live

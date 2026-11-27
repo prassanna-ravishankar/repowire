@@ -49,9 +49,24 @@ These tests invoke billable model/container resources when run against Cloudflar
 Create an ignored `.dev.vars` with a random `CONTROL_TOKEN`; the smoke script
 names its owner with `SMOKE_OWNER` (default `smoke`). Run `npm run dev` (Docker
 is required for local shell execution; the AI binding uses Cloudflare). To
-deploy, create the R2 bucket `repowire-hosted-workspaces` (`wrangler r2 bucket
-create repowire-hosted-workspaces`), set `CONTROL_TOKEN` with `wrangler secret
-put`, then `npm run deploy`. `wrangler dev` keeps the bucket locally.
+deploy, work through the checklist below, then `npm run deploy`. `wrangler dev`
+keeps the R2 bucket locally.
+
+### Deploy checklist
+
+1. **pi-durable 1.6.1 is one-way.** Once any agent has run on it, its tables
+   are migrated and an older release cannot run that agent: fixing forward is
+   the only way back.
+2. Create the R2 bucket `repowire-hosted-workspaces` (`wrangler r2 bucket create
+   repowire-hosted-workspaces`), bound as `WORKSPACE_BACKUPS`.
+3. Set `CONTROL_TOKEN` with `wrangler secret put`. `HOSTED_TOKEN` and
+   `HOSTED_OWNER` are no longer read and can be deleted.
+4. Expect an image build: workspaces run `hosted/Dockerfile`.
+5. Deployed workspaces were container snapshots and their files are not carried
+   over; the first command in each is told so.
+6. Agents a daemon created before managed agents were reached only through the
+   relay move onto `managed` with their ids, conversations and circles. Retire
+   any that are no longer wanted.
 Configure the account via `CLOUDFLARE_ACCOUNT_ID`.
 
 ## HTTP API

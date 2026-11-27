@@ -60,3 +60,8 @@ export function fakeState() {
   const background: Promise<unknown>[] = [];
   return { storage, blockConcurrencyWhile: <T>(fn: () => Promise<T>) => fn(), getWebSockets: () => [], acceptWebSocket: () => {}, getTags: () => [], background, waitUntil: (work: Promise<unknown>) => void background.push(work) };
 }
+
+// The owner's retention policy, as accounts will set it (Gateway.retentionPolicy reads it).
+export function setPolicy(gateway: unknown, policy: { content_s: number; records_s: number; ask_life_s: number }) {
+  (gateway as { ctx: { storage: { kv: { put(key: string, value: unknown): void } } } }).ctx.storage.kv.put('retention:policy', policy);
+}

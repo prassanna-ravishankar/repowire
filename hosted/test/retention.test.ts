@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { Gateway } from '../src/gateway';
 import { cutoffs, DEFAULT_POLICY, REMOTE_WINDOW_S } from '../src/retention';
-import { fakeState } from './support/state';
+import { fakeState, setPolicy } from './support/state';
 
 const DAY = 24 * 3600 * 1000;
 const NOW = Date.parse('2026-11-24T12:00:00.000Z');
@@ -79,7 +79,7 @@ test('sweeps run at most hourly, on the request that finds one due', () => {
 
 test('cross-machine records keep the protocol window whatever the policy', () => {
   const { owner, sql, rows } = directory();
-  owner.setRetention({ content_s: 0, records_s: 0, ask_life_s: 0 });
+  setPolicy(owner, { content_s: 0, records_s: 0, ask_life_s: 0 });
   for (const [id, age] of [['old', 8 * DAY], ['live', 6 * DAY]] as const) {
     sql.exec(`INSERT INTO remote_fences (id, from_machine, from_peer, created_at) VALUES (?, 'm', 'p', ?)`, id, agoS(age));
     sql.exec(`INSERT INTO remote_inbound (id, kind, from_machine, from_peer, from_name, from_circle, to_agent, text, created_at, state)
@@ -92,7 +92,7 @@ test('cross-machine records keep the protocol window whatever the policy', () =>
 
 test('the owner\'s policy governs, with nothing younger than the ask lifetime expiring', () => {
   const { owner, sql, rows } = directory();
-  owner.setRetention({ content_s: 60, records_s: 0, ask_life_s: 6 * 3600 });
+  setPolicy(owner, { content_s: 60, records_s: 0, ask_life_s: 6 * 3600 });
   for (const [op, age] of [['young', 2 * 3600 * 1000], ['past', 7 * 3600 * 1000]] as const) {
     sql.exec(`INSERT INTO runs (agent, op, started_at, settled_at, status, answer) VALUES ('a', ?, ?, ?, 'done', 'text')`, op, ago(age), ago(age));
   }
@@ -112,13 +112,13 @@ test('without a policy of its own an owner gets the shared defaults; one it sets
   const { owner } = directory();
   assert.deepEqual(owner.retentionPolicy(), DEFAULT_POLICY);
   const policy = { content_s: 3 * 86400, records_s: 30 * 86400, ask_life_s: 7200 };
-  owner.setRetention(policy);
+  setPolicy(owner, policy);
   assert.deepEqual(owner.retentionPolicy(), policy);
 });
 
 test('a request outlives an ask that ran past the records window, timed from when it settled', () => {
   const { owner, sql, rows } = directory();
-  owner.setRetention({ content_s: 7 * 86400, records_s: 30 * 86400, ask_life_s: 86400 });
+  setPolicy(owner, { content_s: 7 * 86400, records_s: 30 * 86400, ask_life_s: 86400 });
   sql.exec(`INSERT INTO runs (agent, op, started_at, settled_at, status, answer) VALUES ('a', 'long', ?, ?, 'done', '42')`, ago(90 * DAY), ago(60 * 1000));
   sql.exec(`INSERT INTO requests (id, agent, kind, requester, text, digest, created_at, state) VALUES ('long', 'a', 'ask', 'r', 'q', 'h', ?, 'accepted')`, ago(90 * DAY));
   assert.deepEqual(owner.housekeep(NOW), {});

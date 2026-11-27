@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { Gateway } from '../src/gateway';
 import { markerAge, REMOTE_WINDOW_S, wholeAge } from '../src/retention';
 import { hostedAgent } from './support/agent';
-import { fakeState } from './support/state';
+import { fakeState, setPolicy } from './support/state';
 
 const DAY_S = 86400;
 const DAY = DAY_S * 1000;
@@ -21,7 +21,7 @@ test('markers and whole objects are never kept for less than the window or the a
 
 test('an operation\'s markers carry their time and expire with the owner\'s records', async () => {
   const { agent, directory, pi, state } = hostedAgent();
-  directory.setRetention({ content_s: 7 * DAY_S, records_s: 30 * DAY_S, ask_life_s: DAY_S });
+  setPolicy(directory, { content_s: 7 * DAY_S, records_s: 30 * DAY_S, ask_life_s: DAY_S });
   await agent.submit('one', 'op-a');
   pi.settle('op-a');
   await flush();
@@ -38,7 +38,7 @@ test('an operation\'s markers carry their time and expire with the owner\'s reco
   assert.ok(kv.get('reported:op-a') && kv.get('undelivered:young'));
   assert.equal(await agent.housekeep(CONFIG, now + 60_000), null, 'at most hourly');
 
-  directory.setRetention({ content_s: 0, records_s: 0, ask_life_s: DAY_S });
+  setPolicy(directory, { content_s: 0, records_s: 0, ask_life_s: DAY_S });
   assert.deepEqual(await agent.housekeep(CONFIG, now + 2 * 3600 * 1000 + 999 * DAY), {}, 'records kept forever keep every marker');
 });
 
@@ -64,7 +64,7 @@ test('only a retired agent with nothing in flight or unreported is deleted whole
 
 test('every marker gets its turn, however many there are', async () => {
   const { agent, directory, state } = hostedAgent();
-  directory.setRetention({ content_s: 7 * DAY_S, records_s: 30 * DAY_S, ask_life_s: DAY_S });
+  setPolicy(directory, { content_s: 7 * DAY_S, records_s: 30 * DAY_S, ask_life_s: DAY_S });
   const kv = state.storage.kv;
   const young = Date.now();
   // More young markers than one sweep looks at, ahead of an old one.
@@ -112,7 +112,7 @@ test('the Gateway deletes retired agents and unused workspaces whole, past the a
   owner.addAgent({ id: 'again', workspace: 'w-old', created_by: 'web' });
   assert.equal(owner.workspaces().find((w) => w.id === 'w-old')?.state, 'idle', 'a purged workspace taken up again starts over');
 
-  owner.setRetention({ content_s: 0, records_s: 0, ask_life_s: DAY_S });
+  setPolicy(owner, { content_s: 0, records_s: 0, ask_life_s: DAY_S });
   sql.exec('UPDATE agents SET retired_at = ? WHERE id = \'fresh\'', old);
   assert.deepEqual(await owner.purgeWhole(), { agents: 0, workspaces: 0 }, 'content kept forever keeps agents and workspaces');
 });

@@ -2,8 +2,8 @@
 // policy as the daemon's: two classes, content (text someone wrote) and
 // records (who did what, when, how it ended), never anything younger than
 // the ask lifetime, and a fixed window for cross-machine records. The
-// defaults are the daemon's own file; an owner's policy replaces them
-// (Gateway.setRetention).
+// defaults are the daemon's own file; an owner's policy, once accounts set
+// one, replaces them (Gateway.retentionPolicy).
 import defaults from '../../daemon-go/proto/retention.json';
 
 const DAY_S = 24 * 3600;

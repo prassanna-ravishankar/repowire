@@ -2,10 +2,13 @@
 
 Status: phase 1 built (2026-10-25); daemon-to-daemon messaging shipped in #516;
 phase 2 (managed in the mesh), 3 and 4 need their own design.
-Update 2026-11-27: the daemon-owned shape is dropped rather than migrated. The
-daemon's hosted backend, the Worker's gateway socket and `hosted.*` config are
-removed (phase 4's removal, without its migration), so `managed` is the only
-home for managed agents and the relay the only way in.
+Update 2026-11-27: the daemon-owned shape is removed. The daemon's hosted
+backend, the Worker's gateway socket and `hosted.*` config are gone, so
+`managed` is the only home for managed agents and the relay the only way in.
+Agents a daemon created before this are not deleted: they move onto `managed`,
+each keeping its id, conversation and circle (`managed` unless it had another).
+No daemon registers them any more, so each id has one home. The owner can
+retire any that are no longer wanted.
 Builds on the managed control plane (`feat/managed-relay`, `feat/managed-web`)
 and the hosted runtime (`feat/hosted-runtime`, `feat/hosted-backend`).
 

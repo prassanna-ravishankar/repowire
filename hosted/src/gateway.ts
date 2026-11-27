@@ -325,9 +325,9 @@ export class Gateway extends DurableObject {
     Gateway.directoryRetention, REQUESTS_RETENTION, RUNS_RETENTION, USAGE_RETENTION, REMOTE_RETENTION,
   ];
 
-  // The owner's policy (rfcs/managed-accounts.md: retention is per account),
-  // or the shared defaults (daemon-go/proto/retention.json) until one is set.
-  setRetention(policy: RetentionPolicy) { this.ctx.storage.kv.put('retention:policy', policy); }
+  // The owner's policy under `retention:policy` (rfcs/managed-accounts.md:
+  // retention is per account, and accounts will set it), or the shared
+  // defaults (daemon-go/proto/retention.json) until one is set.
 
   retentionPolicy(): RetentionPolicy {
     const kv = this.ctx.storage.kv;
