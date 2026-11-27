@@ -63,7 +63,7 @@ func TestLegacySchedulesImportAlongsideExistingRows(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.CreateSchedule(context.Background(), "existing", "peer", "keep", time.Now().Add(time.Hour), "notify", nil, nil); err != nil {
+	if _, err := store.CreateSchedule(context.Background(), ScheduleEnd{Name: "existing"}, ScheduleEnd{Name: "peer"}, "keep", time.Now().Add(time.Hour), "notify", nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.Close(); err != nil {

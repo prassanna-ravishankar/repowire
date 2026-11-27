@@ -27,7 +27,7 @@ func newFakeScheduleStore() *fakeScheduleStore {
 	return &fakeScheduleStore{byID: map[string]*state.Schedule{}}
 }
 
-func (f *fakeScheduleStore) CreateSchedule(_ context.Context, fromPeer, toPeer, text string, fireAt time.Time, kind string, circle, cron *string) (*state.Schedule, error) {
+func (f *fakeScheduleStore) CreateSchedule(_ context.Context, from, to state.ScheduleEnd, text string, fireAt time.Time, kind string, circle, cron *string) (*state.Schedule, error) {
 	if kind == "" {
 		kind = "notify"
 	}
@@ -39,8 +39,10 @@ func (f *fakeScheduleStore) CreateSchedule(_ context.Context, fromPeer, toPeer, 
 	f.nextSeq++
 	s := &state.Schedule{
 		ScheduleID: "sched-" + time.Now().Format("150405.000000") + "-" + string(rune('a'+f.nextSeq)),
-		FromPeer:   fromPeer,
-		ToPeer:     toPeer,
+		FromPeer:   from.Name,
+		FromPeerID: from.PeerID,
+		ToPeer:     to.Name,
+		ToPeerID:   to.PeerID,
 		Text:       text,
 		FireAt:     fireAt.UTC().Format(time.RFC3339Nano),
 		Kind:       kind,
@@ -103,18 +105,21 @@ type fakeSchedDelivery struct {
 	mu       sync.Mutex
 	notifies []string // texts
 	asks     []string // texts
+	ends     []string // "from->to" per send
 }
 
 func (d *fakeSchedDelivery) Notify(_ context.Context, p NotifyParams) (NotifyResult, error) {
 	d.mu.Lock()
 	d.notifies = append(d.notifies, p.Text)
+	d.ends = append(d.ends, p.FromPeer+"->"+p.ToPeer)
 	d.mu.Unlock()
 	return NotifyResult{Status: "sent", DeliveryState: "delivered"}, nil
 }
 
-func (d *fakeSchedDelivery) OpenScheduledAsk(_ context.Context, _, _, text string, _ *string, _ string) (string, error) {
+func (d *fakeSchedDelivery) OpenScheduledAsk(_ context.Context, from, to, text string, _ *string, _ string) (string, error) {
 	d.mu.Lock()
 	d.asks = append(d.asks, text)
+	d.ends = append(d.ends, from+"->"+to)
 	d.mu.Unlock()
 	return "ask-1", nil
 }
@@ -150,7 +155,7 @@ func TestSchedulerFiresPastDueOneShot(t *testing.T) {
 	store := newFakeScheduleStore()
 	del := &fakeSchedDelivery{}
 	// Past-due fire_at so the loop fires it on the first iteration.
-	_, _ = store.CreateSchedule(context.Background(), "alpha", "beta", "ping", time.Now().Add(-time.Minute), "notify", nil, nil)
+	_, _ = store.CreateSchedule(context.Background(), state.ScheduleEnd{Name: "alpha"}, state.ScheduleEnd{Name: "beta"}, "ping", time.Now().Add(-time.Minute), "notify", nil, nil)
 
 	s := NewScheduler(store, del)
 	ctx, cancel := context.WithCancel(context.Background())
@@ -168,7 +173,7 @@ func TestSchedulerRecurringCronAdvances(t *testing.T) {
 	store := newFakeScheduleStore()
 	del := &fakeSchedDelivery{}
 	cron := "0 * * * *"
-	_, _ = store.CreateSchedule(context.Background(), "alpha", "beta", "hourly", time.Now().Add(-time.Minute), "ask", nil, &cron)
+	_, _ = store.CreateSchedule(context.Background(), state.ScheduleEnd{Name: "alpha"}, state.ScheduleEnd{Name: "beta"}, "hourly", time.Now().Add(-time.Minute), "ask", nil, &cron)
 
 	s := NewScheduler(store, del)
 	ctx, cancel := context.WithCancel(context.Background())
@@ -203,7 +208,7 @@ func TestSchedulerWakeOnCreate(t *testing.T) {
 	defer s.Stop()
 
 	// Loop should be blocked (no schedules). Add a past-due one then Wake.
-	_, _ = store.CreateSchedule(context.Background(), "alpha", "beta", "later", time.Now().Add(-time.Second), "notify", nil, nil)
+	_, _ = store.CreateSchedule(context.Background(), state.ScheduleEnd{Name: "alpha"}, state.ScheduleEnd{Name: "beta"}, "later", time.Now().Add(-time.Second), "notify", nil, nil)
 	s.Wake()
 
 	waitFor(t, "woken schedule fires", func() bool { return del.notifyCount() == 1 })
@@ -217,7 +222,7 @@ func TestSchedulerCronEarlyWakeAdvancesPastFiredSlot(t *testing.T) {
 	del := &fakeSchedDelivery{}
 	cron := "*/30 * * * *"
 	slot := time.Date(2026, 10, 11, 17, 0, 0, 0, time.UTC)
-	sched, _ := store.CreateSchedule(context.Background(), "alpha", "beta", "nudge", slot, "notify", nil, &cron)
+	sched, _ := store.CreateSchedule(context.Background(), state.ScheduleEnd{Name: "alpha"}, state.ScheduleEnd{Name: "beta"}, "nudge", slot, "notify", nil, &cron)
 
 	s := NewScheduler(store, del)
 	s.clock.now = func() time.Time { return slot.Add(-800 * time.Millisecond) }
@@ -301,9 +306,9 @@ func TestFailedScheduledSendsAreReportedToTheSender(t *testing.T) {
 	del := &failingSchedDelivery{}
 	events := &eventLog{}
 	cron := "0 9 * * *"
-	_, _ = store.CreateSchedule(context.Background(), "orchestrator", "down", "heartbeat?", time.Now().Add(-time.Minute), "ask", nil, &cron)
-	_, _ = store.CreateSchedule(context.Background(), "prass", "down", "one more thing?", time.Now().Add(-time.Minute), "ask", nil, nil)
-	_, _ = store.CreateSchedule(context.Background(), "alpha", "beta", "fine", time.Now().Add(-time.Minute), "ask", nil, nil)
+	_, _ = store.CreateSchedule(context.Background(), state.ScheduleEnd{Name: "orchestrator"}, state.ScheduleEnd{Name: "down"}, "heartbeat?", time.Now().Add(-time.Minute), "ask", nil, &cron)
+	_, _ = store.CreateSchedule(context.Background(), state.ScheduleEnd{Name: "prass"}, state.ScheduleEnd{Name: "down"}, "one more thing?", time.Now().Add(-time.Minute), "ask", nil, nil)
+	_, _ = store.CreateSchedule(context.Background(), state.ScheduleEnd{Name: "alpha"}, state.ScheduleEnd{Name: "beta"}, "fine", time.Now().Add(-time.Minute), "ask", nil, nil)
 
 	s := NewScheduler(store, del).WithEvents(events.add)
 	ctx, cancel := context.WithCancel(context.Background())
@@ -352,8 +357,8 @@ func TestFailedScheduledNotifyIsReported(t *testing.T) {
 	store := newFakeScheduleStore()
 	del := &failingSchedDelivery{}
 	events := &eventLog{}
-	_, _ = store.CreateSchedule(context.Background(), "alpha", "down", "fyi", time.Now().Add(-time.Minute), "notify", nil, nil)
-	_, _ = store.CreateSchedule(context.Background(), schedulerSender, "down", "loop?", time.Now().Add(-time.Minute), "notify", nil, nil)
+	_, _ = store.CreateSchedule(context.Background(), state.ScheduleEnd{Name: "alpha"}, state.ScheduleEnd{Name: "down"}, "fyi", time.Now().Add(-time.Minute), "notify", nil, nil)
+	_, _ = store.CreateSchedule(context.Background(), state.ScheduleEnd{Name: schedulerSender}, state.ScheduleEnd{Name: "down"}, "loop?", time.Now().Add(-time.Minute), "notify", nil, nil)
 	s := NewScheduler(store, del).WithEvents(events.add)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -373,7 +378,7 @@ func TestFailedScheduledNotifyIsReported(t *testing.T) {
 func TestDashboardScheduleFailureGoesToTheHuman(t *testing.T) {
 	store := newFakeScheduleStore()
 	del := &failingSchedDelivery{}
-	_, _ = store.CreateSchedule(context.Background(), "dashboard", "down", "check?", time.Now().Add(-time.Minute), "ask", nil, nil)
+	_, _ = store.CreateSchedule(context.Background(), state.ScheduleEnd{Name: "dashboard"}, state.ScheduleEnd{Name: "down"}, "check?", time.Now().Add(-time.Minute), "ask", nil, nil)
 	owner := func(from string) string {
 		if from == "dashboard" {
 			return "prass"
@@ -413,7 +418,7 @@ func TestAnOutageReportsOnceAndItsRecoveryOnce(t *testing.T) {
 	del.down.Store(true)
 	events := &eventLog{}
 	cron := "*/15 * * * *"
-	sched, _ := store.CreateSchedule(context.Background(), "orchestrator", "worker", "heartbeat?", time.Now().Add(-time.Minute), "ask", nil, &cron)
+	sched, _ := store.CreateSchedule(context.Background(), state.ScheduleEnd{Name: "orchestrator"}, state.ScheduleEnd{Name: "worker"}, "heartbeat?", time.Now().Add(-time.Minute), "ask", nil, &cron)
 	s := NewScheduler(store, del).WithEvents(events.add)
 	ctx := context.Background()
 	for slot := 0; slot < 3; slot++ {
@@ -438,5 +443,32 @@ func TestAnOutageReportsOnceAndItsRecoveryOnce(t *testing.T) {
 	}
 	if strings.Join(kinds, ",") != "schedule_failed,schedule_recovered" {
 		t.Fatalf("events = %v", kinds)
+	}
+}
+
+// A schedule fires to the peer_ids it resolved at create, so renaming either
+// peer since (its runtime renamed the session) does not lose the send; an end
+// that never resolved still goes by name.
+func TestSchedulerFiresToTheResolvedPeerIDs(t *testing.T) {
+	store := newFakeScheduleStore()
+	del := &fakeSchedDelivery{}
+	past := time.Now().Add(-time.Minute)
+	_, _ = store.CreateSchedule(context.Background(), state.ScheduleEnd{Name: "alpha", PeerID: "repow-1-alpha"}, state.ScheduleEnd{Name: "foo", PeerID: "repow-1-foo"}, "n", past, "notify", nil, nil)
+	_, _ = store.CreateSchedule(context.Background(), state.ScheduleEnd{Name: "telegram"}, state.ScheduleEnd{Name: "foo", PeerID: "repow-1-foo"}, "a", past, "ask", nil, nil)
+
+	s := NewScheduler(store, del)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	s.Start(ctx)
+	waitFor(t, "both sends", func() bool { return del.notifyCount() == 1 && del.askCount() == 1 })
+
+	del.mu.Lock()
+	defer del.mu.Unlock()
+	got := map[string]bool{}
+	for _, e := range del.ends {
+		got[e] = true
+	}
+	if !got["repow-1-alpha->repow-1-foo"] || !got["telegram->repow-1-foo"] {
+		t.Fatalf("sends went %v, want them addressed by peer_id", del.ends)
 	}
 }

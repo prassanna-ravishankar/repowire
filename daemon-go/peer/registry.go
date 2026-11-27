@@ -1531,6 +1531,11 @@ func (r *Registry) UpdateDisplayName(ctx context.Context, id proto.PeerID, name 
 // reported, so a report that did not change is not re-derived.
 const nativeNameKey = "native_name"
 
+// humanSurfaceNames are the addresses agents are told speak for the human
+// (@dashboard, @telegram, @slack). A runtime session renamed to one of them is
+// suffixed instead, so it can never read as the human.
+var humanSurfaceNames = map[proto.DisplayName]bool{"dashboard": true, "telegram": true, "slack": true}
+
 // ApplyNativeName makes the runtime's own session name the peer's address: it
 // is normalized, suffixed -2, -3, ... past a live holder in the circle, and
 // renamed in place (peer_id kept). It acts only when the native name differs
@@ -1554,7 +1559,7 @@ func (r *Registry) ApplyNativeName(ctx context.Context, id proto.PeerID, native 
 	ps.peer.Metadata[nativeNameKey] = native
 	base := NormalizeDisplayName(native)
 	name := base
-	for suffix := 2; !r.renameLocked(ctx, ps, name); suffix++ {
+	for suffix := 2; humanSurfaceNames[name] || !r.renameLocked(ctx, ps, name); suffix++ {
 		name = proto.DisplayName(fmt.Sprintf("%s-%d", base, suffix))
 	}
 	return name, true

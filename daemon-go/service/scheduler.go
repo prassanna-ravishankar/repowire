@@ -174,16 +174,21 @@ func (s *Scheduler) run(ctx context.Context) {
 // not kill the loop, and the schedule is still advanced/dropped in the finally
 // equivalent below. Mirrors Scheduler._fire.
 func (s *Scheduler) fire(ctx context.Context, sched *state.Schedule) {
+	// A schedule addresses peers by the peer_ids resolved when it was made, so
+	// a peer renamed since still gets it; a name is the fallback for an end the
+	// daemon never resolved.
+	from := firstNonEmpty(sched.FromPeerID, sched.FromPeer)
+	to := firstNonEmpty(sched.ToPeerID, sched.ToPeer)
 	var err error
 	if sched.Kind == "ask" {
-		_, err = s.delivery.OpenScheduledAsk(ctx, sched.FromPeer, sched.ToPeer, sched.Text, sched.Circle, "push")
+		_, err = s.delivery.OpenScheduledAsk(ctx, from, to, sched.Text, sched.Circle, "push")
 	} else {
 		// A notify to an offline peer is queued, not failed: only a send that
 		// cannot happen at all (an unknown or unaddressable target, a circle
 		// refusal) returns an error.
 		_, err = s.delivery.Notify(ctx, NotifyParams{
-			FromPeer: sched.FromPeer,
-			ToPeer:   sched.ToPeer,
+			FromPeer: from,
+			ToPeer:   to,
 			Text:     sched.Text,
 			Circle:   sched.Circle,
 		})
@@ -312,9 +317,11 @@ func (s *Scheduler) tellOwner(ctx context.Context, sched *state.Schedule, text s
 	if sched.FromPeer == "" || sched.FromPeer == schedulerSender {
 		return
 	}
-	to := sched.FromPeer
+	to := firstNonEmpty(sched.FromPeerID, sched.FromPeer)
 	if s.owner != nil {
-		to = s.owner(sched.FromPeer)
+		if owner := s.owner(sched.FromPeer); owner != sched.FromPeer {
+			to = owner // a schedule made on one of the human's surfaces
+		}
 	}
 	if _, err := s.delivery.Notify(ctx, NotifyParams{FromPeer: schedulerSender, ToPeer: to, Text: text, BypassCircle: true}); err != nil {
 		log.Printf("scheduler: could not tell %s about schedule %s: %v", sched.FromPeer, sched.ScheduleID, err)

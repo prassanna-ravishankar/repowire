@@ -103,3 +103,15 @@ func TestSeedDescriptionOnlyWhenEmpty(t *testing.T) {
 		t.Fatalf("description = %q, want explicit", p.Description)
 	}
 }
+
+// The human's surface names are never a runtime session's address.
+func TestApplyNativeNameNeverTakesAHumanSurfaceName(t *testing.T) {
+	ctx := context.Background()
+	r, _ := newRegistry(t)
+	id := registerAt(t, r, "/work/a", proto.AgentClaudeCode)
+	for native, want := range map[string]proto.DisplayName{"Telegram": "telegram-2", "slack": "slack-2", " Dashboard ": "dashboard-2"} {
+		if name, _ := r.ApplyNativeName(ctx, id, native); name != want {
+			t.Errorf("%q renamed the peer to %q, want %q", native, name, want)
+		}
+	}
+}

@@ -438,7 +438,7 @@ func TestOwnerOfALocalSurfaceIsTheHuman(t *testing.T) {
 func TestScheduledAskFailureLandsInTheHumansInbox(t *testing.T) {
 	f := newInboxFixture(t, config.HumanConfig{})
 	store := newFakeScheduleStore()
-	_, _ = store.CreateSchedule(context.Background(), string(f.human.DisplayName), "gone-peer", "status?", time.Now().Add(-time.Minute), "ask", nil, nil)
+	_, _ = store.CreateSchedule(context.Background(), state.ScheduleEnd{Name: string(f.human.DisplayName)}, state.ScheduleEnd{Name: "gone-peer"}, "status?", time.Now().Add(-time.Minute), "ask", nil, nil)
 	s := NewScheduler(store, f.delivery).WithOwner(f.inbox.OwnerOf)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
