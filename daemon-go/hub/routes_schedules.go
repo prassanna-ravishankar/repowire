@@ -157,6 +157,14 @@ func (h *Hub) listSchedules(ctx context.Context, fromPeer *string) (scheduleList
 	if h == nil || h.scheduleStore == nil {
 		return scheduleListResponse{}, routeErr(http.StatusServiceUnavailable, "schedules not configured")
 	}
+	// A sender is matched by its peer_id, so its schedules stay its own after
+	// a rename; a sender the registry cannot resolve is matched by name.
+	if fromPeer != nil && h.reg != nil {
+		if p, err := h.reg.ResolvePeer(*fromPeer, nil); err == nil && p != nil {
+			id := string(p.PeerID)
+			fromPeer = &id
+		}
+	}
 	scheds, err := h.scheduleStore.ListSchedules(ctx, fromPeer)
 	if err != nil {
 		return scheduleListResponse{}, routeErr(http.StatusInternalServerError, err.Error())

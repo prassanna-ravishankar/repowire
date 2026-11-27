@@ -62,7 +62,7 @@ func (f *fakeScheduleStore) ListSchedules(_ context.Context, fromPeer *string) (
 	defer f.mu.Unlock()
 	var out []*state.Schedule
 	for _, s := range f.byID {
-		if fromPeer != nil && s.FromPeer != *fromPeer {
+		if fromPeer != nil && s.FromPeer != *fromPeer && s.FromPeerID != *fromPeer {
 			continue
 		}
 		out = append(out, s)
@@ -390,5 +390,14 @@ func TestScheduleAddressesItsTargetByPeerIDThroughARename(t *testing.T) {
 	_, target, err := reg.CheckAccess(ctx, live.FromPeerID, live.ToPeerID, false, nil)
 	if err != nil || target == nil || target.PeerID != fooID || target.DisplayName != "bar" {
 		t.Fatalf("after the rename the schedule reaches %+v (%v), want %s as bar", target, err, fooID)
+	}
+
+	// The sender renamed too still lists its schedules under its new name.
+	if name, _ := reg.ApplyNativeName(ctx, alphaID, "Alpha renamed"); name != "alpha-renamed" {
+		t.Fatalf("sender rename = %q", name)
+	}
+	mine, err := h.listSchedules(ctx, strptr("alpha-renamed"))
+	if err != nil || len(mine.Schedules) != 2 {
+		t.Fatalf("schedules listed for the renamed sender = %d (%v), want 2", len(mine.Schedules), err)
 	}
 }
