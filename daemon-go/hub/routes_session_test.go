@@ -25,6 +25,8 @@ type sessionFakeRegistry struct {
 	metaSet    map[string]map[string]any
 	modelFound bool
 	metaFound  bool
+	nativeSet  map[proto.PeerID]string
+	titleSet   map[proto.PeerID]string
 }
 
 func newSessionFakeRegistry(peers ...*proto.Peer) *sessionFakeRegistry {
@@ -36,6 +38,8 @@ func newSessionFakeRegistry(peers ...*proto.Peer) *sessionFakeRegistry {
 		turnSet:    map[proto.PeerID]proto.TurnState{},
 		modelSet:   map[string]string{},
 		metaSet:    map[string]map[string]any{},
+		nativeSet:  map[proto.PeerID]string{},
+		titleSet:   map[proto.PeerID]string{},
 		modelFound: true,
 		metaFound:  true,
 	}
@@ -82,6 +86,16 @@ func (r *sessionFakeRegistry) UpdateModelByName(ctx context.Context, identifier,
 func (r *sessionFakeRegistry) UpdateMetadataByName(ctx context.Context, identifier string, metadata map[string]any) (bool, error) {
 	r.metaSet[identifier] = metadata
 	return r.metaFound, nil
+}
+
+func (r *sessionFakeRegistry) ApplyNativeName(ctx context.Context, id proto.PeerID, native string) (proto.DisplayName, bool) {
+	r.nativeSet[id] = native
+	return "renamed", true
+}
+
+func (r *sessionFakeRegistry) SeedDescription(ctx context.Context, id proto.PeerID, text string) bool {
+	r.titleSet[id] = text
+	return true
 }
 
 // fakeDrainStore satisfies queuedDrainStore: returns canned rows and records that
@@ -156,6 +170,36 @@ func TestSessionUpdateRequiresAField(t *testing.T) {
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Fatalf("expected 400 for empty update, got %d", resp.StatusCode)
+	}
+}
+
+// TestSessionUpdateNativeNameAndTitle: a native name alone is a valid update;
+// it renames the resolved peer by peer_id and the response carries the
+// resulting display_name. A native title seeds the description.
+func TestSessionUpdateNativeNameAndTitle(t *testing.T) {
+	beta := peerWith("repow-default-bbbb", "beta", "default", proto.StatusOnline)
+	reg := newSessionFakeRegistry(beta)
+	srv := newSessionTestHub(t, reg, nil, nil)
+
+	resp := postJSON(t, srv.URL+"/session/update", SessionUpdateRequest{
+		PeerName: strPtr("beta"), NativeName: strPtr("Fix Telegram access"), NativeTitle: strPtr("Telegram access fix"),
+	})
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+	var body map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	if body["display_name"] != "renamed" {
+		t.Fatalf("response display_name = %v, want the registry's result", body["display_name"])
+	}
+	if got := reg.nativeSet[beta.PeerID]; got != "Fix Telegram access" {
+		t.Fatalf("native name must apply by peer_id; got %q", got)
+	}
+	if got := reg.titleSet[beta.PeerID]; got != "Telegram access fix" {
+		t.Fatalf("native title must seed by peer_id; got %q", got)
 	}
 }
 

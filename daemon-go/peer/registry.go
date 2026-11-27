@@ -1524,6 +1524,54 @@ func (r *Registry) UpdateDisplayName(ctx context.Context, id proto.PeerID, name 
 	if !ok {
 		return false, nil
 	}
+	return r.renameLocked(ctx, ps, name), nil
+}
+
+// nativeNameKey is the metadata key holding the last session name the runtime
+// reported, so a report that did not change is not re-derived.
+const nativeNameKey = "native_name"
+
+// humanSurfaceNames are the addresses agents are told speak for the human
+// (@dashboard, @telegram, @slack). A runtime session renamed to one of them is
+// suffixed instead, so it can never read as the human.
+var humanSurfaceNames = map[proto.DisplayName]bool{"dashboard": true, "telegram": true, "slack": true}
+
+// ApplyNativeName makes the runtime's own session name the peer's address: it
+// is normalized, suffixed -2, -3, ... past a live holder in the circle, and
+// renamed in place (peer_id kept). It acts only when the native name differs
+// from the last one seen, so runtimes may report it on every turn, and a
+// suffixed name is not re-derived. Returns the peer's display name; ok is false
+// when the peer is unknown.
+func (r *Registry) ApplyNativeName(ctx context.Context, id proto.PeerID, native string) (proto.DisplayName, bool) {
+	native = strings.TrimSpace(native)
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	ps, ok := r.peers[id]
+	if !ok {
+		return "", false
+	}
+	if native == "" || ps.peer.Metadata[nativeNameKey] == native {
+		return ps.peer.DisplayName, true
+	}
+	if ps.peer.Metadata == nil {
+		ps.peer.Metadata = map[string]any{}
+	}
+	ps.peer.Metadata[nativeNameKey] = native
+	base := NormalizeDisplayName(native)
+	name := base
+	for suffix := 2; humanSurfaceNames[name] || !r.renameLocked(ctx, ps, name); suffix++ {
+		name = proto.DisplayName(fmt.Sprintf("%s-%d", base, suffix))
+	}
+	return name, true
+}
+
+// renameLocked renames ps in place unless a live peer in its circle holds the
+// name; offline ghosts holding it are evicted. MUST be called with r.mu held.
+func (r *Registry) renameLocked(ctx context.Context, ps *peerState, name proto.DisplayName) bool {
+	if ps.peer.DisplayName == name {
+		return true
+	}
+	id := ps.peer.PeerID
 	var toEvict []proto.PeerID
 	for otherID, other := range r.peers {
 		if otherID == id || other.peer.DisplayName != name || other.peer.Circle != ps.peer.Circle {
@@ -1532,19 +1580,23 @@ func (r *Registry) UpdateDisplayName(ctx context.Context, id proto.PeerID, name 
 		if other.state == StateOffline {
 			toEvict = append(toEvict, otherID)
 		} else {
-			return false, nil
+			return false
 		}
 	}
 	for _, e := range toEvict {
 		delete(r.peers, e)
 	}
+	from := ps.peer.DisplayName
 	ps.peer.DisplayName = name
+	now := time.Now().UTC()
 	if m, ok := r.mappings[id]; ok {
 		m.DisplayName = name
-		m.UpdatedAt = time.Now().UTC()
+		m.UpdatedAt = now
 		r.markMappingsDirtyLocked()
 	}
-	return true, nil
+	r.appendEvent(ctx, Event{Type: "peer_renamed", Timestamp: now, PeerID: id, PeerName: name, SessionID: id,
+		Payload: map[string]any{"old_name": string(from), "new_name": string(name)}})
+	return true
 }
 
 // clonePeer returns a value-copy snapshot safe to hand to off-lock callers: the

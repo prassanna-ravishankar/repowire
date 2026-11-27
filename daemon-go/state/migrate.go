@@ -378,6 +378,7 @@ var migrationLedger = []struct {
 	{17, "cross-machine asks: store epoch, inbound and outbound records, fences"},
 	{18, "agent peer messages addressable by id, per-peer delivery mode"},
 	{19, "per-peer wire visibility"},
+	{20, "schedules address peers by peer_id"},
 }
 
 // migrate applies the idempotent schema and stamps user_version. Safe to run on
@@ -410,6 +411,9 @@ func migrate(db *sql.DB) error {
 	if err := ensureDescriptionSetAtColumn(tx); err != nil {
 		return err
 	}
+	if err := backfillSchedulePeerIDs(tx); err != nil {
+		return err
+	}
 
 	for _, m := range migrationLedger {
 		if _, err := tx.Exec(
@@ -425,6 +429,27 @@ func migrate(db *sql.DB) error {
 		return fmt.Errorf("stamp user_version: %w", err)
 	}
 	return tx.Commit()
+}
+
+// backfillSchedulePeerIDs (migration 20) resolves the names schedules were made
+// with to the peer_ids they address, so a peer renamed later still gets its
+// scheduled sends. A name resolves when it is a known peer_id, or names exactly
+// one known peer (within the schedule's circle when it has one). Unresolved
+// ends stay NULL and keep addressing by name. Only NULL ends are touched, so
+// re-running it is a no-op.
+func backfillSchedulePeerIDs(tx *sql.Tx) error {
+	for _, end := range []string{"to_peer", "from_peer"} {
+		q := fmt.Sprintf(`UPDATE schedules SET %[1]s_id = COALESCE(
+			(SELECT m.session_id FROM peer_session_mappings m WHERE m.session_id = schedules.%[1]s),
+			(SELECT MIN(m.session_id) FROM peer_session_mappings m
+			 WHERE m.display_name = schedules.%[1]s AND (schedules.circle IS NULL OR m.circle = schedules.circle)
+			 HAVING COUNT(*) = 1))
+		WHERE %[1]s_id IS NULL`, end)
+		if _, err := tx.Exec(q); err != nil {
+			return fmt.Errorf("backfill schedule %s ids: %w", end, err)
+		}
+	}
+	return nil
 }
 
 func ensureRetiredHardColumn(tx *sql.Tx) error {

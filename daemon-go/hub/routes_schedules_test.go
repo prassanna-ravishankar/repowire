@@ -8,6 +8,7 @@ import (
 	"github.com/repowire/repowire/daemon-go/proto"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -30,7 +31,7 @@ func newFakeScheduleStore() *fakeScheduleStore {
 	return &fakeScheduleStore{byID: map[string]*state.Schedule{}}
 }
 
-func (f *fakeScheduleStore) CreateSchedule(_ context.Context, fromPeer, toPeer, text string, fireAt time.Time, kind string, circle, cron *string) (*state.Schedule, error) {
+func (f *fakeScheduleStore) CreateSchedule(_ context.Context, from, to state.ScheduleEnd, text string, fireAt time.Time, kind string, circle, cron *string) (*state.Schedule, error) {
 	if kind == "" {
 		kind = "notify"
 	}
@@ -42,8 +43,10 @@ func (f *fakeScheduleStore) CreateSchedule(_ context.Context, fromPeer, toPeer, 
 	f.nextSeq++
 	s := &state.Schedule{
 		ScheduleID: "sched-" + time.Now().Format("150405.000000") + "-" + string(rune('a'+f.nextSeq)),
-		FromPeer:   fromPeer,
-		ToPeer:     toPeer,
+		FromPeer:   from.Name,
+		FromPeerID: from.PeerID,
+		ToPeer:     to.Name,
+		ToPeerID:   to.PeerID,
 		Text:       text,
 		FireAt:     fireAt.UTC().Format(time.RFC3339Nano),
 		Kind:       kind,
@@ -55,12 +58,12 @@ func (f *fakeScheduleStore) CreateSchedule(_ context.Context, fromPeer, toPeer, 
 	return s, nil
 }
 
-func (f *fakeScheduleStore) ListSchedules(_ context.Context, fromPeer *string) ([]*state.Schedule, error) {
+func (f *fakeScheduleStore) ListSchedules(_ context.Context, from ...string) ([]*state.Schedule, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	var out []*state.Schedule
 	for _, s := range f.byID {
-		if fromPeer != nil && s.FromPeer != *fromPeer {
+		if len(from) > 0 && !slices.Contains(from, s.FromPeer) && !slices.Contains(from, s.FromPeerID) {
 			continue
 		}
 		out = append(out, s)
@@ -333,5 +336,75 @@ func TestCreateScheduleChecksTheTarget(t *testing.T) {
 	}
 	if n := schedules.count(); n != 3 {
 		t.Fatalf("stored %d schedules, want the 3 accepted ones", n)
+	}
+}
+
+// A schedule stores the peer_ids its ends resolved to at create, so the target
+// renamed natively afterwards is still the peer it addresses.
+func TestScheduleAddressesItsTargetByPeerIDThroughARename(t *testing.T) {
+	ctx := context.Background()
+	path := "/work/gone"
+	store := mappedStore{mappings: []*proto.SessionMapping{
+		{SessionID: "repow-dev-gone0001", DisplayName: "gone-claude-code", Circle: "dev", Backend: proto.AgentClaudeCode, Path: &path, Role: proto.RoleAgent},
+	}}
+	reg, err := peer.NewRegistry(ctx, store, deadLive{}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	register := func(name string) (proto.PeerID, proto.DisplayName) {
+		p := "/work/" + name
+		id, display, err := reg.AllocateAndRegister(ctx, peer.AllocateParams{Circle: "dev", Backend: proto.AgentClaudeCode, Path: &p, Role: proto.RoleAgent})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return id, display
+	}
+	alphaID, alpha := register("alpha")
+	fooID, foo := register("foo")
+
+	schedules := newFakeScheduleStore()
+	h := (&Hub{reg: reg}).WithSchedules(schedules, &fakeWaker{})
+	mux := http.NewServeMux()
+	h.registerScheduleRoutes(mux)
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	create := func(to string) *state.Schedule {
+		resp := postJSON(t, srv.URL+"/schedules", map[string]any{"from_peer": string(alpha), "to_peer": to, "text": "ping", "fire_at": "2030-01-02T15:04:05Z"})
+		defer resp.Body.Close()
+		var sched state.Schedule
+		if resp.StatusCode != http.StatusOK || json.NewDecoder(resp.Body).Decode(&sched) != nil {
+			t.Fatalf("create to %s: status %d", to, resp.StatusCode)
+		}
+		return &sched
+	}
+	live := create(string(foo))
+	if live.ToPeerID != string(fooID) || live.FromPeerID != string(alphaID) || live.ToPeer != string(foo) {
+		t.Fatalf("live schedule ends = %+v", live)
+	}
+	if mapped := create("gone-claude-code"); mapped.ToPeerID != "repow-dev-gone0001" {
+		t.Fatalf("mapped target resolved to %q", mapped.ToPeerID)
+	}
+	// A row stored by name only (the migration could not resolve it) is still
+	// the caller's own.
+	_, _ = schedules.CreateSchedule(ctx, state.ScheduleEnd{Name: string(alpha)}, state.ScheduleEnd{Name: "gone-claude-code"}, "legacy", time.Now(), "notify", nil, nil)
+	if mine, err := h.listSchedules(ctx, strptr(string(alpha))); err != nil || len(mine.Schedules) != 3 {
+		t.Fatalf("listed %d for %s (%v), want its 2 resolved rows and the name-only one", len(mine.Schedules), alpha, err)
+	}
+
+	if name, _ := reg.ApplyNativeName(ctx, fooID, "Bar"); name != "bar" {
+		t.Fatalf("rename = %q", name)
+	}
+	_, target, err := reg.CheckAccess(ctx, live.FromPeerID, live.ToPeerID, false, nil)
+	if err != nil || target == nil || target.PeerID != fooID || target.DisplayName != "bar" {
+		t.Fatalf("after the rename the schedule reaches %+v (%v), want %s as bar", target, err, fooID)
+	}
+
+	// The sender renamed too still lists its schedules under its new name.
+	if name, _ := reg.ApplyNativeName(ctx, alphaID, "Alpha renamed"); name != "alpha-renamed" {
+		t.Fatalf("sender rename = %q", name)
+	}
+	mine, err := h.listSchedules(ctx, strptr("alpha-renamed"))
+	if err != nil || len(mine.Schedules) != 2 {
+		t.Fatalf("schedules listed for the renamed sender = %d (%v), want 2", len(mine.Schedules), err)
 	}
 }

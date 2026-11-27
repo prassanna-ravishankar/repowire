@@ -83,7 +83,25 @@ func entryTurn(entry map[string]any) transcriptTurn {
 }
 
 func lastTurn(path string) (user, assistant, turnID string, calls []toolCall) {
-	entries := readTranscript(path)
+	return lastTurnIn(readTranscript(path))
+}
+
+// sessionTitles returns the latest names Claude Code recorded in a transcript:
+// the session's own name (set with -n, /rename or a hook) and its AI-generated
+// title.
+func sessionTitles(entries []map[string]any) (custom, ai string) {
+	for _, entry := range entries {
+		switch stringValue(entry, "type") {
+		case "custom-title":
+			custom = firstNonempty(stringValue(entry, "customTitle"), custom)
+		case "ai-title":
+			ai = firstNonempty(stringValue(entry, "aiTitle"), ai)
+		}
+	}
+	return custom, ai
+}
+
+func lastTurnIn(entries []map[string]any) (user, assistant, turnID string, calls []toolCall) {
 	assistantHadText := false
 	boundary := -1
 	for i, entry := range entries {

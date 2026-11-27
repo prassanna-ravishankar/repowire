@@ -394,14 +394,6 @@ Update the free-form description visible in `list_peers`. Call this at the start
 set_description("rebuilding docs slice B")
 ```
 
-### `set_name`
-
-```text
-set_name(name: str) -> str
-```
-
-Rename the calling peer. Natural titles are normalized into address-safe lowercase names, so `set_name("Fix circle resume")` assigns `fix-circle-resume`. The rename is rejected if that name is already live in the same circle.
-
 ### `orchestrator_status`
 
 ```text
@@ -590,7 +582,7 @@ At `fire_at`, the daemon delivers `text` to `to_peer` on your behalf. `kind="not
 
 Use for self-wake reminders, post-stand-up nudges, or future check-ins that don't need a live caller waiting. Returns a `sched-XXXXXXXX` ID; pass it to `schedule_delete` to cancel.
 
-An unknown `to_peer` is refused at once, and so is one the circle boundary would refuse. When a scheduled send fails as it fires (an ask to a peer with no live connection is not queued, unlike a notify), you get a notify from `repowire:scheduler` saying why. See [when a scheduled send cannot go out](../use/features/scheduling.md#when-a-scheduled-send-cannot-go-out).
+An unknown `to_peer` is refused at once, and so is one the circle boundary would refuse. The schedule records the `peer_id` that `to_peer` (and the sender) resolved to, so it still reaches the same peer after that peer is renamed. When a scheduled send fails as it fires (an ask to a peer with no live connection is not queued, unlike a notify), you get a notify from `repowire:scheduler` saying why. See [when a scheduled send cannot go out](../use/features/scheduling.md#when-a-scheduled-send-cannot-go-out).
 
 ### `schedule_self`
 

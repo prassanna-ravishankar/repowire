@@ -28,8 +28,8 @@ import (
 
 // scheduleStore is the data layer the routes touch. *state.Store satisfies it.
 type scheduleStore interface {
-	CreateSchedule(ctx context.Context, fromPeer, toPeer, text string, fireAt time.Time, kind string, circle, cron *string) (*state.Schedule, error)
-	ListSchedules(ctx context.Context, fromPeer *string) ([]*state.Schedule, error)
+	CreateSchedule(ctx context.Context, from, to state.ScheduleEnd, text string, fireAt time.Time, kind string, circle, cron *string) (*state.Schedule, error)
+	ListSchedules(ctx context.Context, from ...string) ([]*state.Schedule, error)
 	DeleteSchedule(ctx context.Context, scheduleID string) (*state.Schedule, error)
 }
 
@@ -122,12 +122,13 @@ func (h *Hub) createSchedule(ctx context.Context, req scheduleCreateRequest) (*s
 		fireAt = parsed
 	}
 
-	if err := h.checkScheduleTarget(ctx, req); err != nil {
+	from, to, err := h.checkScheduleTarget(ctx, req)
+	if err != nil {
 		return nil, err
 	}
 
 	sched, err := h.scheduleStore.CreateSchedule(
-		ctx, req.FromPeer, req.ToPeer, req.Text, fireAt, kind, req.Circle, cron,
+		ctx, from, to, req.Text, fireAt, kind, req.Circle, cron,
 	)
 	if err != nil {
 		// Invalid kind (and any other store-side validation) → 400, matching the
@@ -156,7 +157,19 @@ func (h *Hub) listSchedules(ctx context.Context, fromPeer *string) (scheduleList
 	if h == nil || h.scheduleStore == nil {
 		return scheduleListResponse{}, routeErr(http.StatusServiceUnavailable, "schedules not configured")
 	}
-	scheds, err := h.scheduleStore.ListSchedules(ctx, fromPeer)
+	// A sender is matched by the name it asked with, and, when the registry
+	// knows it, by its peer_id and current name: its schedules stay its own
+	// after a rename, including rows stored by name only.
+	var from []string
+	if fromPeer != nil {
+		from = append(from, *fromPeer)
+		if h.reg != nil {
+			if p, err := h.reg.ResolvePeer(*fromPeer, nil); err == nil && p != nil {
+				from = append(from, string(p.PeerID), string(p.DisplayName))
+			}
+		}
+	}
+	scheds, err := h.scheduleStore.ListSchedules(ctx, from...)
 	if err != nil {
 		return scheduleListResponse{}, routeErr(http.StatusInternalServerError, err.Error())
 	}
@@ -225,43 +238,57 @@ func parseFireAt(raw string) (time.Time, error) {
 // A target this daemon knows only by its durable mapping (offline since a
 // restart) is accepted: it may be back when the schedule fires, and if not
 // that failure is reported to the sender. A name nobody has ever had is 404.
-func (h *Hub) checkScheduleTarget(ctx context.Context, req scheduleCreateRequest) error {
+// It returns both ends resolved to the peer_ids the schedule addresses, so a
+// later rename of either peer does not lose its sends.
+func (h *Hub) checkScheduleTarget(ctx context.Context, req scheduleCreateRequest) (from, to state.ScheduleEnd, err error) {
+	from, to = state.ScheduleEnd{Name: req.FromPeer}, state.ScheduleEnd{Name: req.ToPeer}
 	if h.reg == nil {
-		return nil
+		return from, to, nil
 	}
-	_, _, err := h.reg.CheckAccess(ctx, req.FromPeer, req.ToPeer, false, req.Circle)
+	sender, target, err := h.reg.CheckAccess(ctx, req.FromPeer, req.ToPeer, false, req.Circle)
 	if err == nil {
-		return nil
+		from.PeerID, to.PeerID = schedulePeerID(sender), schedulePeerID(target)
+		return from, to, nil
 	}
 	var notAddressable *proto.NotAddressableError
 	switch msg := err.Error(); {
 	case strings.HasPrefix(msg, "Unknown peer"):
-		return h.checkMappedTarget(req)
+		sender, target, err := h.checkMappedTarget(req)
+		from.PeerID, to.PeerID = schedulePeerID(sender), target
+		return from, to, err
 	case strings.HasPrefix(msg, "Circle boundary"):
-		return routeErr(http.StatusForbidden, msg)
+		return from, to, routeErr(http.StatusForbidden, msg)
 	case errors.As(err, &notAddressable):
-		return routeErr(http.StatusConflict, msg)
+		return from, to, routeErr(http.StatusConflict, msg)
 	default:
-		return routeErr(http.StatusConflict, msg) // an ambiguous name
+		return from, to, routeErr(http.StatusConflict, msg) // an ambiguous name
 	}
+}
+
+func schedulePeerID(p *proto.Peer) string {
+	if p == nil {
+		return ""
+	}
+	return string(p.PeerID)
 }
 
 // checkMappedTarget is the create-time check for a target no live peer
 // answers to: only a peer this daemon knows by its durable mapping, offline
 // since a restart, is accepted, and only under the same rules a live one
 // would meet: unambiguous within the requested circle, and inside the
-// sender's circle unless either side crosses circles.
-func (h *Hub) checkMappedTarget(req scheduleCreateRequest) error {
+// sender's circle unless either side crosses circles. It returns the resolved
+// sender (nil when unresolved) and the target's peer_id.
+func (h *Hub) checkMappedTarget(req scheduleCreateRequest) (*proto.Peer, string, error) {
 	if live := h.reg.ResolvePeerStrict(req.ToPeer, nil); len(live) > 0 {
 		// A live peer has that name, just not in reach of this schedule.
-		return routeErr(http.StatusForbidden, "Circle boundary: "+req.ToPeer+" is not in this schedule's circle")
+		return nil, "", routeErr(http.StatusForbidden, "Circle boundary: "+req.ToPeer+" is not in this schedule's circle")
 	}
 	m, ambiguous := h.reg.MappingFor(req.ToPeer, req.Circle)
 	switch {
 	case ambiguous:
-		return routeErr(http.StatusConflict, "ambiguous target "+req.ToPeer+": name it by peer_id")
+		return nil, "", routeErr(http.StatusConflict, "ambiguous target "+req.ToPeer+": name it by peer_id")
 	case m == nil:
-		return routeErr(http.StatusNotFound, "Unknown peer: "+req.ToPeer+" (a schedule's target must be a peer this daemon knows)")
+		return nil, "", routeErr(http.StatusNotFound, "Unknown peer: "+req.ToPeer+" (a schedule's target must be a peer this daemon knows)")
 	}
 	// The sender is resolved as CheckAccess resolves it: in the target's
 	// circle first, then anywhere, with the same tiebreaks; an unresolved
@@ -271,7 +298,7 @@ func (h *Hub) checkMappedTarget(req scheduleCreateRequest) error {
 		from, _ = h.reg.ResolvePeer(req.FromPeer, nil)
 	}
 	if from != nil && from.Circle != m.Circle && !from.Role.BypassesCircles() && !m.Role.BypassesCircles() {
-		return routeErr(http.StatusForbidden, fmt.Sprintf("Circle boundary: %s (%s) cannot schedule to %s (%s)", from.DisplayName, from.Circle, m.DisplayName, m.Circle))
+		return nil, "", routeErr(http.StatusForbidden, fmt.Sprintf("Circle boundary: %s (%s) cannot schedule to %s (%s)", from.DisplayName, from.Circle, m.DisplayName, m.Circle))
 	}
-	return nil
+	return from, string(m.SessionID), nil
 }

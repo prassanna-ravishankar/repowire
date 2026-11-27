@@ -102,6 +102,10 @@ interface PendingQuery {
 interface PeerConn {
   sessionId: string
   sessionTitle: string | null
+  // publishedName is the title the daemon last acknowledged; naming is true
+  // while publishName drains toward the latest one.
+  publishedName: string | null
+  naming: boolean
   peerId: string | null
   birthCertificate: Record<string, unknown> | null
   peerName: string
@@ -245,6 +249,8 @@ async function registerPaneLessPeer(conn: PeerConn): Promise<void> {
     provenance: { source: "hook", addressable: true },
   }
   if (conn.peerId) body.peer_id = conn.peerId
+  const sentTitle = conn.sessionTitle
+  if (sentTitle) body.native_name = sentTitle
   let registered: Record<string, unknown>
   try {
     registered = await daemon("/peers", body)
@@ -259,6 +265,8 @@ async function registerPaneLessPeer(conn: PeerConn): Promise<void> {
     ? registered.birth_certificate as Record<string, unknown>
     : conn.birthCertificate
   if (conn.peerId) saveIdentity(projectPath, conn.sessionId, conn.peerId, conn.birthCertificate)
+  conn.publishedName = sentTitle
+  void publishName(conn)
 }
 
 async function recoverPaneLessIdentity(conn: PeerConn): Promise<void> {
@@ -310,9 +318,39 @@ function sanitizePeerName(name: string): string {
   return name.replace(/[^a-zA-Z0-9._-]/g, "_") || "unknown"
 }
 
-function peerNameFor(folder: string, session: { id: string; title?: string | null }): string {
-  const slug = sanitizePeerName(session.title || session.id.slice(-8)).slice(0, 32) || session.id.slice(-8)
-  return sanitizePeerName(`${folder}-${slug}`)
+// The daemon names the peer from the session title (native_name); this is
+// only the placeholder a registration carries until it answers.
+function peerNameFor(folder: string): string {
+  return sanitizePeerName(`${folder}-opencode`)
+}
+
+// renamePeer records an OpenCode session rename in event order and publishes
+// it; the daemon makes the title the peer's address.
+function renamePeer(conn: PeerConn, title: string) {
+  if (!title) return
+  conn.sessionTitle = title
+  void publishName(conn)
+}
+
+// publishName sends the session's latest title, one request at a time, until
+// the daemon holds it: quick renames land in order, and a rename made while
+// the session registers is sent once registration returns. Registration
+// itself carries the title it was sent with (native_name).
+async function publishName(conn: PeerConn) {
+  if (conn.naming || !conn.peerId) return
+  conn.naming = true
+  try {
+    while (conn.peerId && conn.sessionTitle && conn.sessionTitle !== conn.publishedName) {
+      const title = conn.sessionTitle
+      const updated = await daemon("/session/update", { peer_name: conn.peerId, native_name: title })
+      conn.publishedName = title
+      if (typeof updated.display_name === "string") conn.peerName = updated.display_name
+    }
+  } catch (e) {
+    console.error(`[repowire] Rename of ${conn.peerName} failed:`, e)
+  } finally {
+    conn.naming = false
+  }
 }
 
 // Open a WebSocket for a single PeerConn. Each session has its own WS.
@@ -337,6 +375,8 @@ function connectPeerWebSocket(conn: PeerConn) {
     }
     const cachedPeerId = conn.peerId || loadIdentity(projectPath, conn.sessionId).peerId
     if (cachedPeerId) connectMsg.peer_id = cachedPeerId
+    if (conn.sessionTitle) connectMsg.native_name = conn.sessionTitle
+    conn.publishedName = conn.sessionTitle
     if (tmuxSession) connectMsg.tmux_session = tmuxSession
     if (tmuxPane) connectMsg.pane_id = tmuxPane
     if (activeModel) {
@@ -416,11 +456,13 @@ async function handleDaemonMessage(conn: PeerConn, data: Record<string, unknown>
   const msgType = data.type as string
 
   if (msgType === "connected") {
+    if (typeof data.display_name === "string") conn.peerName = data.display_name
     if (data.session_id) {
       conn.peerId = data.session_id as string
       dbg(`[repowire] ${conn.peerName} connected with peer_id: ${conn.peerId}`)
       saveIdentity(projectPath, conn.sessionId, conn.peerId, conn.birthCertificate)
     }
+    void publishName(conn) // a rename made while the connect was in flight
     sendStatus(conn, conn.busy ? "busy" : "idle")
   } else if (msgType === "error") {
     console.error(`[repowire] Daemon rejected ${conn.peerName}: ${String(data.error || "unknown error")}`)
@@ -559,9 +601,11 @@ function ensurePeer(session: { id: string; title?: string | null }) {
   const conn: PeerConn = {
     sessionId: session.id,
     sessionTitle: session.title ?? null,
+    publishedName: null,
+    naming: false,
     peerId: cached.peerId,
     birthCertificate: cached.birthCertificate,
-    peerName: peerNameFor(folder, session),
+    peerName: peerNameFor(folder),
     ws: null,
     pendingQueries: new Map(),
     pendingByAssistantId: new Map(),
@@ -1067,8 +1111,10 @@ ${me.peerId || ""}	${me.peerName}			not registered			`
         }
       } else if (typedEvent.type === "session.updated") {
         const info = props?.info as SessionEventInfo | undefined
-        if (info?.id && info.parentID == null && !peerBySession.has(info.id)) {
-          ensurePeer({ id: info.id, title: info.title })
+        if (info?.id && info.parentID == null) {
+          const existing = peerBySession.get(info.id)
+          if (existing) renamePeer(existing, info.title ?? "")
+          else ensurePeer({ id: info.id, title: info.title })
         }
       } else if (typedEvent.type === "session.deleted") {
         const info = props?.info as SessionEventInfo | undefined

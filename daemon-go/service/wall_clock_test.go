@@ -129,7 +129,7 @@ func TestSchedulerFiresOverdueScheduleAfterSleep(t *testing.T) {
 	store := newFakeScheduleStore()
 	del := &fakeSchedDelivery{}
 	jc := &jumpingClock{}
-	_, _ = store.CreateSchedule(context.Background(), "alpha", "beta", "overnight", time.Now().Add(time.Hour), "notify", nil, nil)
+	_, _ = store.CreateSchedule(context.Background(), state.ScheduleEnd{Name: "alpha"}, state.ScheduleEnd{Name: "beta"}, "overnight", time.Now().Add(time.Hour), "notify", nil, nil)
 
 	s := NewScheduler(store, del)
 	s.clock = wallClock{now: jc.now, chunk: 20 * time.Millisecond}
@@ -154,7 +154,7 @@ func TestSchedulerFiresOverdueScheduleAfterSleep(t *testing.T) {
 func TestSchedulerDoesNotFireFarScheduleEarly(t *testing.T) {
 	store := newFakeScheduleStore()
 	del := &fakeSchedDelivery{}
-	_, _ = store.CreateSchedule(context.Background(), "alpha", "beta", "in five hours", time.Now().Add(5*time.Hour), "notify", nil, nil)
+	_, _ = store.CreateSchedule(context.Background(), state.ScheduleEnd{Name: "alpha"}, state.ScheduleEnd{Name: "beta"}, "in five hours", time.Now().Add(5*time.Hour), "notify", nil, nil)
 
 	s := NewScheduler(store, del)
 	s.clock = wallClock{now: time.Now, chunk: 5 * time.Millisecond}

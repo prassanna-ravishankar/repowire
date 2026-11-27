@@ -795,11 +795,21 @@ func (d *PeerDelivery) OpenScheduledAsk(ctx context.Context, fromPeer, toPeer, t
 	if d.asks == nil {
 		return "", errors.New("delivery: AskTracker is required to open scheduled asks")
 	}
+	// A schedule names its ends by peer_id when it could resolve them; the
+	// ask records the peer's current name beside it.
+	identity := func(s string) (proto.PeerID, proto.DisplayName) {
+		if p, ok := d.reg.GetPeer(proto.PeerID(s)); ok {
+			return p.PeerID, p.DisplayName
+		}
+		return proto.PeerID(s), proto.DisplayName(s)
+	}
+	fromID, fromName := identity(fromPeer)
+	toID, toName := identity(toPeer)
 	cid, err := d.asks.Register(ctx, RegisterAskParams{
-		FromPeerID:    proto.PeerID(fromPeer),
-		FromPeerName:  proto.DisplayName(fromPeer),
-		ToPeerID:      proto.PeerID(toPeer),
-		ToPeerName:    proto.DisplayName(toPeer),
+		FromPeerID:    fromID,
+		FromPeerName:  fromName,
+		ToPeerID:      toID,
+		ToPeerName:    toName,
 		Text:          text,
 		ReplyDelivery: replyDelivery,
 	})

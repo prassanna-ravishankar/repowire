@@ -265,6 +265,9 @@ func (h *Hub) HandleWS(w http.ResponseWriter, r *http.Request) {
 	}
 	sessionID = peerID
 	registered = true
+	if cf.NativeName != nil {
+		assignedName, _ = h.reg.ApplyNativeName(ctx, peerID, *cf.NativeName)
+	}
 
 	// The registry is the source of truth for pane ownership: it may have rejected
 	// the connect-frame pane (sticky orchestrator / unproven live-holder claim) and
@@ -502,20 +505,6 @@ func (h *Hub) dispatch(ctx context.Context, id proto.PeerID, raw []byte) {
 		_ = h.reg.UpdateStatus(ctx, id, normalizeStatus(f.Status))
 		if f.TurnState != nil && validTurnState(*f.TurnState) {
 			h.reg.UpdateTurnState(ctx, id, *f.TurnState)
-		}
-
-	case proto.FrameUpdateDisplayName:
-		var f proto.UpdateDisplayNameFrame
-		if err := json.Unmarshal(raw, &f); err != nil {
-			log.Printf("ws: bad update_display_name frame from %s: %v", id, err)
-			return
-		}
-		if isValidIdentifier(string(f.DisplayName)) {
-			if _, err := h.reg.UpdateDisplayName(ctx, id, f.DisplayName); err != nil {
-				log.Printf("ws: update_display_name from %s failed: %v", id, err)
-			}
-		} else {
-			log.Printf("ws: update_display_name from %s invalid name %q", id, f.DisplayName)
 		}
 
 	case proto.FramePong:

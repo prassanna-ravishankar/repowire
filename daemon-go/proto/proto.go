@@ -235,12 +235,11 @@ type FrameType string
 
 const (
 	// Client -> Daemon
-	FrameConnect           FrameType = "connect"
-	FrameStatus            FrameType = "status"
-	FrameUpdateDisplayName FrameType = "update_display_name"
-	FramePong              FrameType = "pong"
-	FrameDeliveryAck       FrameType = "delivery_ack"
-	FrameError             FrameType = "error"
+	FrameConnect     FrameType = "connect"
+	FrameStatus      FrameType = "status"
+	FramePong        FrameType = "pong"
+	FrameDeliveryAck FrameType = "delivery_ack"
+	FrameError       FrameType = "error"
 	// Daemon -> Client
 	FrameConnected FrameType = "connected"
 	FrameAsk       FrameType = "ask"
@@ -305,6 +304,8 @@ type ConnectFrame struct {
 	ModelDetails map[string]any `json:"model_details,omitempty"`
 	AgentPID     *int           `json:"agent_pid,omitempty"`
 	PeerID       *PeerID        `json:"peer_id,omitempty"` // claimed on reconnect
+	// NativeName is the runtime's own session name; it becomes the address.
+	NativeName *string `json:"native_name,omitempty"`
 	// Provenance is explicit source evidence from native clients (OpenCode and
 	// Pi send {source: "hook"}); absent keeps what the daemon knows.
 	Provenance *Provenance `json:"provenance,omitempty"`
@@ -322,12 +323,6 @@ type StatusFrame struct {
 	Type      FrameType  `json:"type"` // "status"
 	Status    PeerStatus `json:"status"`
 	TurnState *TurnState `json:"turn_state,omitempty"`
-}
-
-// UpdateDisplayNameFrame renames a peer (client -> daemon).
-type UpdateDisplayNameFrame struct {
-	Type        FrameType   `json:"type"` // "update_display_name"
-	DisplayName DisplayName `json:"display_name"`
 }
 
 // ErrorFrame is bidirectional. Code is set for typed rejections (peer_retired).

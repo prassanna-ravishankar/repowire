@@ -71,6 +71,9 @@ type RegisterPeerRequest struct {
 	// Provenance is an explicit fresh classification (bridge). Omitted keeps
 	// what the daemon already knows; only an unknown source is then inferred.
 	Provenance *proto.Provenance `json:"provenance"`
+	// NativeName is the runtime's own session name; when present it becomes
+	// the peer's address (see Registry.ApplyNativeName).
+	NativeName *string `json:"native_name"`
 }
 
 // RegisterResponse extends the Python-compatible response with the daemon's
@@ -227,6 +230,9 @@ func (h *Hub) registerPeerImpl(r *http.Request, req RegisterPeerRequest, persist
 	if err != nil {
 		// PaneHijack / PeerRetired guards are 409s (orphan ws-hook reclaim).
 		return RegisterResponse{}, http.StatusConflict, err.Error()
+	}
+	if req.NativeName != nil {
+		h.reg.ApplyNativeName(ctx, peerID, *req.NativeName)
 	}
 	if registered, ok := h.reg.GetPeer(peerID); ok {
 		displayName, circle, role = registered.DisplayName, registered.Circle, registered.Role

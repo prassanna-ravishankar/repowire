@@ -63,7 +63,7 @@ func TestCreateScheduleRoundTrip(t *testing.T) {
 
 	fireAt := time.Date(2026, 7, 1, 9, 0, 0, 0, time.UTC)
 	circle := "default"
-	got, err := s.CreateSchedule(ctx, "alice", "bob", "stand-up", fireAt, "ask", &circle, nil)
+	got, err := s.CreateSchedule(ctx, ScheduleEnd{Name: "alice"}, ScheduleEnd{Name: "bob"}, "stand-up", fireAt, "ask", &circle, nil)
 	if err != nil {
 		t.Fatalf("CreateSchedule: %v", err)
 	}
@@ -100,7 +100,7 @@ func TestCreateScheduleDefaultsAndValidation(t *testing.T) {
 	ctx := context.Background()
 
 	// Empty kind defaults to notify.
-	got, err := s.CreateSchedule(ctx, "a", "b", "t", time.Now().UTC(), "", nil, nil)
+	got, err := s.CreateSchedule(ctx, ScheduleEnd{Name: "a"}, ScheduleEnd{Name: "b"}, "t", time.Now().UTC(), "", nil, nil)
 	if err != nil {
 		t.Fatalf("CreateSchedule default kind: %v", err)
 	}
@@ -109,12 +109,12 @@ func TestCreateScheduleDefaultsAndValidation(t *testing.T) {
 	}
 
 	// Invalid kind rejected.
-	if _, err := s.CreateSchedule(ctx, "a", "b", "t", time.Now().UTC(), "bogus", nil, nil); err == nil {
+	if _, err := s.CreateSchedule(ctx, ScheduleEnd{Name: "a"}, ScheduleEnd{Name: "b"}, "t", time.Now().UTC(), "bogus", nil, nil); err == nil {
 		t.Error("expected error for invalid kind")
 	}
 
 	// Zero fire_at rejected.
-	if _, err := s.CreateSchedule(ctx, "a", "b", "t", time.Time{}, "notify", nil, nil); err == nil {
+	if _, err := s.CreateSchedule(ctx, ScheduleEnd{Name: "a"}, ScheduleEnd{Name: "b"}, "t", time.Time{}, "notify", nil, nil); err == nil {
 		t.Error("expected error for zero fire_at")
 	}
 }
@@ -127,17 +127,17 @@ func TestListSchedulesOrderingAndFilter(t *testing.T) {
 	early := time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)
 	mid := time.Date(2026, 7, 2, 0, 0, 0, 0, time.UTC)
 
-	if _, err := s.CreateSchedule(ctx, "alice", "bob", "late", late, "notify", nil, nil); err != nil {
+	if _, err := s.CreateSchedule(ctx, ScheduleEnd{Name: "alice"}, ScheduleEnd{Name: "bob"}, "late", late, "notify", nil, nil); err != nil {
 		t.Fatalf("create late: %v", err)
 	}
-	if _, err := s.CreateSchedule(ctx, "alice", "bob", "early", early, "notify", nil, nil); err != nil {
+	if _, err := s.CreateSchedule(ctx, ScheduleEnd{Name: "alice"}, ScheduleEnd{Name: "bob"}, "early", early, "notify", nil, nil); err != nil {
 		t.Fatalf("create early: %v", err)
 	}
-	if _, err := s.CreateSchedule(ctx, "carol", "bob", "mid", mid, "notify", nil, nil); err != nil {
+	if _, err := s.CreateSchedule(ctx, ScheduleEnd{Name: "carol"}, ScheduleEnd{Name: "bob"}, "mid", mid, "notify", nil, nil); err != nil {
 		t.Fatalf("create mid: %v", err)
 	}
 
-	all, err := s.ListSchedules(ctx, nil)
+	all, err := s.ListSchedules(ctx)
 	if err != nil {
 		t.Fatalf("ListSchedules all: %v", err)
 	}
@@ -150,7 +150,7 @@ func TestListSchedulesOrderingAndFilter(t *testing.T) {
 	}
 
 	from := "alice"
-	mine, err := s.ListSchedules(ctx, &from)
+	mine, err := s.ListSchedules(ctx, from)
 	if err != nil {
 		t.Fatalf("ListSchedules filtered: %v", err)
 	}
@@ -178,10 +178,10 @@ func TestNextDueSchedule(t *testing.T) {
 
 	late := time.Date(2026, 7, 3, 0, 0, 0, 0, time.UTC)
 	early := time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)
-	if _, err := s.CreateSchedule(ctx, "a", "b", "late", late, "notify", nil, nil); err != nil {
+	if _, err := s.CreateSchedule(ctx, ScheduleEnd{Name: "a"}, ScheduleEnd{Name: "b"}, "late", late, "notify", nil, nil); err != nil {
 		t.Fatalf("create late: %v", err)
 	}
-	if _, err := s.CreateSchedule(ctx, "a", "b", "early", early, "notify", nil, nil); err != nil {
+	if _, err := s.CreateSchedule(ctx, ScheduleEnd{Name: "a"}, ScheduleEnd{Name: "b"}, "early", early, "notify", nil, nil); err != nil {
 		t.Fatalf("create early: %v", err)
 	}
 
@@ -199,7 +199,7 @@ func TestRescheduleNext(t *testing.T) {
 	ctx := context.Background()
 
 	// No-cron schedule cannot be rescheduled.
-	oneShot, err := s.CreateSchedule(ctx, "a", "b", "once", time.Now().UTC(), "notify", nil, nil)
+	oneShot, err := s.CreateSchedule(ctx, ScheduleEnd{Name: "a"}, ScheduleEnd{Name: "b"}, "once", time.Now().UTC(), "notify", nil, nil)
 	if err != nil {
 		t.Fatalf("create one-shot: %v", err)
 	}
@@ -223,7 +223,7 @@ func TestRescheduleNext(t *testing.T) {
 	// Cron schedule advances fire_at.
 	cron := "0 9 * * *"
 	first := time.Date(2026, 7, 1, 9, 0, 0, 0, time.UTC)
-	rec, err := s.CreateSchedule(ctx, "a", "b", "daily", first, "notify", nil, &cron)
+	rec, err := s.CreateSchedule(ctx, ScheduleEnd{Name: "a"}, ScheduleEnd{Name: "b"}, "daily", first, "notify", nil, &cron)
 	if err != nil {
 		t.Fatalf("create recurring: %v", err)
 	}
@@ -248,7 +248,7 @@ func TestDeleteSchedule(t *testing.T) {
 	s := newScheduleStore(t)
 	ctx := context.Background()
 
-	created, err := s.CreateSchedule(ctx, "a", "b", "doomed", time.Now().UTC(), "notify", nil, nil)
+	created, err := s.CreateSchedule(ctx, ScheduleEnd{Name: "a"}, ScheduleEnd{Name: "b"}, "doomed", time.Now().UTC(), "notify", nil, nil)
 	if err != nil {
 		t.Fatalf("CreateSchedule: %v", err)
 	}
@@ -276,5 +276,34 @@ func TestDeleteSchedule(t *testing.T) {
 	}
 	if missing != nil {
 		t.Errorf("expected nil for missing delete, got %+v", missing)
+	}
+}
+
+// A sender's schedules are found whether a row addresses it by peer_id or only
+// by the name it was made under (a row the migration could not resolve).
+func TestListSchedulesMatchesASenderByNameOrPeerID(t *testing.T) {
+	ctx := context.Background()
+	s, err := NewStore(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	at := time.Now().UTC()
+	for _, from := range []ScheduleEnd{
+		{Name: "orchestrator-claude-code"},                         // name only, id unresolved
+		{Name: "orchestrator-claude-code", PeerID: "repow-1-orch"}, // made before a rename
+		{Name: "orch-renamed", PeerID: "repow-1-orch"},             // made after it
+		{Name: "someone-else", PeerID: "repow-1-other"},
+	} {
+		if _, err := s.CreateSchedule(ctx, from, ScheduleEnd{Name: "bob"}, "t", at, "notify", nil, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	mine, err := s.ListSchedules(ctx, "orch-renamed", "repow-1-orch", "orchestrator-claude-code")
+	if err != nil || len(mine) != 3 {
+		t.Fatalf("listed %d (%v), want the 3 sent by repow-1-orch under either name", len(mine), err)
+	}
+	if byID, _ := s.ListSchedules(ctx, "repow-1-orch"); len(byID) != 2 {
+		t.Fatalf("by peer_id alone: %d, want 2", len(byID))
 	}
 }

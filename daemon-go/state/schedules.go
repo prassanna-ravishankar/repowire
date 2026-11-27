@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -21,9 +22,15 @@ var validScheduleKinds = map[string]bool{
 // strings (the Python store keeps them as strings, never as time.Time), so we
 // preserve that representation rather than reparsing.
 type Schedule struct {
-	ScheduleID string  `json:"schedule_id"`
+	ScheduleID string `json:"schedule_id"`
+	// FromPeer and ToPeer are the names the schedule was made with, for
+	// display. FromPeerID and ToPeerID are the identities it addresses: a
+	// peer's name can change (its runtime renames the session), its peer_id
+	// cannot. Empty only for a sender the daemon could not resolve.
 	FromPeer   string  `json:"from_peer"`
+	FromPeerID string  `json:"from_peer_id,omitempty"`
 	ToPeer     string  `json:"to_peer"`
+	ToPeerID   string  `json:"to_peer_id,omitempty"`
 	Text       string  `json:"text"`
 	FireAt     string  `json:"fire_at"` // ISO-8601 UTC
 	Kind       string  `json:"kind"`    // "ask" | "notify"
@@ -32,21 +39,21 @@ type Schedule struct {
 	CreatedAt  string  `json:"created_at"` // ISO-8601 UTC
 }
 
-// scheduleColumns is the exact subset _upsert_schedule / _row_to_schedule touch.
-// The schedules table has more columns (from_peer_id, last_fired_at, ...) that
-// the Python store leaves untouched; we mirror that and never write them.
-const scheduleColumns = `schedule_id, from_peer, to_peer, text, kind, circle, fire_at, cron, created_at`
+// scheduleColumns is the subset the store reads and writes. The table has more
+// columns (last_fired_at, ...) that it leaves untouched.
+const scheduleColumns = `schedule_id, from_peer, from_peer_id, to_peer, to_peer_id, text, kind, circle, fire_at, cron, created_at`
 
 // scanSchedule reads the scheduleColumns subset from a row scanner.
 func scanSchedule(scan func(dest ...any) error) (*Schedule, error) {
 	var (
-		s      Schedule
-		circle sql.NullString
-		cron   sql.NullString
+		s            Schedule
+		circle, cron sql.NullString
+		fromID, toID sql.NullString
 	)
-	if err := scan(&s.ScheduleID, &s.FromPeer, &s.ToPeer, &s.Text, &s.Kind, &circle, &s.FireAt, &cron, &s.CreatedAt); err != nil {
+	if err := scan(&s.ScheduleID, &s.FromPeer, &fromID, &s.ToPeer, &toID, &s.Text, &s.Kind, &circle, &s.FireAt, &cron, &s.CreatedAt); err != nil {
 		return nil, err
 	}
+	s.FromPeerID, s.ToPeerID = fromID.String, toID.String
 	if circle.Valid {
 		c := circle.String
 		s.Circle = &c
@@ -62,8 +69,8 @@ func scanSchedule(scan func(dest ...any) error) (*Schedule, error) {
 // the column subset, stamping updated_at to now.
 func (s *Store) upsertSchedule(ctx context.Context, sched *Schedule) error {
 	const q = `INSERT OR REPLACE INTO schedules(
-		schedule_id, from_peer, to_peer, text, kind, circle, fire_at, cron, created_at, updated_at
-	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+		schedule_id, from_peer, from_peer_id, to_peer, to_peer_id, text, kind, circle, fire_at, cron, created_at, updated_at
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 	var circle any
 	if sched.Circle != nil {
 		circle = *sched.Circle
@@ -75,7 +82,9 @@ func (s *Store) upsertSchedule(ctx context.Context, sched *Schedule) error {
 	_, err := s.db.ExecContext(ctx, q,
 		sched.ScheduleID,
 		sched.FromPeer,
+		nullString(sched.FromPeerID),
 		sched.ToPeer,
+		nullString(sched.ToPeerID),
 		sched.Text,
 		sched.Kind,
 		circle,
@@ -90,6 +99,13 @@ func (s *Store) upsertSchedule(ctx context.Context, sched *Schedule) error {
 	return nil
 }
 
+// ScheduleEnd is one end of a schedule: the name it was given as, and the
+// peer_id the daemon resolved it to ("" when it could not).
+type ScheduleEnd struct {
+	Name   string
+	PeerID string
+}
+
 // CreateSchedule inserts a one-shot (or recurring, if cron is set) schedule and
 // returns it. fireAt must be non-zero; the caller supplies the resolved fire
 // time (for cron schedules the daemon computes the next fire externally, just as
@@ -97,7 +113,8 @@ func (s *Store) upsertSchedule(ctx context.Context, sched *Schedule) error {
 // Mirrors SQLiteScheduleStore.create.
 func (s *Store) CreateSchedule(
 	ctx context.Context,
-	fromPeer, toPeer, text string,
+	from, to ScheduleEnd,
+	text string,
 	fireAt time.Time,
 	kind string,
 	circle, cron *string,
@@ -113,8 +130,10 @@ func (s *Store) CreateSchedule(
 	}
 	sched := &Schedule{
 		ScheduleID: "sched-" + uuid.NewString()[:8],
-		FromPeer:   fromPeer,
-		ToPeer:     toPeer,
+		FromPeer:   from.Name,
+		FromPeerID: from.PeerID,
+		ToPeer:     to.Name,
+		ToPeerID:   to.PeerID,
 		Text:       text,
 		FireAt:     fireAt.UTC().Format(time.RFC3339Nano),
 		Kind:       kind,
@@ -143,18 +162,21 @@ func (s *Store) GetSchedule(ctx context.Context, scheduleID string) (*Schedule, 
 	return sched, nil
 }
 
-// ListSchedules returns all schedules ordered by fire_at, optionally filtered to
-// one from_peer. Pass fromPeer == nil for all. Mirrors SQLiteScheduleStore.list_all.
-func (s *Store) ListSchedules(ctx context.Context, fromPeer *string) ([]*Schedule, error) {
-	var (
-		rows *sql.Rows
-		err  error
-	)
-	if fromPeer == nil {
-		rows, err = s.db.QueryContext(ctx, `SELECT `+scheduleColumns+` FROM schedules ORDER BY fire_at`)
-	} else {
-		rows, err = s.db.QueryContext(ctx, `SELECT `+scheduleColumns+` FROM schedules WHERE from_peer = ? ORDER BY fire_at`, *fromPeer)
+// ListSchedules returns schedules ordered by fire_at: all of them, or those
+// sent by a peer named by any of from (its peer_id, current name, or the name a
+// schedule stored without an id was made under), matched against both ends.
+func (s *Store) ListSchedules(ctx context.Context, from ...string) ([]*Schedule, error) {
+	q, args := `SELECT `+scheduleColumns+` FROM schedules`, []any{}
+	if len(from) > 0 {
+		marks := strings.TrimSuffix(strings.Repeat("?,", len(from)), ",")
+		q += ` WHERE from_peer IN (` + marks + `) OR from_peer_id IN (` + marks + `)`
+		for range 2 {
+			for _, f := range from {
+				args = append(args, f)
+			}
+		}
 	}
+	rows, err := s.db.QueryContext(ctx, q+` ORDER BY fire_at`, args...)
 	if err != nil {
 		return nil, fmt.Errorf("list schedules: %w", err)
 	}

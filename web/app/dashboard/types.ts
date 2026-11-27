@@ -195,6 +195,7 @@ const LIFECYCLE_EVENT_TYPES: ReadonlySet<Event["type"]> = new Set([
   "peer_contradiction",
   "peer_reaped",
   "peer_updated",
+  "peer_renamed",
   "peer_not_addressable",
   "offline_peer_still_has_runtime_evidence",
   "status_change",
@@ -224,6 +225,7 @@ export interface Event {
     | "peer_contradiction"
     | "peer_reaped"
     | "peer_updated"
+    | "peer_renamed"
     | "peer_not_addressable"
     | "offline_peer_still_has_runtime_evidence"
     | "inbox_item"
@@ -253,6 +255,9 @@ export interface Event {
   severity?: string;
   // peer_updated (provenance) fields
   source?: string;
+  /** peer_renamed: the address before and after a native session rename. */
+  old_name?: string;
+  new_name?: string;
   addressable?: boolean;
   addressable_reason?: string;
   // peer_not_addressable (demotion) fields
