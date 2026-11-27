@@ -205,6 +205,10 @@ test('an owner deletes a workspace no live agent uses; a running one, or one in 
   owner.addAgent({ id: 'live', workspace: 'w', created_by: 'web' });
   assert.deepEqual(await owner.deleteWorkspace('w'), { deleted: false, reason: 'in_use', agents: ['live'] });
   owner.retire('live');
+  // A command a retired agent started is still running in the directory's view.
+  owner.execStarted('w', 'live');
+  assert.deepEqual(await owner.deleteWorkspace('w'), { deleted: false, reason: 'running' });
+  owner.execFinished('live', 'w', 'c1', { wall_ms: 1, snapshot_at: null, dirty: false });
   assert.deepEqual(await owner.deleteWorkspace('w'), { deleted: false, reason: 'running' });
   running = false;
   assert.deepEqual(await owner.deleteWorkspace('w'), { deleted: true });

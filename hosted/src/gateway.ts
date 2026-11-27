@@ -124,7 +124,7 @@ export class Gateway extends DurableObject {
     // A workspace being deleted takes no new agent until the deletion ends:
     // its files are going, whatever the newcomer expects of them.
     if (init.workspace && this.sql.exec('SELECT 1 FROM workspaces WHERE id = ? AND purging_at > ?', init.workspace, purgeClaimFloor()).toArray().length) {
-      return { conflict: `Workspace ${init.workspace} is being deleted by retention; try again shortly` };
+      return { conflict: `Workspace ${init.workspace} is being deleted; try again shortly` };
     }
     const at = now();
     this.sql.exec(
@@ -251,7 +251,7 @@ export class Gateway extends DurableObject {
       if (added && 'conflict' in added) throw new Error(String(added.conflict));
     }
     if (this.sql.exec('SELECT 1 FROM workspaces WHERE id = ? AND purging_at > ?', workspace, purgeClaimFloor()).toArray().length) {
-      throw new Error(`Workspace ${workspace} is being deleted by retention; try again shortly`);
+      throw new Error(`Workspace ${workspace} is being deleted; try again shortly`);
     }
     this.sql.exec('UPDATE workspaces SET running = running + 1 WHERE id = ?', workspace);
     this.publishWorkspace(workspace);
@@ -411,7 +411,6 @@ export class Gateway extends DurableObject {
     return { agents, workspaces };
   }
 
-  // Recomputes an agent's state from its runs after any change.
   // An owner deletes a workspace on purpose: a sandbox is an owner-level
   // computer, not tied to one agent. It is kept while a live agent uses it or
   // its container runs; retired agents do not hold it.
@@ -433,6 +432,8 @@ export class Gateway extends DurableObject {
   // claim that lapsed mid-call may have let an agent take it up again.
   private async purgeWorkspace(env: { WORKSPACES: DurableObjectNamespace<Workspace> }, owner: string, id: string, idleSinceMs: number, holds: string) {
     const unused = `id = ? AND purged_at IS NULL AND NOT EXISTS (SELECT 1 FROM agents a WHERE a.workspace = workspaces.id AND ${holds})`;
+    // A command the directory counts as running keeps it, whoever started it.
+    if (this.sql.exec('SELECT 1 FROM workspaces WHERE id = ? AND running > 0', id).toArray().length) return 'refused';
     const claimed = this.sql.exec(`UPDATE workspaces SET purging_at = ? WHERE ${unused} AND running = 0 AND (purging_at IS NULL OR purging_at <= ?)`,
       now(), id, purgeClaimFloor()).rowsWritten;
     if (!claimed) return 'in_use';
@@ -448,6 +449,7 @@ export class Gateway extends DurableObject {
     return 'deleted';
   }
 
+  // Recomputes an agent's state from its runs after any change.
   private refresh(id: string, op?: string, reason?: string | null) {
     const row = this.sql.exec('SELECT retired_at FROM agents WHERE id = ?', id).toArray()[0];
     if (!row) return null;
