@@ -42,6 +42,7 @@ Errors are `{"error": "..."}`. Until `REPOWIRE_MANAGED_URL` and `REPOWIRE_MANAGE
 | `GET /api/v1/managed/agents/{id}/runs` | Proxied. |
 | `POST /api/v1/managed/agents/{id}/abort` | Proxied. |
 | `GET /api/v1/managed/workspaces` | Proxied. |
+| `DELETE /api/v1/managed/workspaces/{id}` | Proxied. Deletes a workspace and its saved files. **409** while a live agent uses it (retire those first) or its container runs; **404** for an unknown or deleted one. |
 | `GET /api/v1/managed/clients` | See below. |
 | `DELETE /api/v1/managed/apps/{grant_id}` | Revokes an OAuth grant the caller owns; **404** otherwise. |
 | `GET /api/v1/managed/events` | SSE, see below. |

@@ -767,32 +767,50 @@ export class Gateway extends DurableObject {
       `SELECT id FROM workspaces w WHERE purged_at IS NULL AND running = 0 AND COALESCE(last_exec_at, '') < ?
          AND NOT EXISTS (SELECT 1 FROM agents a WHERE a.workspace = w.id AND a.purged_at IS NULL)
        ORDER BY id LIMIT ?`, cutoff, PURGE_BATCH).toArray();
-    // Each workspace is claimed while still unused, before its call: from then
-    // on no agent can take it up (addAgent refuses) until the claim ends. The
-    // workspace itself also refuses if a command ran there since the cutoff.
-    const stillUnused = `id = ? AND purged_at IS NULL AND NOT EXISTS (SELECT 1 FROM agents a WHERE a.workspace = workspaces.id AND a.purged_at IS NULL)`;
     for (const row of unused) {
-      const id = row.id as string;
-      const claimed = this.sql.exec(`UPDATE workspaces SET purging_at = ? WHERE ${stillUnused} AND running = 0 AND (purging_at IS NULL OR purging_at <= ?)`,
-        now(), id, purgeClaimFloor()).rowsWritten;
-      if (!claimed) continue;
-      let done = false;
-      try {
-        done = await env.WORKSPACES.getByName(scopedName(owner, id)).purge(nowMs - age * 1000);
-      } finally {
-        this.sql.exec('UPDATE workspaces SET purging_at = NULL WHERE id = ?', id);
-      }
-      // Marked purged only if still unused: a claim that lapsed mid-call may
-      // have let an agent take the workspace up again.
-      if (done && this.sql.exec(`UPDATE workspaces SET purged_at = ? WHERE ${stillUnused}`, now(), id).rowsWritten) workspaces++;
+      if (await this.purgeWorkspace(env, owner, row.id as string, nowMs - age * 1000, 'a.purged_at IS NULL') === 'deleted') workspaces++;
     }
     if (agents || workspaces) console.log('retention_purged', JSON.stringify({ agents, workspaces }));
     return { agents, workspaces };
   }
 
-
-
   // Recomputes an agent's state from its runs after any change.
+  // An owner deletes a workspace on purpose: a sandbox is an owner-level
+  // computer, not tied to one agent. It is kept while a live agent uses it or
+  // its container runs; retired agents do not hold it.
+  async deleteWorkspace(id: string): Promise<{ deleted: true } | { deleted: false; reason: 'not_found' | 'running' | 'in_use'; agents?: string[] }> {
+    const owner = await this.owner();
+    if (!owner || !this.sql.exec('SELECT 1 FROM workspaces WHERE id = ? AND purged_at IS NULL', id).toArray().length) return { deleted: false, reason: 'not_found' };
+    const users = this.sql.exec('SELECT id FROM agents WHERE workspace = ? AND retired_at IS NULL ORDER BY id', id).toArray().map((row) => row.id as string);
+    if (users.length) return { deleted: false, reason: 'in_use', agents: users };
+    const env = this.env as { WORKSPACES: DurableObjectNamespace<Workspace> };
+    const outcome = await this.purgeWorkspace(env, owner, id, Date.now(), 'a.retired_at IS NULL');
+    return outcome === 'deleted' ? { deleted: true } : { deleted: false, reason: outcome === 'in_use' ? 'in_use' : 'running' };
+  }
+
+  // Deletes one workspace's files through its own object. It is claimed
+  // while no agent matching `holds` uses it, before the call: from then on no
+  // agent can take it up (addAgent refuses) until the claim ends. The
+  // workspace itself refuses while its container runs, or if a command ran
+  // there since `idleSinceMs`. It is marked purged only if still unused: a
+  // claim that lapsed mid-call may have let an agent take it up again.
+  private async purgeWorkspace(env: { WORKSPACES: DurableObjectNamespace<Workspace> }, owner: string, id: string, idleSinceMs: number, holds: string) {
+    const unused = `id = ? AND purged_at IS NULL AND NOT EXISTS (SELECT 1 FROM agents a WHERE a.workspace = workspaces.id AND ${holds})`;
+    const claimed = this.sql.exec(`UPDATE workspaces SET purging_at = ? WHERE ${unused} AND running = 0 AND (purging_at IS NULL OR purging_at <= ?)`,
+      now(), id, purgeClaimFloor()).rowsWritten;
+    if (!claimed) return 'in_use';
+    let done = false;
+    try {
+      done = await env.WORKSPACES.getByName(scopedName(owner, id)).purge(idleSinceMs);
+    } finally {
+      this.sql.exec('UPDATE workspaces SET purging_at = NULL WHERE id = ?', id);
+    }
+    if (!done) return 'refused';
+    if (!this.sql.exec(`UPDATE workspaces SET purged_at = ? WHERE ${unused}`, now(), id).rowsWritten) return 'in_use';
+    this.publishWorkspace(id);
+    return 'deleted';
+  }
+
   private refresh(id: string, op?: string, reason?: string | null) {
     const row = this.sql.exec('SELECT retired_at FROM agents WHERE id = ?', id).toArray()[0];
     if (!row) return null;

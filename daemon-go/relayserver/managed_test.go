@@ -195,6 +195,11 @@ func TestManagedProxyNamesOwnerAndPassesStatus(t *testing.T) {
 	if res.StatusCode != 200 {
 		t.Fatalf("same-origin delete = %d", res.StatusCode)
 	}
+	// A workspace is deleted on purpose through the same proxy.
+	f.do(t, "DELETE", "/api/v1/managed/workspaces/w1", managedKey, "", map[string]string{"Origin": f.http.URL})
+	if req, _ := f.worker.last(); req.Method != "DELETE" || req.URL.Path != "/workspaces/w1" {
+		t.Fatalf("workspace delete reached the Worker as %s %s", req.Method, req.URL.Path)
+	}
 }
 
 func TestManagedAdminRoutes(t *testing.T) {

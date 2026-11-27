@@ -186,3 +186,29 @@ test('a running agent the directory has not seen cannot run a command in a works
   assert.equal(owner.agent('legacy')?.workspace, 'w');
   assert.equal(owner.workspaces()[0].state, 'running');
 });
+
+// A sandbox is an owner-level computer: deleted on purpose, not only by
+// retention. A live agent using it, or a running container, keeps it.
+test('an owner deletes a workspace no live agent uses; a running one, or one in use, is kept', async () => {
+  const state = fakeState();
+  let running = true;
+  const purged: string[] = [];
+  const owner = new Gateway(state as never, {
+    AGENTS: { getByName: () => ({}) },
+    WORKSPACES: { getByName: (name: string) => ({ purge: async () => {
+      if (running) return false;
+      purged.push(JSON.parse(name)[1]);
+      return true;
+    } }) },
+  });
+  await owner.owner('alice');
+  owner.addAgent({ id: 'live', workspace: 'w', created_by: 'web' });
+  assert.deepEqual(await owner.deleteWorkspace('w'), { deleted: false, reason: 'in_use', agents: ['live'] });
+  owner.retire('live');
+  assert.deepEqual(await owner.deleteWorkspace('w'), { deleted: false, reason: 'running' });
+  running = false;
+  assert.deepEqual(await owner.deleteWorkspace('w'), { deleted: true });
+  assert.deepEqual(purged, ['w']);
+  assert.equal(owner.workspaces().find((w) => w.id === 'w')?.state, 'purged');
+  assert.deepEqual(await owner.deleteWorkspace('nope'), { deleted: false, reason: 'not_found' });
+});

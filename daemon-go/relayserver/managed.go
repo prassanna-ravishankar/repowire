@@ -145,7 +145,7 @@ func (s *Server) managedRoutes() {
 	for _, route := range []string{
 		"GET /agents", "POST /agents", "GET /agents/{id}", "PATCH /agents/{id}", "DELETE /agents/{id}",
 		"GET /agents/{id}/messages", "POST /agents/{id}/messages", "GET /agents/{id}/runs", "GET /agents/{id}/asks",
-		"POST /agents/{id}/abort", "GET /workspaces",
+		"POST /agents/{id}/abort", "GET /workspaces", "DELETE /workspaces/{id}",
 	} {
 		method, path, _ := strings.Cut(route, " ")
 		s.mux.HandleFunc(method+" "+managedPrefix+path, owner(s.managedProxy))

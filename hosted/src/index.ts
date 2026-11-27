@@ -745,6 +745,14 @@ export default {
         if (request.method === 'POST') return await createAgent(env, caller, request, await body(request));
       }
       if (url.pathname === '/workspaces' && request.method === 'GET') return json({ items: await directory().workspaces() });
+      const workspaceMatch = /^\/workspaces\/([^/]+)$/.exec(url.pathname);
+      if (workspaceMatch && request.method === 'DELETE') {
+        const outcome = await directory().deleteWorkspace(identifier(workspaceMatch[1], 'workspace'));
+        if (outcome.deleted) return json(outcome);
+        if (outcome.reason === 'not_found') throw new HttpError(404, 'Workspace not found');
+        const why = outcome.reason === 'in_use' ? `agents still use it: ${(outcome.agents ?? []).join(', ')}; retire them first` : 'its container is running; try again once it has stopped';
+        return json({ ...outcome, error: `Workspace not deleted: ${why}` }, 409);
+      }
       // The cross-machine API, for the relay only, naming the sending machine.
       if (url.pathname.startsWith('/remote/')) {
         if (!caller.owner) throw new HttpError(403, 'The remote API needs an owner');

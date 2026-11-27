@@ -194,3 +194,13 @@ test('an agent whose workspace is being deleted is admitted nothing until the de
   assert.equal(sent.status, 409);
   assert.equal(parts.pi.submitted.size, 0);
 });
+
+test('DELETE /workspaces/{id} deletes an unused workspace and explains a refusal', async () => {
+  const { call, directory } = relay();
+  await directory.owner('alice');
+  directory.addAgent({ id: 'w-user', workspace: 'w', created_by: 'web' });
+  const refused = await call('DELETE', '/workspaces/w');
+  assert.equal(refused.status, 409);
+  assert.match((await refused.json()).error, /w-user/);
+  assert.equal((await call('DELETE', '/workspaces/nope')).status, 404);
+});
