@@ -366,14 +366,27 @@ func (p *DaemonPeer) DefaultTarget(ctx context.Context) string {
 // DefaultTargetInfo returns the canonical routing address and the human-facing
 // display name separately. Mobile UIs route by peer_id but must never leak that
 // internal identity into buttons or conversation copy.
+//
+// The orchestrator is the peer whose role says so. A name starting
+// "orchestrator-" is only a fallback when no peer has the role: other peers
+// can carry that prefix (a Codex thread started in the orchestrator's folder
+// is "orchestrator-codex"), and /peers comes back in no fixed order, so
+// matching either in one pass picked between them at random.
 func (p *DaemonPeer) DefaultTargetInfo(ctx context.Context) (string, string) {
 	peers, err := p.ActivePeers(ctx)
 	if err != nil {
 		return "", ""
 	}
-	for _, peer := range peers {
-		if textField(peer, "role") == "orchestrator" || strings.HasPrefix(textField(peer, "display_name"), "orchestrator-") {
-			return peerTarget(peer), textField(peer, "display_name")
+	for _, match := range []func(map[string]any) bool{
+		func(peer map[string]any) bool { return textField(peer, "role") == "orchestrator" },
+		func(peer map[string]any) bool {
+			return strings.HasPrefix(textField(peer, "display_name"), "orchestrator-")
+		},
+	} {
+		for _, peer := range peers {
+			if match(peer) {
+				return peerTarget(peer), textField(peer, "display_name")
+			}
 		}
 	}
 	return "", ""
