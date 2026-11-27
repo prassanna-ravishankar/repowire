@@ -16,9 +16,14 @@ type APIKey struct {
 }
 
 type ShareToken struct {
-	ShareID     string     `json:"share_id"`
-	UserID      string     `json:"-"`
-	PeerName    string     `json:"peer_name"`
+	ShareID  string `json:"share_id"`
+	UserID   string `json:"-"`
+	PeerName string `json:"peer_name"`
+	// PeerID is the shared peer's identity when the daemon sent one (#652). A
+	// peer's name follows its runtime's session name and can change, or pass
+	// to another peer, while the link is live; its peer_id cannot. Empty for
+	// a share made by a daemon that predates it: the name is then the scope.
+	PeerID      string     `json:"peer_id,omitempty"`
 	Permissions string     `json:"permissions"`
 	CreatedAt   time.Time  `json:"created_at"`
 	ExpiresAt   *time.Time `json:"expires_at"`
@@ -65,9 +70,9 @@ func (s *tokenStore) validate(key string) (APIKey, bool) {
 	return APIKey{Key: key, UserID: "token-" + secretHash(key)}, true
 }
 
-func (s *tokenStore) createShare(userID, peerName, permissions string, ttl time.Duration) ShareToken {
+func (s *tokenStore) createShare(userID, peerName, peerID, permissions string, ttl time.Duration) ShareToken {
 	now := time.Now().UTC()
-	share := ShareToken{ShareID: randomID("sh_", 12), UserID: userID, PeerName: peerName, Permissions: permissions, CreatedAt: now}
+	share := ShareToken{ShareID: randomID("sh_", 12), UserID: userID, PeerName: peerName, PeerID: peerID, Permissions: permissions, CreatedAt: now}
 	if ttl > 0 {
 		expires := now.Add(ttl)
 		share.ExpiresAt = &expires
@@ -114,4 +119,33 @@ func (s *tokenStore) revokeShare(id string) bool {
 	}
 	delete(s.shares, id)
 	return true
+}
+
+// address is how the relay names the shared peer to the daemon: its peer_id
+// when known, else the name the share was made with.
+func (t ShareToken) address() string {
+	if t.PeerID != "" {
+		return t.PeerID
+	}
+	return t.PeerName
+}
+
+// shows decides what a share viewer sees: events about the shared peer. The
+// human's inbox is never part of a shared session. With a peer_id the match is
+// by identity only, so a rename keeps the stream and a peer that later takes
+// the old name never shows up in it; without one it is by name, as before.
+func (t ShareToken) shows(event map[string]any) bool {
+	if strings.HasPrefix(stringValue(event["type"]), "inbox_") {
+		return false
+	}
+	keys, want := []string{"peer", "peer_name", "from", "from_peer", "to", "to_peer", "display_name"}, t.PeerName
+	if t.PeerID != "" {
+		keys, want = []string{"peer_id", "from_peer_id", "to_peer_id", "session_id", "from_peer", "to_peer"}, t.PeerID
+	}
+	for _, key := range keys {
+		if stringValue(event[key]) == want {
+			return true
+		}
+	}
+	return false
 }

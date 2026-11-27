@@ -402,6 +402,7 @@ func (s *Server) createShare(w http.ResponseWriter, r *http.Request) {
 	}
 	var req struct {
 		PeerName    string `json:"peer_name"`
+		PeerID      string `json:"peer_id"`
 		Permissions string `json:"permissions"`
 		TTLSeconds  *int   `json:"ttl_secs"`
 	}
@@ -428,7 +429,7 @@ func (s *Server) createShare(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadGateway, "No daemon connected")
 		return
 	}
-	writeJSON(w, http.StatusOK, s.tokens.createShare(key.UserID, req.PeerName, req.Permissions, ttl))
+	writeJSON(w, http.StatusOK, s.tokens.createShare(key.UserID, req.PeerName, strings.TrimSpace(req.PeerID), req.Permissions, ttl))
 }
 
 func (s *Server) listShares(w http.ResponseWriter, r *http.Request) {
@@ -496,7 +497,7 @@ func (s *Server) shareAsk(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "text is required")
 		return
 	}
-	body, _ := json.Marshal(map[string]any{"from_peer": "guest", "to_peer": share.PeerName, "text": strings.TrimSpace(req.Text)})
+	body, _ := json.Marshal(map[string]any{"from_peer": "guest", "to_peer": share.address(), "text": strings.TrimSpace(req.Text)})
 	r2 := r.Clone(r.Context())
 	r2.Method = http.MethodPost
 	r2.Body = io.NopCloser(bytes.NewReader(body))
@@ -622,7 +623,7 @@ func (s *Server) eventsStream(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadGateway, "No daemon connected")
 		return
 	}
-	s.streamTunnel(w, r, conn, "", r.URL.RawQuery)
+	s.streamTunnel(w, r, conn, nil, r.URL.RawQuery)
 }
 
 func (s *Server) shareStream(w http.ResponseWriter, r *http.Request) {
@@ -636,12 +637,12 @@ func (s *Server) shareStream(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusServiceUnavailable, "Session owner not connected")
 		return
 	}
-	s.streamTunnel(w, r, conn, share.PeerName, "")
+	s.streamTunnel(w, r, conn, &share, "")
 }
 
 // streamTunnel proxies the daemon's event stream. The owner's query passes
 // through (the dashboard opens it with surface=dashboard); a share's never does.
-func (s *Server) streamTunnel(w http.ResponseWriter, r *http.Request, conn *daemonConn, peerFilter, query string) {
+func (s *Server) streamTunnel(w http.ResponseWriter, r *http.Request, conn *daemonConn, share *ShareToken, query string) {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		writeError(w, http.StatusInternalServerError, "streaming unsupported")
@@ -682,14 +683,14 @@ func (s *Server) streamTunnel(w http.ResponseWriter, r *http.Request, conn *daem
 		return
 	}
 
-	filter := &ssePeerFilter{peer: peerFilter}
+	filter := &ssePeerFilter{share: share}
 	for {
 		select {
 		case msg := <-ch:
 			switch msg["type"] {
 			case "http_stream_chunk":
 				body, _ := base64.StdEncoding.DecodeString(stringValue(msg["body"]))
-				if peerFilter != "" {
+				if share != nil {
 					body = filter.write(body)
 					if _, valid := s.tokens.share(r.PathValue("share_id")); !valid {
 						_, _ = io.WriteString(w, "data: {\"type\":\"share_expired\"}\n\n")
@@ -717,8 +718,8 @@ func (s *Server) streamTunnel(w http.ResponseWriter, r *http.Request, conn *daem
 }
 
 type ssePeerFilter struct {
-	peer string
-	buf  []byte
+	share *ShareToken
+	buf   []byte
 }
 
 func (f *ssePeerFilter) write(chunk []byte) []byte {
@@ -738,25 +739,11 @@ func (f *ssePeerFilter) write(chunk []byte) []byte {
 		}
 		data := strings.TrimSpace(strings.TrimPrefix(trimmed, "data:"))
 		var event map[string]any
-		if json.Unmarshal([]byte(data), &event) == nil && eventMentionsPeer(event, f.peer) {
+		if json.Unmarshal([]byte(data), &event) == nil && f.share.shows(event) {
 			out.Write(frame)
 		}
 	}
 	return out.Bytes()
-}
-
-// eventMentionsPeer decides what a share viewer sees. The human's inbox is
-// never part of a shared session.
-func eventMentionsPeer(event map[string]any, peerName string) bool {
-	if strings.HasPrefix(stringValue(event["type"]), "inbox_") {
-		return false
-	}
-	for _, key := range []string{"peer", "peer_name", "from", "from_peer", "to", "to_peer", "display_name"} {
-		if stringValue(event[key]) == peerName {
-			return true
-		}
-	}
-	return false
 }
 
 func (s *Server) relayWebSocket(w http.ResponseWriter, r *http.Request) {

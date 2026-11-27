@@ -176,9 +176,36 @@ func TestShareStreamNeverCarriesTheInbox(t *testing.T) {
 		{map[string]any{"type": "inbox_updated", "from": "worker", "item_id": "inb-1"}, false},
 		{map[string]any{"type": "chat_turn", "peer": "other"}, false},
 	} {
-		if got := eventMentionsPeer(tc.event, "worker"); got != tc.want {
+		if got := (ShareToken{PeerName: "worker"}).shows(tc.event); got != tc.want {
 			t.Errorf("%v: shown=%v, want %v", tc.event, got, tc.want)
 		}
+	}
+}
+
+// A share made with a peer_id follows the peer, not its name (#652): after
+// the shared session is renamed its events still show, and events of a peer
+// that later takes the old name never do. The inbox stays out either way.
+func TestShareByPeerIDSurvivesARename(t *testing.T) {
+	share := ShareToken{PeerName: "worker", PeerID: "repow-1-aaaa"}
+	for _, tc := range []struct {
+		event map[string]any
+		want  bool
+	}{
+		{map[string]any{"type": "chat_turn", "peer_id": "repow-1-aaaa", "peer": "worker-renamed"}, true},
+		{map[string]any{"type": "notification", "from": "x", "to": "worker-renamed", "to_peer_id": "repow-1-aaaa"}, true},
+		{map[string]any{"type": "peer_renamed", "peer_id": "repow-1-aaaa", "old_name": "worker", "new_name": "worker-renamed"}, true},
+		{map[string]any{"type": "chat_turn", "peer_id": "repow-1-bbbb", "peer": "worker"}, false},
+		{map[string]any{"type": "inbox_item", "to_peer_id": "repow-1-aaaa"}, false},
+	} {
+		if got := share.shows(tc.event); got != tc.want {
+			t.Errorf("%v: shown=%v, want %v", tc.event, got, tc.want)
+		}
+	}
+	if got := share.address(); got != "repow-1-aaaa" {
+		t.Errorf("address = %q, want the peer_id", got)
+	}
+	if got := (ShareToken{PeerName: "worker"}).address(); got != "worker" {
+		t.Errorf("address without a peer_id = %q, want the name", got)
 	}
 }
 
@@ -238,7 +265,7 @@ func TestTokenStoreExpiryAndRegistrationIsolation(t *testing.T) {
 	if second := store.register("user"); second.Key == first.Key || second.UserID == first.UserID {
 		t.Fatalf("public registration reused an identity: %q != %q", second.Key, first.Key)
 	}
-	share := store.createShare("user", "worker", "ro", time.Nanosecond)
+	share := store.createShare("user", "worker", "", "ro", time.Nanosecond)
 	time.Sleep(time.Millisecond)
 	if _, ok := store.share(share.ShareID); ok {
 		t.Fatal("expired share remained valid")
@@ -377,5 +404,32 @@ func TestShareStreamRouteDropsInboxEvents(t *testing.T) {
 	}
 	if !strings.Contains(string(body), "visible") || strings.Contains(string(body), "inbox_") {
 		t.Fatalf("share stream body = %q", body)
+	}
+}
+
+// The share API records the peer_id a daemon sends, and a daemon that sends
+// none still gets a share scoped by name.
+func TestShareAPIRecordsPeerID(t *testing.T) {
+	server := httptest.NewServer(New("").Handler())
+	t.Cleanup(server.Close)
+	key := "rw_test-share-id-key"
+	_ = connectDaemon(t, server.URL, key)
+	for body, wantID := range map[string]string{
+		`{"peer_name":"worker","peer_id":"repow-1-aaaa"}`: "repow-1-aaaa",
+		`{"peer_name":"worker"}`:                          "",
+	} {
+		req, _ := http.NewRequest(http.MethodPost, server.URL+"/api/v1/share", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("X-API-Key", key)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var share ShareToken
+		_ = json.NewDecoder(resp.Body).Decode(&share)
+		_ = resp.Body.Close()
+		if resp.StatusCode != http.StatusOK || share.PeerName != "worker" || share.PeerID != wantID {
+			t.Fatalf("%s: status=%d share=%+v", body, resp.StatusCode, share)
+		}
 	}
 }

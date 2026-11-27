@@ -641,6 +641,8 @@ asks** — do not share proactively. Requires relay to be configured.
 | `permissions` | `"ro"` (read-only, default) or `"rw"` (read-write — viewer can inject asks). |
 | `ttl_secs` | Link lifetime in seconds (must be > 0). `None` means no expiry. |
 
+The link is bound to the peer itself (its `peer_id`), not to its name. If the session is renamed while the link is live, the viewer keeps following it, and a peer that later takes the old name never shows up in the stream. An ambiguous `peer_name` is refused. Links made through a relay that predates this are bound to the name.
+
 Returns the share URL and `share_id`, e.g.:
 
 ```
