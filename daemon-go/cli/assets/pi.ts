@@ -24,6 +24,8 @@ interface PendingQuery {
 // own PeerConn (its own WebSocket, peer_id, busy state, pending queries).
 interface PeerConn {
   sessionId: string;
+  // sessionName is Pi's own session name; the daemon makes it the address.
+  sessionName: string | null;
   peerId: string | null;
   birthCertificate: Record<string, unknown> | null;
   peerName: string;
@@ -203,6 +205,7 @@ async function registerPaneLessPeer(conn: PeerConn): Promise<void> {
     provenance: { source: "hook", addressable: true },
   };
   if (conn.peerId) body.peer_id = conn.peerId;
+  if (conn.sessionName) body.native_name = conn.sessionName;
   let registered: Record<string, unknown>;
   try {
     registered = await daemon("/peers", body);
@@ -243,9 +246,24 @@ function sanitizePeerName(name: string): string {
   return name.replace(/[^a-zA-Z0-9._-]/g, "_") || "unknown";
 }
 
-function peerNameFor(folder: string, sessionId: string, sessionName: string | null): string {
-  const slug = sanitizePeerName(sessionName || sessionId.slice(-8)).slice(0, 32) || sessionId.slice(-8);
-  return sanitizePeerName(folder + "-" + slug);
+// The daemon names the peer from the session name (native_name); this is
+// only the placeholder a registration carries until it answers.
+function peerNameFor(folder: string): string {
+  return sanitizePeerName(folder + "-pi");
+}
+
+// renamePeer forwards a Pi session rename; the daemon makes the name the
+// peer's address. Before registration the name rides the register/connect.
+async function renamePeer(conn: PeerConn, name: string) {
+  if (!name || name === conn.sessionName) return;
+  conn.sessionName = name;
+  if (!conn.peerId) return;
+  try {
+    const updated = await daemon("/session/update", { peer_name: conn.peerId, native_name: name });
+    if (typeof updated.display_name === "string") conn.peerName = updated.display_name;
+  } catch (e) {
+    console.error(`[repowire] Rename of ${conn.peerName} failed:`, e);
+  }
 }
 
 function connectPeerWebSocket(conn: PeerConn) {
@@ -270,6 +288,7 @@ function connectPeerWebSocket(conn: PeerConn) {
     if (role) connectMsg.role = role;
     const cachedPeerId = conn.peerId || loadIdentity(projectPath, conn.sessionId).peerId;
     if (cachedPeerId) connectMsg.peer_id = cachedPeerId;
+    if (conn.sessionName) connectMsg.native_name = conn.sessionName;
     if (tmuxSession) connectMsg.tmux_session = tmuxSession;
     if (tmuxPane) connectMsg.pane_id = tmuxPane;
     if (AUTH_TOKEN) connectMsg.auth_token = AUTH_TOKEN;
@@ -540,9 +559,10 @@ function ensurePeer(sessionId: string, sessionName: string | null) {
   const cached = loadIdentity(projectPath, sessionId);
   const conn: PeerConn = {
     sessionId,
+    sessionName,
     peerId: cached.peerId,
     birthCertificate: cached.birthCertificate,
-    peerName: peerNameFor(folder, sessionId, sessionName),
+    peerName: peerNameFor(folder),
     ws: null,
     pendingQueries: new Map(),
     busy: false,
@@ -752,6 +772,17 @@ export default async function repowireExtension(pi: ExtensionAPI) {
       ensurePeer(sessionId, sessionName);
     } catch (e) {
       console.warn("[repowire] session_start handler failed:", e);
+    }
+  });
+
+  // session_info_changed fires when the session's name changes (e.g. /name).
+  pi.on("session_info_changed", async (event, ctx) => {
+    try {
+      const sessionId = ctx.sessionManager.getSessionId?.();
+      const conn = sessionId ? peerBySession.get(sessionId) : undefined;
+      if (conn && event.name) await renamePeer(conn, event.name);
+    } catch (e) {
+      console.warn("[repowire] session_info_changed handler failed:", e);
     }
   });
 
