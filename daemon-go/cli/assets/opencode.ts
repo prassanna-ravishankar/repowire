@@ -245,6 +245,7 @@ async function registerPaneLessPeer(conn: PeerConn): Promise<void> {
     provenance: { source: "hook", addressable: true },
   }
   if (conn.peerId) body.peer_id = conn.peerId
+  if (conn.sessionTitle) body.native_name = conn.sessionTitle
   let registered: Record<string, unknown>
   try {
     registered = await daemon("/peers", body)
@@ -310,9 +311,24 @@ function sanitizePeerName(name: string): string {
   return name.replace(/[^a-zA-Z0-9._-]/g, "_") || "unknown"
 }
 
-function peerNameFor(folder: string, session: { id: string; title?: string | null }): string {
-  const slug = sanitizePeerName(session.title || session.id.slice(-8)).slice(0, 32) || session.id.slice(-8)
-  return sanitizePeerName(`${folder}-${slug}`)
+// The daemon names the peer from the session title (native_name); this is
+// only the placeholder a registration carries until it answers.
+function peerNameFor(folder: string): string {
+  return sanitizePeerName(`${folder}-opencode`)
+}
+
+// renamePeer forwards an OpenCode session rename; the daemon makes the title
+// the peer's address. Before registration the title rides the register/connect.
+async function renamePeer(conn: PeerConn, title: string) {
+  if (!title || title === conn.sessionTitle) return
+  conn.sessionTitle = title
+  if (!conn.peerId) return
+  try {
+    const updated = await daemon("/session/update", { peer_name: conn.peerId, native_name: title })
+    if (typeof updated.display_name === "string") conn.peerName = updated.display_name
+  } catch (e) {
+    console.error(`[repowire] Rename of ${conn.peerName} failed:`, e)
+  }
 }
 
 // Open a WebSocket for a single PeerConn. Each session has its own WS.
@@ -337,6 +353,7 @@ function connectPeerWebSocket(conn: PeerConn) {
     }
     const cachedPeerId = conn.peerId || loadIdentity(projectPath, conn.sessionId).peerId
     if (cachedPeerId) connectMsg.peer_id = cachedPeerId
+    if (conn.sessionTitle) connectMsg.native_name = conn.sessionTitle
     if (tmuxSession) connectMsg.tmux_session = tmuxSession
     if (tmuxPane) connectMsg.pane_id = tmuxPane
     if (activeModel) {
@@ -416,6 +433,7 @@ async function handleDaemonMessage(conn: PeerConn, data: Record<string, unknown>
   const msgType = data.type as string
 
   if (msgType === "connected") {
+    if (typeof data.display_name === "string") conn.peerName = data.display_name
     if (data.session_id) {
       conn.peerId = data.session_id as string
       dbg(`[repowire] ${conn.peerName} connected with peer_id: ${conn.peerId}`)
@@ -561,7 +579,7 @@ function ensurePeer(session: { id: string; title?: string | null }) {
     sessionTitle: session.title ?? null,
     peerId: cached.peerId,
     birthCertificate: cached.birthCertificate,
-    peerName: peerNameFor(folder, session),
+    peerName: peerNameFor(folder),
     ws: null,
     pendingQueries: new Map(),
     pendingByAssistantId: new Map(),
@@ -1067,8 +1085,10 @@ ${me.peerId || ""}	${me.peerName}			not registered			`
         }
       } else if (typedEvent.type === "session.updated") {
         const info = props?.info as SessionEventInfo | undefined
-        if (info?.id && info.parentID == null && !peerBySession.has(info.id)) {
-          ensurePeer({ id: info.id, title: info.title })
+        if (info?.id && info.parentID == null) {
+          const existing = peerBySession.get(info.id)
+          if (existing) void renamePeer(existing, info.title ?? "")
+          else ensurePeer({ id: info.id, title: info.title })
         }
       } else if (typedEvent.type === "session.deleted") {
         const info = props?.info as SessionEventInfo | undefined
