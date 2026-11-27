@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"path/filepath"
 	"testing"
+	"time"
 
 	_ "modernc.org/sqlite"
 )
@@ -331,5 +332,70 @@ func TestAcquireForDispatchAndRetry(t *testing.T) {
 	}
 	if noAcq != nil {
 		t.Fatal("cancel-requested work must not be acquired")
+	}
+}
+
+// interruptedWork acquires work, assigns its attempt, and recovers it as
+// runner_interrupted, as a daemon restart mid-dispatch leaves it.
+func interruptedWork(t *testing.T, s *Store, attemptID string) *TrackedWork {
+	t.Helper()
+	ctx := context.Background()
+	work, err := s.CreateWork(ctx, WorkCreate{Title: "interrupted"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.AcquireForDispatch(ctx, work.WorkID, AcquireOptions{RunnerOwnerID: "test", AttemptID: attemptID, IgnoreDueAt: true}); err != nil {
+		t.Fatal(err)
+	}
+	assigned := "repow-test-worker"
+	if _, err := s.UpdateAttempt(ctx, work.WorkID, attemptID, AttemptUpdate{Phase: ptrStr("delivery"), AssignedPeerID: &assigned}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.RecoverStaleDispatching(ctx, time.Now().Add(24*time.Hour).UTC().Format(time.RFC3339Nano)); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := s.GetWork(ctx, work.WorkID)
+	if !InterruptedByRunner(got) {
+		t.Fatalf("not recovered as runner_interrupted: %#v", got)
+	}
+	return got
+}
+
+func TestResumeInterruptedAttempt(t *testing.T) {
+	s := newWorkStore(t)
+	ctx := context.Background()
+	work := interruptedWork(t, s, "attempt-aaaaaaaaaaaa")
+
+	if got, err := s.ResumeInterruptedAttempt(ctx, work.WorkID, "attempt-bbbbbbbbbbbb"); err != nil || got != nil {
+		t.Fatalf("another attempt resumed it: %#v %v", got, err)
+	}
+	got, err := s.ResumeInterruptedAttempt(ctx, work.WorkID, "attempt-aaaaaaaaaaaa")
+	if err != nil || got == nil {
+		t.Fatalf("resume: %#v %v", got, err)
+	}
+	if got.State != "running" || *got.Phase != "turn_started" || got.CompletedAt != nil || len(got.Error) != 0 {
+		t.Fatalf("resumed work: %#v", got)
+	}
+	attempt := runnerProvenance(got)["runner"].(map[string]any)["attempts"].([]any)[0].(map[string]any)
+	if attempt["status"] != "running" || attempt["error"] != nil || attempt["completed_at"] != nil {
+		t.Fatalf("resumed attempt: %#v", attempt)
+	}
+	if again, err := s.ResumeInterruptedAttempt(ctx, work.WorkID, "attempt-aaaaaaaaaaaa"); err != nil || again != nil {
+		t.Fatalf("resumed twice: %#v %v", again, err)
+	}
+}
+
+func TestResumeInterruptedAttemptHonorsACancel(t *testing.T) {
+	s := newWorkStore(t)
+	ctx := context.Background()
+	work := interruptedWork(t, s, "attempt-cccccccccccc")
+	if _, err := s.CancelWork(ctx, work.WorkID, nil, ""); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := s.ResumeInterruptedAttempt(ctx, work.WorkID, "attempt-cccccccccccc"); err != nil || got != nil {
+		t.Fatalf("a cancelled job resumed: %#v %v", got, err)
+	}
+	if got, _ := s.GetWork(ctx, work.WorkID); got.State != "unavailable" {
+		t.Fatalf("cancelled job changed: %#v", got)
 	}
 }

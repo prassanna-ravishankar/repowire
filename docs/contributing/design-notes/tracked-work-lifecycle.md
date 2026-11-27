@@ -106,6 +106,14 @@ attempt id on completion. If a delivered job never sends that start heartbeat
 before its dispatch lease expires, the runner may mark it unavailable so it can
 be retried or inspected.
 
+A daemon that stops mid-dispatch, after sending the prompt but before
+recording the send, leaves the work `unavailable` with `runner_interrupted`
+once the lease lapses. That is the one documented repair path out of a
+terminal state: if the executor's run of that same attempt then starts, the
+work and attempt return to `running` and settle from that run as usual. A run
+of another attempt or another peer, a retry that started a new attempt, or a
+requested cancel leaves it `unavailable`.
+
 Use jobs when work needs durable status, progress history, result metadata, or
 cancellation. Use `ask` for a conversational request that another peer should
 close with `ack`. Use `schedule` for future delivery of a notify or ask.

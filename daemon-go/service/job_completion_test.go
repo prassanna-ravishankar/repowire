@@ -135,3 +135,82 @@ func TestJobCompletionExpiresWorkPastItsDeadline(t *testing.T) {
 		}
 	}
 }
+
+// A daemon that stops between sending a job's prompt and recording it as
+// delivered leaves the work dispatching; on restart it is recovered as
+// unavailable with runner_interrupted. The agent still got the prompt, so its
+// run arms and completes that attempt instead of being ignored.
+func TestJobCompletionSettlesAnAttemptInterruptedByARestart(t *testing.T) {
+	ctx := context.Background()
+	store, err := state.NewStore(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	work, err := store.CreateWork(ctx, state.WorkCreate{Title: "interrupted job"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	attemptID := "attempt-0a1b2c3d4e5f"
+	if _, err := store.AcquireForDispatch(ctx, work.WorkID, state.AcquireOptions{RunnerOwnerID: "test", AttemptID: attemptID, IgnoreDueAt: true}); err != nil {
+		t.Fatal(err)
+	}
+	phase, assigned := "delivery", "repow-test-worker"
+	if _, err := store.UpdateAttempt(ctx, work.WorkID, attemptID, state.AttemptUpdate{Phase: &phase, AssignedPeerID: &assigned}); err != nil {
+		t.Fatal(err)
+	}
+	// The send went out; the daemon stopped before recording it. On restart
+	// the runner lease has lapsed.
+	if _, err := store.RecoverStaleDispatching(ctx, time.Now().Add(24*time.Hour).UTC().Format(time.RFC3339Nano)); err != nil {
+		t.Fatal(err)
+	}
+	recovered, _ := store.GetWork(ctx, work.WorkID)
+	if recovered.State != "unavailable" || recovered.StateReason == nil || *recovered.StateReason != "runner_interrupted" {
+		t.Fatalf("work not recovered as runner_interrupted: %#v", recovered)
+	}
+
+	completion := NewJobCompletion(store, nil, nil, nil, nil)
+	completion.OnChatTurn(ctx, proto.PeerID(assigned), "user", "job_id: "+work.WorkID+"\nattempt_id: "+attemptID)
+	armed, _ := store.GetWork(ctx, work.WorkID)
+	if armed.State != "running" || armed.Phase == nil || *armed.Phase != "turn_started" {
+		t.Fatalf("interrupted attempt not armed by its run: %#v", armed)
+	}
+	completion.OnChatTurn(ctx, proto.PeerID(assigned), "assistant", "done after all")
+	completed, _ := store.GetWork(ctx, work.WorkID)
+	if completed.State != "completed" || completed.ResultSummary == nil || *completed.ResultSummary != "done after all" {
+		t.Fatalf("interrupted attempt not completed by its run: %#v", completed)
+	}
+}
+
+// Only the interrupted attempt's own executor can take it back, and only
+// for that attempt: another peer's run, or a run naming another attempt,
+// leaves it unavailable.
+func TestJobCompletionLeavesAnInterruptedAttemptToItsOwnRun(t *testing.T) {
+	ctx := context.Background()
+	store, err := state.NewStore(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	work, err := store.CreateWork(ctx, state.WorkCreate{Title: "interrupted job"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	attemptID := "attempt-5f4e3d2c1b0a"
+	if _, err := store.AcquireForDispatch(ctx, work.WorkID, state.AcquireOptions{RunnerOwnerID: "test", AttemptID: attemptID, IgnoreDueAt: true}); err != nil {
+		t.Fatal(err)
+	}
+	phase, assigned := "delivery", "repow-test-worker"
+	if _, err := store.UpdateAttempt(ctx, work.WorkID, attemptID, state.AttemptUpdate{Phase: &phase, AssignedPeerID: &assigned}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.RecoverStaleDispatching(ctx, time.Now().Add(24*time.Hour).UTC().Format(time.RFC3339Nano)); err != nil {
+		t.Fatal(err)
+	}
+	completion := NewJobCompletion(store, nil, nil, nil, nil)
+	completion.OnChatTurn(ctx, "repow-someone-else", "user", "job_id: "+work.WorkID+"\nattempt_id: "+attemptID)
+	completion.OnChatTurn(ctx, proto.PeerID(assigned), "user", "job_id: "+work.WorkID+"\nattempt_id: attempt-ffffffffffff")
+	if got, _ := store.GetWork(ctx, work.WorkID); got.State != "unavailable" {
+		t.Fatalf("interrupted work taken by the wrong run: %#v", got)
+	}
+}
