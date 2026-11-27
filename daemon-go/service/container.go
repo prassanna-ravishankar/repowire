@@ -32,8 +32,9 @@ type Container interface {
 
 // PeerContainer is a plug that owns some peers outright: their execution has
 // no pane to prove, and the plug stops it by peer (a hosted agent is one).
-// kill_peer asks each in turn; the first that Owns the peer stops it, and the
-// caller then applies the operator close, as for every backend.
+// An operator close (kill_peer, DELETE /peers/{name}) asks each in turn; the
+// first that Owns the peer stops it, and the caller then applies the close,
+// as for every backend.
 type PeerContainer interface {
 	// Kind names the plug ("hosted").
 	Kind() string

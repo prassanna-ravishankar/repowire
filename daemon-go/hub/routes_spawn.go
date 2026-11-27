@@ -445,18 +445,17 @@ func (h *Hub) killPeer(ctx context.Context, req KillPeerRequest) (KillResponse, 
 
 	// A plug that owns the peer outright stops it by peer; the operator close
 	// then applies as for every other backend.
-	if plug := h.spawn.svc.PeerContainerFor(resolved); plug != nil {
-		if err := plug.StopPeer(ctx, resolved); err != nil {
-			// Fail loud and keep the peer, as a failed pane stop does.
-			return KillResponse{}, &service.SpawnError{Status: http.StatusInternalServerError, Detail: map[string]any{
-				"error":     "kill_failed",
-				"hint":      "The " + plug.Kind() + " container could not stop the peer; it remains registered so the operator can inspect it.",
-				"container": plug.Kind(),
-				"detail":    err.Error(),
-			}}
-		}
+	if kind, err := h.stopOwnedPeer(ctx, resolved); err != nil {
+		// Fail loud and keep the peer, as a failed pane stop does.
+		return KillResponse{}, &service.SpawnError{Status: http.StatusInternalServerError, Detail: map[string]any{
+			"error":     "kill_failed",
+			"hint":      "The " + kind + " container could not stop the peer; it remains registered so the operator can inspect it.",
+			"container": kind,
+			"detail":    err.Error(),
+		}}
+	} else if kind != "" {
 		h.closeKilledPeer(ctx, resolved.PeerID)
-		return KillResponse{OK: true, Container: plug.Kind()}, nil
+		return KillResponse{OK: true, Container: kind}, nil
 	}
 
 	peerCopy := h.peerWithAdoptedOwnership(resolved)
@@ -477,6 +476,21 @@ func (h *Hub) killPeer(ctx context.Context, req KillPeerRequest) (KillResponse, 
 	h.closeKilledPeer(ctx, peerCopy.PeerID)
 	t := true
 	return KillResponse{OK: true, TmuxKilled: &t}, nil
+}
+
+// stopOwnedPeer stops p through the container plug that owns it outright,
+// before an operator close (kill_peer, DELETE /peers/{name}), so closing the
+// identity never leaves its execution running. It returns the plug's kind,
+// "" when no plug owns p. On error the caller keeps the peer registered.
+func (h *Hub) stopOwnedPeer(ctx context.Context, p *proto.Peer) (string, error) {
+	if h.spawn == nil || h.spawn.svc == nil {
+		return "", nil
+	}
+	plug := h.spawn.svc.PeerContainerFor(p)
+	if plug == nil {
+		return "", nil
+	}
+	return plug.Kind(), plug.StopPeer(ctx, p)
 }
 
 // closeKilledPeer is the operator close kill shares with DELETE /peers/{name}:
