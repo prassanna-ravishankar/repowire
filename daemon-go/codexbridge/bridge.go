@@ -96,8 +96,11 @@ type threadPeer struct {
 	displayName string
 	model       string
 	// nativeName is the thread's own name in Codex (Thread.name); the daemon
-	// makes it the peer's address.
+	// makes it the peer's address. publishedName is the last one the daemon
+	// acknowledged; publishName drains the gap, latest name wins.
 	nativeName    string
+	publishedName string
+	naming        bool
 	branch        string
 	gitStatus     map[string]any
 	tmux          map[string]any
@@ -408,37 +411,61 @@ func (b *Bridge) handleNotification(method string, params map[string]any) {
 		b.closeThread(stringValue(params, "threadId"))
 	case "thread/name/updated":
 		if p := b.thread(stringValue(params, "threadId")); p != nil {
-			go p.rename(stringValue(params, "threadName"))
+			p.rename(stringValue(params, "threadName"))
 		}
 	}
 }
 
-// rename forwards a Codex thread rename to the daemon, which makes it the
-// peer's address. Before registration the name rides the register body.
+// rename records a Codex thread rename in notification order and publishes
+// it; the daemon makes the name the peer's address.
 func (p *threadPeer) rename(name string) {
 	p.mu.Lock()
-	if name == "" || name == p.nativeName {
-		p.mu.Unlock()
-		return
+	if name != "" {
+		p.nativeName = name
 	}
-	p.nativeName = name
-	peerID := p.peerID
 	p.mu.Unlock()
-	if peerID == "" {
-		return
-	}
-	ctx, cancel := context.WithTimeout(p.bridge.ctx, 5*time.Second)
-	defer cancel()
-	result, err := p.bridge.daemonRequest(ctx, http.MethodPost, "/session/update", map[string]any{"peer_name": peerID, "native_name": name})
-	if err != nil {
-		log.Printf("codex bridge: rename %s: %v", p.id, err)
-		return
-	}
-	if displayName := stringValue(result, "display_name"); displayName != "" {
-		p.mu.Lock()
-		p.displayName = displayName
+	p.publishName()
+}
+
+// publishName sends the thread's latest name to the daemon, one request at a
+// time, until the daemon holds the latest one: renames in quick succession
+// land in order, and a rename made while the thread registers is sent once
+// registration returns. Before registration the name rides the register body.
+func (p *threadPeer) publishName() {
+	p.mu.Lock()
+	if p.peerID == "" || p.naming || p.nativeName == p.publishedName {
 		p.mu.Unlock()
+		return
 	}
+	p.naming = true
+	p.mu.Unlock()
+	go func() {
+		for {
+			p.mu.Lock()
+			name, peerID := p.nativeName, p.peerID
+			if peerID == "" || name == p.publishedName {
+				p.naming = false
+				p.mu.Unlock()
+				return
+			}
+			p.mu.Unlock()
+			ctx, cancel := context.WithTimeout(p.bridge.ctx, 5*time.Second)
+			result, err := p.bridge.daemonRequest(ctx, http.MethodPost, "/session/update", map[string]any{"peer_name": peerID, "native_name": name})
+			cancel()
+			p.mu.Lock()
+			if err != nil {
+				p.naming = false
+				p.mu.Unlock()
+				log.Printf("codex bridge: rename %s: %v", p.id, err)
+				return
+			}
+			p.publishedName = name
+			if displayName := stringValue(result, "display_name"); displayName != "" {
+				p.displayName = displayName
+			}
+			p.mu.Unlock()
+		}
+	}()
 }
 
 func (b *Bridge) captureCompletedTurn(threadID string) {
@@ -855,6 +882,7 @@ func (p *threadPeer) register(ctx context.Context) error {
 	p.pubMu.Unlock()
 	if err == nil {
 		p.publish()
+		p.publishName()
 	}
 	return err
 }
@@ -941,10 +969,12 @@ func (p *threadPeer) registerLocked(ctx context.Context) error {
 		return err
 	}
 	p.mu.Lock()
-	// The registration body carried this version, so the daemon holds it.
+	// The registration body carried this version and name, so the daemon
+	// holds them.
 	if version > p.publishedVersion {
 		p.publishedVersion = version
 	}
+	p.publishedName = nativeName
 	p.peerID, p.displayName = stringValue(result, "peer_id"), stringValue(result, "display_name")
 	if circle := stringValue(result, "circle"); circle != "" {
 		p.circle = circle

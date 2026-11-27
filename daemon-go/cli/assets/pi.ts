@@ -26,6 +26,10 @@ interface PeerConn {
   sessionId: string;
   // sessionName is Pi's own session name; the daemon makes it the address.
   sessionName: string | null;
+  // publishedName is the name the daemon last acknowledged; naming is true
+  // while publishName drains toward the latest one.
+  publishedName: string | null;
+  naming: boolean;
   peerId: string | null;
   birthCertificate: Record<string, unknown> | null;
   peerName: string;
@@ -205,7 +209,8 @@ async function registerPaneLessPeer(conn: PeerConn): Promise<void> {
     provenance: { source: "hook", addressable: true },
   };
   if (conn.peerId) body.peer_id = conn.peerId;
-  if (conn.sessionName) body.native_name = conn.sessionName;
+  const sentName = conn.sessionName;
+  if (sentName) body.native_name = sentName;
   let registered: Record<string, unknown>;
   try {
     registered = await daemon("/peers", body);
@@ -220,6 +225,8 @@ async function registerPaneLessPeer(conn: PeerConn): Promise<void> {
     ? registered.birth_certificate as Record<string, unknown>
     : conn.birthCertificate;
   if (conn.peerId) saveIdentity(projectPath, conn.sessionId, conn.peerId, conn.birthCertificate);
+  conn.publishedName = sentName;
+  void publishName(conn);
 }
 
 async function recoverPaneLessIdentity(conn: PeerConn): Promise<void> {
@@ -252,17 +259,32 @@ function peerNameFor(folder: string): string {
   return sanitizePeerName(folder + "-pi");
 }
 
-// renamePeer forwards a Pi session rename; the daemon makes the name the
-// peer's address. Before registration the name rides the register/connect.
-async function renamePeer(conn: PeerConn, name: string) {
-  if (!name || name === conn.sessionName) return;
+// renamePeer records a Pi session rename in event order and publishes it; the
+// daemon makes the name the peer's address.
+function renamePeer(conn: PeerConn, name: string) {
+  if (!name) return;
   conn.sessionName = name;
-  if (!conn.peerId) return;
+  void publishName(conn);
+}
+
+// publishName sends the session's latest name, one request at a time, until
+// the daemon holds it: quick renames land in order, and a rename made while
+// the session registers is sent once registration returns. Registration
+// itself carries the name it was sent with (native_name).
+async function publishName(conn: PeerConn) {
+  if (conn.naming || !conn.peerId) return;
+  conn.naming = true;
   try {
-    const updated = await daemon("/session/update", { peer_name: conn.peerId, native_name: name });
-    if (typeof updated.display_name === "string") conn.peerName = updated.display_name;
+    while (conn.peerId && conn.sessionName && conn.sessionName !== conn.publishedName) {
+      const name = conn.sessionName;
+      const updated = await daemon("/session/update", { peer_name: conn.peerId, native_name: name });
+      conn.publishedName = name;
+      if (typeof updated.display_name === "string") conn.peerName = updated.display_name;
+    }
   } catch (e) {
     console.error(`[repowire] Rename of ${conn.peerName} failed:`, e);
+  } finally {
+    conn.naming = false;
   }
 }
 
@@ -289,6 +311,7 @@ function connectPeerWebSocket(conn: PeerConn) {
     const cachedPeerId = conn.peerId || loadIdentity(projectPath, conn.sessionId).peerId;
     if (cachedPeerId) connectMsg.peer_id = cachedPeerId;
     if (conn.sessionName) connectMsg.native_name = conn.sessionName;
+    conn.publishedName = conn.sessionName;
     if (tmuxSession) connectMsg.tmux_session = tmuxSession;
     if (tmuxPane) connectMsg.pane_id = tmuxPane;
     if (AUTH_TOKEN) connectMsg.auth_token = AUTH_TOKEN;
@@ -497,6 +520,7 @@ async function handleDaemonMessage(conn: PeerConn, data: Record<string, unknown>
       console.debug("[repowire] " + conn.peerName + " connected with peer_id: " + conn.peerId);
       saveIdentity(projectPath, conn.sessionId, conn.peerId, conn.birthCertificate);
     }
+    void publishName(conn); // a rename made while the connect was in flight
     sendStatus(conn, conn.busy ? "busy" : "idle");
     // SessionStart-equivalent mesh primer: tell the agent who it is, who
     // else is online, and how ask/ack works. Passive delivery (nextTurn)
@@ -560,6 +584,8 @@ function ensurePeer(sessionId: string, sessionName: string | null) {
   const conn: PeerConn = {
     sessionId,
     sessionName,
+    publishedName: null,
+    naming: false,
     peerId: cached.peerId,
     birthCertificate: cached.birthCertificate,
     peerName: peerNameFor(folder),
@@ -780,7 +806,7 @@ export default async function repowireExtension(pi: ExtensionAPI) {
     try {
       const sessionId = ctx.sessionManager.getSessionId?.();
       const conn = sessionId ? peerBySession.get(sessionId) : undefined;
-      if (conn && event.name) await renamePeer(conn, event.name);
+      if (conn && event.name) renamePeer(conn, event.name);
     } catch (e) {
       console.warn("[repowire] session_info_changed handler failed:", e);
     }
