@@ -233,6 +233,58 @@ func (s *Store) RecoverStaleDispatching(ctx context.Context, now string) ([]*Tra
 	return recovered, nil
 }
 
+// ResumeInterruptedAttempt hands work recovered as runner_interrupted back to
+// the run of its interrupted attempt: the daemon stopped after sending the
+// prompt but before recording it, so the executor has the job and its run is
+// the truth. The work and that attempt become running/turn_started again.
+// It returns (nil, nil), changing nothing, unless the work is still
+// unavailable with runner_interrupted, attemptID is its current attempt, and
+// no cancel was requested.
+func (s *Store) ResumeInterruptedAttempt(ctx context.Context, workID, attemptID string) (*TrackedWork, error) {
+	work, err := s.GetWork(ctx, workID)
+	if err != nil || work == nil {
+		return nil, err
+	}
+	if !InterruptedByRunner(work) || work.CancelRequested || attemptID == "" || runnerCurrentAttempt(work) != attemptID {
+		return nil, nil
+	}
+	provenance := runnerProvenance(work)
+	runner := provenance["runner"].(map[string]any)
+	attempts := toAnySlice(runner["attempts"])
+	for i, raw := range attempts {
+		if attempt, ok := raw.(map[string]any); ok && attempt["attempt_id"] == attemptID {
+			attempt["status"], attempt["phase"] = "running", "turn_started"
+			delete(attempt, "completed_at")
+			delete(attempt, "error")
+			attempts[i] = attempt
+		}
+	}
+	runner["attempts"] = attempts
+	delete(runner, "last_error")
+	provenance["runner"] = runner
+	// Conditional on the recovered state, so two runs racing to resume it
+	// resume it once, and a retry or cancel that got there first wins.
+	const q = `UPDATE tracked_work SET
+		state = 'running', state_reason = 'turn_started', phase = 'turn_started',
+		provenance_json = ?, error_json = '{}', completed_at = NULL, updated_at = ?
+		WHERE work_id = ? AND state = 'unavailable' AND state_reason = 'runner_interrupted' AND cancel_requested = 0`
+	res, err := s.db.ExecContext(ctx, q, dumpJSONObject(provenance), nowISO(), workID)
+	if err != nil {
+		return nil, fmt.Errorf("resume work %s: %w", workID, err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return nil, nil
+	}
+	return s.GetWork(ctx, workID)
+}
+
+// InterruptedByRunner reports work recovered as runner_interrupted: the
+// runner stopped mid-dispatch, so whether the executor got the prompt is
+// unknown until its run says so.
+func InterruptedByRunner(w *TrackedWork) bool {
+	return w != nil && w.State == "unavailable" && w.StateReason != nil && *w.StateReason == "runner_interrupted"
+}
+
 // replaceWorkArgs bundles the columns replaceWorkJSON writes (mirrors
 // _replace_work_json's keyword args).
 type replaceWorkArgs struct {

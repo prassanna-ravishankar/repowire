@@ -45,10 +45,26 @@ func (c *JobCompletion) arm(ctx context.Context, peerID proto.PeerID, text strin
 		}
 		attemptID := attemptIDs[index]
 		work, err := c.store.GetWork(ctx, workID)
-		if err != nil || work == nil || work.State != "delivered" || currentWorkAttempt(work) != attemptID {
+		if err != nil || work == nil || currentWorkAttempt(work) != attemptID {
 			continue
 		}
 		if work.AssignedPeerID != nil && *work.AssignedPeerID != string(peerID) {
+			continue
+		}
+		if state.InterruptedByRunner(work) {
+			// The daemon stopped before recording the send, but this run
+			// shows the executor has the job: it resumes the attempt.
+			if work.AssignedPeerID == nil {
+				continue
+			}
+			if updated, err := c.store.ResumeInterruptedAttempt(ctx, workID, attemptID); err != nil {
+				log.Printf("job completion: resume interrupted %s: %v", workID, err)
+			} else if updated != nil {
+				c.emit(updated, work.State)
+			}
+			continue
+		}
+		if work.State != "delivered" {
 			continue
 		}
 		reason, phase := "turn_started", "turn_started"
