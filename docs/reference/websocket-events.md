@@ -11,6 +11,8 @@ Repowire peers use WebSocket delivery for live messages and daemon events. The d
 
 `ask` and `notify` frames to an agent peer carry an optional `message_id`, the recipient's [message record](mcp-tools.md#messages); renderers show it as `message-id="..."` on the `<peer-message>` tag. For a peer in pull delivery the frame's `text` is a one-line nudge naming that id instead of the body.
 
+A `connect` frame may carry `native_name`, the runtime's own session name; the `connected` reply's `display_name` is then that name, normalized (OpenCode and Pi send it). Renames are reported over HTTP (`POST /session/update`); there is no rename frame.
+
 The ws-hook `connect` frame advertises `hook_version` and `capabilities` (e.g. `delivery_receipts`) so the daemon can report per-peer inbound health and receipt support; capability is also inferred from an observed delivery acknowledgement.
 
 ## Compatibility
