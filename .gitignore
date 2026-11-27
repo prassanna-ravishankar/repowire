@@ -17,6 +17,7 @@ session-logs.md
 # Dashboard and local native build output
 web/out/
 bin/
+bin2/
 
 # docs build output
 site/
