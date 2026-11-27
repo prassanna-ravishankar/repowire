@@ -1,5 +1,5 @@
 import { DurableObject } from 'cloudflare:workers';
-import { Type, type Static, type TSchema } from '@earendil-works/pi-ai';
+import { obj, str, type Schema, type Static } from '@earendil-works/pi-schema';
 import { createModels } from '@earendil-works/pi-ai/models';
 import { createRegistry, GenerationTask, Harness, hook } from '@earendil-works/pi-durable';
 import { PiHarness, type PiOperationResult } from 'agents/harness/pi';
@@ -86,21 +86,21 @@ export class HostedAgent extends DurableObject<Env> {
         afterResponse: async (message) => this.meterResponse(message.usage),
       })],
       tools: [
-        this.meshTool('list_peers', 'List the agents on the mesh you can reach, with their status and current task.', Type.Object({})),
-        this.meshTool('whoami', 'Return your own mesh identity: peer id, display name and circle.', Type.Object({})),
-        this.meshTool('notify_peer', 'Send a one-way message to a peer. No reply is expected.', Type.Object({
-          peer_name: Type.String({ maxLength: 200 }), message: Type.String({ maxLength: 16000 }),
+        this.meshTool('list_peers', 'List the agents on the mesh you can reach, with their status and current task.', obj({})),
+        this.meshTool('whoami', 'Return your own mesh identity: peer id, display name and circle.', obj({})),
+        this.meshTool('notify_peer', 'Send a one-way message to a peer. No reply is expected.', obj({
+          peer_name: str({ maxLength: 200 }), message: str({ maxLength: 16000 }),
         })),
-        this.meshTool('ask_peer', 'Ask a peer a question. Returns at once with an ask id; the reply arrives later as a message.', Type.Object({
-          peer_name: Type.String({ maxLength: 200 }), query: Type.String({ maxLength: 16000 }),
+        this.meshTool('ask_peer', 'Ask a peer a question. Returns at once with an ask id; the reply arrives later as a message.', obj({
+          peer_name: str({ maxLength: 200 }), query: str({ maxLength: 16000 }),
         }), 'ask'),
-        this.meshTool('set_description', 'Set the one-line task description other agents and the human see for you.', Type.Object({
-          description: Type.String({ maxLength: 200 }),
+        this.meshTool('set_description', 'Set the one-line task description other agents and the human see for you.', obj({
+          description: str({ maxLength: 200 }),
         })),
         {
           name: 'workspace_exec',
           description: 'Execute a shell command in the attached Linux workspace. Files persist between calls. No network access.',
-          parameters: Type.Object({ command: Type.String({ maxLength: 16000 }) }),
+          parameters: obj({ command: str({ maxLength: 16000 }) }),
           // Shell side effects must not be blindly replayed after interruption.
           execute: async ({ command }, api) => {
             const config = await this.config();
@@ -133,7 +133,7 @@ export class HostedAgent extends DurableObject<Env> {
 
   // A mesh tool runs in the daemon as this agent's peer. Not replay-safe: a
   // message must not be sent twice because a run was interrupted.
-  private meshTool<T extends TSchema>(name: string, description: string, parameters: T, daemonTool = name) {
+  private meshTool<T extends Schema>(name: string, description: string, parameters: T, daemonTool = name) {
     return {
       name, description, parameters,
       execute: async (args: Static<T>, api: { callId: string }) => {

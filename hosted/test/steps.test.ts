@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { Type } from '@earendil-works/pi-ai';
+import { obj } from '@earendil-works/pi-schema';
 import { createModels } from '@earendil-works/pi-ai/models';
 import { fauxAssistantMessage, fauxProvider, fauxToolCall } from '@earendil-works/pi-ai/providers/faux';
 import { BACKGROUND_CONTEXT as BG } from '@earendil-works/chord/context';
@@ -47,7 +47,7 @@ async function loopRun({ limit = 3, answerAt = Infinity, failAborts = 0 } = {}) 
         },
       }, limit, { retryMs: 5 }),
     })],
-    tools: [{ name: 'noop', description: 'Does nothing.', parameters: Type.Object({}), execute: async () => ({ output: [{ type: 'text' as const, text: 'ok' }] }) }],
+    tools: [{ name: 'noop', description: 'Does nothing.', parameters: obj({}), execute: async () => ({ output: [{ type: 'text' as const, text: 'ok' }] }) }],
   });
   pi = await Harness.open(new MemoryStorage(), { models, registry }, BG);
   const model = faux.getModel();

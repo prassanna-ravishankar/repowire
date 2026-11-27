@@ -13,6 +13,13 @@ single-owner runtime prototype, not the public SaaS. The daemon reaches it as th
 - Cloudflare's Pi lifecycle maintains recovery alarms while work runs and releases
   them when idle. There is no application polling loop.
 
+The agent runs on pi-durable (`@earendil-works/pi-durable`) through Cloudflare's
+Durable Object adapter for it, `PiHarness` from the Agents SDK
+(`agents/harness/pi`). Each Agents SDK release supports one pi-durable minor
+version, so the two are upgraded together: Agents SDK 0.34.1 with pi-durable
+1.6.1. An upgrade is one-way. The new pi-durable migrates its tables in each
+agent's storage, and an older release cannot run agents that have been migrated.
+
 ## Run
 
 Use Node 24.11+ (or a supported newer release):
