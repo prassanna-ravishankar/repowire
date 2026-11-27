@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"strings"
 	"time"
 
 	"github.com/repowire/repowire/daemon-go/proto"
@@ -125,6 +126,27 @@ func (r *Registry) UpdateDescription(ctx context.Context, identifier, descriptio
 		r.markMappingsDirtyLocked()
 	}
 	return true, nil
+}
+
+// SeedDescription sets a peer's description from a runtime-generated title
+// only while it is empty: an explicit description always wins.
+func (r *Registry) SeedDescription(ctx context.Context, id proto.PeerID, text string) bool {
+	text = strings.TrimSpace(text)
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	ps, ok := r.peers[id]
+	if !ok || text == "" || ps.peer.Description != "" {
+		return false
+	}
+	now := time.Now().UTC()
+	ps.peer.Description = text
+	if m, ok := r.mappings[id]; ok {
+		m.Description = text
+		m.DescriptionSetAt = &now
+		m.UpdatedAt = now
+		r.markMappingsDirtyLocked()
+	}
+	return true
 }
 
 // UpdateProvenance replaces a live peer's provenance with a fresh

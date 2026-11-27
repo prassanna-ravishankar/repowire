@@ -600,7 +600,7 @@ func backoff(failures int) time.Duration {
 // long-lived hook outlives daemon restarts and identity changes, and resending
 // its start-time claim left the daemon to guess after each restart. A wrong
 // confirmation is therefore sticky too: the daemon is the authority, and
-// recovery is set_name or an agent restart.
+// recovery is a native session rename or an agent restart.
 func confirmedIdentity(peerID, displayName string, connected map[string]any) (string, string) {
 	if id := stringValue(connected, "session_id"); id != "" {
 		peerID = id

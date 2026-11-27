@@ -504,20 +504,6 @@ func (h *Hub) dispatch(ctx context.Context, id proto.PeerID, raw []byte) {
 			h.reg.UpdateTurnState(ctx, id, *f.TurnState)
 		}
 
-	case proto.FrameUpdateDisplayName:
-		var f proto.UpdateDisplayNameFrame
-		if err := json.Unmarshal(raw, &f); err != nil {
-			log.Printf("ws: bad update_display_name frame from %s: %v", id, err)
-			return
-		}
-		if isValidIdentifier(string(f.DisplayName)) {
-			if _, err := h.reg.UpdateDisplayName(ctx, id, f.DisplayName); err != nil {
-				log.Printf("ws: update_display_name from %s failed: %v", id, err)
-			}
-		} else {
-			log.Printf("ws: update_display_name from %s invalid name %q", id, f.DisplayName)
-		}
-
 	case proto.FramePong:
 		h.transport.ResolvePong(id, decodeMap(raw))
 

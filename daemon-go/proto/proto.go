@@ -235,12 +235,11 @@ type FrameType string
 
 const (
 	// Client -> Daemon
-	FrameConnect           FrameType = "connect"
-	FrameStatus            FrameType = "status"
-	FrameUpdateDisplayName FrameType = "update_display_name"
-	FramePong              FrameType = "pong"
-	FrameDeliveryAck       FrameType = "delivery_ack"
-	FrameError             FrameType = "error"
+	FrameConnect     FrameType = "connect"
+	FrameStatus      FrameType = "status"
+	FramePong        FrameType = "pong"
+	FrameDeliveryAck FrameType = "delivery_ack"
+	FrameError       FrameType = "error"
 	// Daemon -> Client
 	FrameConnected FrameType = "connected"
 	FrameAsk       FrameType = "ask"
@@ -322,12 +321,6 @@ type StatusFrame struct {
 	Type      FrameType  `json:"type"` // "status"
 	Status    PeerStatus `json:"status"`
 	TurnState *TurnState `json:"turn_state,omitempty"`
-}
-
-// UpdateDisplayNameFrame renames a peer (client -> daemon).
-type UpdateDisplayNameFrame struct {
-	Type        FrameType   `json:"type"` // "update_display_name"
-	DisplayName DisplayName `json:"display_name"`
 }
 
 // ErrorFrame is bidirectional. Code is set for typed rejections (peer_retired).

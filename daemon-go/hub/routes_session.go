@@ -45,6 +45,10 @@ type sessionRegistry interface {
 	// patch the field, returning (found, err). err is the ambiguous-name reject.
 	UpdateModelByName(ctx context.Context, identifier, model string) (found bool, err error)
 	UpdateMetadataByName(ctx context.Context, identifier string, metadata map[string]any) (found bool, err error)
+	// ApplyNativeName renames the peer from its runtime's session name;
+	// SeedDescription fills an empty description from a runtime title.
+	ApplyNativeName(ctx context.Context, id proto.PeerID, native string) (proto.DisplayName, bool)
+	SeedDescription(ctx context.Context, id proto.PeerID, text string) bool
 }
 
 // sessionDeps bundles the deps the session routes compose. Wired onto the Hub via
@@ -100,6 +104,10 @@ type SessionUpdateRequest struct {
 	TurnState *string        `json:"turn_state,omitempty"`
 	Model     *string        `json:"model,omitempty"`
 	Metadata  map[string]any `json:"metadata,omitempty"`
+	// NativeName is the runtime's own session name (renames the peer);
+	// NativeTitle a runtime-generated title (seeds an empty description).
+	NativeName  *string `json:"native_name,omitempty"`
+	NativeTitle *string `json:"native_title,omitempty"`
 }
 
 // handleSessionUpdate updates a peer's status / turn_state / model / metadata.
@@ -118,9 +126,9 @@ func (h *Hub) handleSessionUpdate(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx := r.Context()
 
-	if req.Status == nil && req.TurnState == nil && req.Model == nil {
+	if req.Status == nil && req.TurnState == nil && req.Model == nil && req.NativeName == nil && req.NativeTitle == nil {
 		writeJSONError(w, http.StatusBadRequest,
-			"At least one of status, turn_state, or model is required")
+			"At least one of status, turn_state, model, native_name or native_title is required")
 		return
 	}
 
@@ -187,7 +195,16 @@ func (h *Hub) handleSessionUpdate(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+	resp := map[string]any{"ok": true}
+	if req.NativeTitle != nil {
+		h.session.reg.SeedDescription(ctx, resolved, *req.NativeTitle)
+	}
+	if req.NativeName != nil {
+		if name, ok := h.session.reg.ApplyNativeName(ctx, resolved, *req.NativeName); ok {
+			resp["display_name"] = name
+		}
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 // ----------------------------------------------------------------------------

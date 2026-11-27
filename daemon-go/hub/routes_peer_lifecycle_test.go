@@ -576,3 +576,30 @@ func TestWSReconnectToClosedPeerIsRefusedAsFinal(t *testing.T) {
 		t.Fatalf("closed reconnect frame = %+v, want final peer_retired", frame)
 	}
 }
+
+// A registration carrying the runtime's own session name answers with that
+// name as the address, so the first name a client sees is already right.
+func TestRegisterPeerAppliesNativeName(t *testing.T) {
+	h := newTestHub(t)
+	mux := http.NewServeMux()
+	h.Routes(mux)
+
+	path := "/work/myproj"
+	rec := postLifecycleJSON(t, mux, "/peers", RegisterPeerRequest{
+		Name: "myproj", Path: &path, Backend: proto.AgentClaudeCode, Circle: strptr("default"),
+		NativeName: strptr("Fix Telegram access"),
+	})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST /peers: want 200, got %d (%s)", rec.Code, rec.Body.String())
+	}
+	var resp RegisterResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if resp.DisplayName != "fix-telegram-access" {
+		t.Fatalf("display_name = %q, want fix-telegram-access", resp.DisplayName)
+	}
+	if p, _ := h.reg.GetPeer(proto.PeerID(resp.PeerID)); p == nil || p.DisplayName != "fix-telegram-access" {
+		t.Fatalf("registry name = %+v", p)
+	}
+}
